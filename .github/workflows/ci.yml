@@ -19,7 +19,23 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev libvulkan-dev libfontconfig-dev libfreetype-dev libssl-dev binutils python3 xvfb xauth libxtst6 xclip tesseract-ocr imagemagick fonts-dejavu-core
       - name: Install Rust
-        run: rustup update stable --no-self-update && rustup default stable && rustup component add clippy rust-docs
+        id: rust
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup component add clippy rust-docs
+          echo "version=$(rustc --version | sha256sum | cut -d ' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Restore Rust build cache
+        id: rust-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-v1-${{ steps.rust.outputs.version }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            linux-v1-${{ steps.rust.outputs.version }}-${{ hashFiles('Cargo.lock') }}-
       - name: Check
         run: cargo check --locked
       - name: Unit tests
@@ -41,6 +57,15 @@ jobs:
           xvfb-run -a -s '-screen 0 1280x960x24' python3 tests/desktop_smoke.py
           xvfb-run -a -s '-screen 0 1280x960x24' python3 tests/startup_smoke.py
           xvfb-run -a -s '-screen 0 1280x960x24' python3 tests/settings_smoke.py
+      - name: Save Rust build cache, including failed test runs
+        if: always() && steps.rust-cache.outputs.cache-primary-key != '' && steps.rust-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
       - name: Save candidate package (not a GitHub Release)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

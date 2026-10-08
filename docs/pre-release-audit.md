@@ -131,4 +131,19 @@ license collection still requires a final review before public distribution.
 - [ ] Build the Linux artifact in CI with appropriate path remapping.
 - [ ] Inspect and scan the final archive, including installer and metadata.
 
-No push, repository creation or release publication was performed by this audit.
+No push, repository creation or release publication was performed during the
+initial audit.
+
+## GitHub publication follow-up
+
+With the owner's approval, the public repository was created at
+https://github.com/cleisonsantos/dish and the source was pushed to `main`.
+Gitleaks found no leaks in the initial published history. Build outputs under
+`target/` and local candidate archives under `dist/` remain Git-ignored.
+
+The first clean CI exposed a missing `libxkbcommon-x11-dev` build dependency;
+the workflow and README were corrected. The next run exposed a transient Unix
+ETXTBSY executable-start race. A bounded, error-specific retry and regression
+test were added; all 35 Rust tests pass locally. Rust build caching was also
+added. The next GitHub run must still validate the complete package pipeline.
+No GitHub Release or version tag has been published.

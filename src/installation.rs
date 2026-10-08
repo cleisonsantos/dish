@@ -89,12 +89,13 @@ fn find_installed() -> Option<PathBuf> {
 const OFFICIAL_SCRIPT: &str = "curl -fsSL https://pi.dev/install.sh | sh; result=$?; printf '\\nInstalador finalizado (status %s). Volte ao Dish e clique em Tentar novamente.\\nPressione Enter para fechar.\\n' \"$result\"; read answer";
 
 fn launch_terminal(program: &Path, flag: &str) -> Result<()> {
-    let mut child = Command::new(program)
+    let mut command = Command::new(program);
+    command
         .args([flag, "/bin/sh", "-c", OFFICIAL_SCRIPT])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
+        .stderr(Stdio::null());
+    let mut child = retry_text_busy(|| command.spawn(), Duration::from_millis(250))
         .context("Não foi possível abrir o terminal")?;
     std::thread::spawn(move || {
         let _ = child.wait();
@@ -124,6 +125,27 @@ pub fn launch_official_installer() -> Result<()> {
     bail!("Nenhum terminal compatível foi encontrado. Copie o comando oficial, execute-o em um terminal e tente novamente.");
 }
 
+// An executable just written by another thread/process can briefly return
+// ETXTBSY on Unix. Retry only that transient error, with a bounded deadline.
+fn retry_text_busy<T>(mut attempt: impl FnMut() -> std::io::Result<T>, timeout: Duration) -> std::io::Result<T> {
+    let deadline = Instant::now() + timeout.min(Duration::from_millis(250));
+    loop {
+        match attempt() {
+            Err(error) if is_text_busy(&error) && Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            result => return result,
+        }
+    }
+}
+
+fn is_text_busy(error: &std::io::Error) -> bool {
+    #[cfg(unix)]
+    { error.raw_os_error() == Some(libc::ETXTBSY) }
+    #[cfg(not(unix))]
+    { let _ = error; false }
+}
+
 // Drain both pipes while waiting, retaining only bounded version output.
 fn run(mut command: Command, timeout: Duration) -> Result<String> {
     use std::io::Read;
@@ -131,8 +153,8 @@ fn run(mut command: Command, timeout: Duration) -> Result<String> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    let mut child = command
-        .spawn()
+    let deadline = Instant::now() + timeout;
+    let mut child = retry_text_busy(|| command.spawn(), timeout)
         .context("Não foi possível executar o comando")?;
     let mut stdout = child.stdout.take().unwrap();
     let reader = std::thread::spawn(move || {
@@ -147,7 +169,6 @@ fn run(mut command: Command, timeout: Duration) -> Result<String> {
         }
         kept
     });
-    let deadline = Instant::now() + timeout;
     loop {
         if let Some(status) = child.try_wait()? {
             if !status.success() {
@@ -258,6 +279,26 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
+    #[test]
+    fn transient_exec_busy_is_retried_but_other_errors_are_not() {
+        let mut attempts = 0;
+        let result = retry_text_busy(|| {
+            attempts += 1;
+            if attempts < 3 { Err(std::io::Error::from_raw_os_error(libc::ETXTBSY)) } else { Ok(42) }
+        }, Duration::from_secs(1));
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(attempts, 3);
+        let mut attempts = 0;
+        let result: std::io::Result<()> = retry_text_busy(|| {
+            attempts += 1;
+            Err(std::io::Error::from_raw_os_error(libc::ENOENT))
+        }, Duration::from_secs(1));
+        assert!(result.is_err());
+        assert_eq!(attempts, 1);
+        let result: std::io::Result<()> = retry_text_busy(|| Err(std::io::Error::from_raw_os_error(libc::ETXTBSY)), Duration::ZERO);
+        assert!(result.is_err());
+    }
+
     #[test]
     fn detects_missing_failed_and_invalid_executables() {
         let f = Fixture::new();
