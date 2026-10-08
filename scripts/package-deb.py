@@ -223,12 +223,15 @@ def build(archive: Path, output_dir: Path) -> Path:
         if build_json.get("target") != TARGET:
             raise RuntimeError(f'Unexpected build target: {build_json.get("target")}')
         glibc = str(build_json["minimum_glibc"])
-        version = debian_version(build_json["version"])
+        release_version = str(build_json["version"])
+        version = debian_version(release_version)
         binary = package / "bin/dish"
         dependencies = linked_packages(binary)
         staging = root / "staging"
         stage_tree(package, staging, version, glibc, dependencies)
-        output = output_dir / f"dish_{version}_{DEB_ARCH}.deb"
+        # GitHub normalizes "~" in asset names, so the file keeps the release
+        # spelling; the package's own Version field carries Debian ordering.
+        output = output_dir / f"dish_{release_version}_{DEB_ARCH}.deb"
         subprocess.run(["dpkg-deb", "--build", "--root-owner-group", str(staging), str(output)],
                        check=True, cwd=ROOT)
     info = run("dpkg-deb", "--info", str(output))

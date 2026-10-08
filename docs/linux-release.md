@@ -32,7 +32,8 @@ sha256sum -c dish_VERSION_amd64.deb.sha256
 sudo apt install ./dish_VERSION_amd64.deb
 ```
 
-Replace `VERSION` with the actual package version (`0.1.0~alpha.1` ordering).
+Replace `VERSION` with the release version (`0.1.0-alpha.1` in the file name;
+the package's own `Version` uses Debian ordering, `0.1.0~alpha.1`).
 The package installs the executable to `/usr/bin/dish`, the menu entry and icon
 system-wide, and licenses under `/usr/share/doc/dish`. Remove it with
 `sudo apt remove dish`; preferences, Pi, projects and conversations are kept.

@@ -38,13 +38,14 @@ The version label must match the base version in Cargo.toml. The script:
 python3 scripts/package-deb.py --version 0.1.0-alpha.1
 ```
 
-`package-deb.py` converts that verified archive into `dish_0.1.0~alpha.1_amd64.deb`
+`package-deb.py` converts that verified archive into `dish_0.1.0-alpha.1_amd64.deb`
 (plus a SHA-256 sidecar). It reuses the archive's payload and license bundle
 unchanged, derives `Depends:` from the binary's real `NEEDED` entries and the
 runner's package database, and declares dlopen-only libraries (EGL, Vulkan,
-Wayland) as `Recommends:`. The Debian version maps prereleases to `~` ordering
-(`0.1.0-alpha.1` → `0.1.0~alpha.1`). `dpkg-deb` and `dpkg-query` are required;
-both are present on Debian/Ubuntu.
+Wayland) as `Recommends:`. The Debian `Version` maps prereleases to `~` ordering
+(`0.1.0-alpha.1` → `0.1.0~alpha.1`); the file name keeps the release spelling
+because GitHub normalizes `~` in asset names. `dpkg-deb` and `dpkg-query` are
+required; both are present on Debian/Ubuntu.
 
 `--skip-build` reuses the target-specific binary but still runs privacy and
 license checks. Use this only after a successful remapped build; it is not a

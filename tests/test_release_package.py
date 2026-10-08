@@ -210,7 +210,7 @@ class DebianPackageTests(unittest.TestCase):
                 tar.add(staged, arcname=name)
             output = root / "dist"
             built = deb.build(archive, output)
-            self.assertEqual(built.name, "dish_0.1.0~alpha.1_amd64.deb")
+            self.assertEqual(built.name, "dish_0.1.0-alpha.1_amd64.deb")
             self.assertEqual(built.parent, output)
             self.assertTrue(Path(str(built) + ".sha256").is_file())
             info = subprocess.check_output(["dpkg-deb", "--info", str(built)], text=True)
