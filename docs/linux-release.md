@@ -8,16 +8,36 @@ keep backups of projects and review agent actions. The app icon is provisional.
 - Linux x86_64 with a working X11 or Wayland desktop and GPU drivers.
 - The glibc version shown in `BUILD.json`, or newer. Official candidate builds
   are intended to use Ubuntu 24.04; this is not a universal static Linux binary.
-- Runtime libraries for fontconfig, FreeType, X11/XCB, Wayland and xkbcommon.
-  On Ubuntu, the usual packages are `libfontconfig1`, `libfreetype6`,
-  `libx11-xcb1`, `libxcb1`, `libwayland-client0`, `libwayland-cursor0`,
-  `libwayland-egl1`, `libxkbcommon0` and `libxkbcommon-x11-0`, plus the
-  desktop's graphics/Vulkan drivers. Additional system dependencies can vary
-  with the exact build; inspect missing libraries with `ldd bin/dish`.
-- Python 3 for installing the desktop shortcut; it is not required to run Dish.
+- Runtime libraries: X11/XCB and xkbcommon are required. Wayland, EGL and
+  Vulkan libraries are needed for those display stacks. The Debian package
+  declares them (`Depends`/`Recommends`); with the archive, install the
+  equivalents reported by `ldd bin/dish`, e.g. `libxcb1`, `libxkbcommon0`,
+  `libxkbcommon-x11-0`, plus `libwayland-client0`, `libwayland-egl1`,
+  `libegl1` and `libvulkan1` when using Wayland or Vulkan. System fonts are
+  read from the standard font directories; no separate fontconfig package is
+  required.
 - Pi installed separately, or configured through Dish's first-run setup.
+- Python 3 is needed only by the portable archive installer; the Debian package
+  and Dish itself do not require it.
 
-## Verify and install
+## Install
+
+### Debian/Ubuntu package (recommended)
+
+Download the `.deb` and its `.sha256` sidecar, verify, then let apt resolve the
+runtime libraries and register the menu entry:
+
+```sh
+sha256sum -c dish_VERSION_amd64.deb.sha256
+sudo apt install ./dish_VERSION_amd64.deb
+```
+
+Replace `VERSION` with the actual package version (`0.1.0~alpha.1` ordering).
+The package installs the executable to `/usr/bin/dish`, the menu entry and icon
+system-wide, and licenses under `/usr/share/doc/dish`. Remove it with
+`sudo apt remove dish`; preferences, Pi, projects and conversations are kept.
+
+### Portable archive (no sudo)
 
 Download the `.tar.gz` and corresponding `.sha256` file into the same directory.
 Verify before extracting:
@@ -39,18 +59,22 @@ the desktop entry and icon under `$XDG_DATA_HOME` (default `~/.local/share`), an
 third-party licenses under the same data directory. It replaces an existing Dish
 installation at those paths. It does not download Pi or run its installer.
 
-Open Dish through your application menu, or run `~/.local/bin/dish`. If Pi is
-missing, follow the first-run setup. Set `DISH_PI_BIN` to select a custom Pi
-executable when launching from a terminal. Projects and conversations can modify
-files; this is not a sandbox.
+### Running Dish
+
+Open Dish through your application menu, or run `dish` / `~/.local/bin/dish`. If
+Pi is missing, follow the first-run setup. Set `DISH_PI_BIN` to select a custom
+Pi executable when launching from a terminal. Projects and conversations can
+modify files; this is not a sandbox.
 
 You may also run `./bin/dish /path/to/project` directly without installing.
 GNOME users can set `DISH_BACKEND=x11` to use XWayland and native window borders.
 
 ## Uninstall
 
-Run `./uninstall.sh` from the extracted archive. It removes the installed Dish
-executable, shortcut, icon and license files. Preferences, Pi installation,
+With the Debian package: `sudo apt remove dish`.
+
+With the portable archive: run `./uninstall.sh` from the extracted directory. It
+removes the installed Dish executable, shortcut, icon and license files. Preferences, Pi installation,
 projects and conversation files are preserved.
 
 ## Licenses and source

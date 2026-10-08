@@ -34,6 +34,18 @@ The version label must match the base version in Cargo.toml. The script:
 6. Packages the executable, provisional icon, installer/uninstaller, documentation
    and build metadata, then writes a SHA-256 sidecar under ignored `dist/`.
 
+```sh
+python3 scripts/package-deb.py --version 0.1.0-alpha.1
+```
+
+`package-deb.py` converts that verified archive into `dish_0.1.0~alpha.1_amd64.deb`
+(plus a SHA-256 sidecar). It reuses the archive's payload and license bundle
+unchanged, derives `Depends:` from the binary's real `NEEDED` entries and the
+runner's package database, and declares dlopen-only libraries (EGL, Vulkan,
+Wayland) as `Recommends:`. The Debian version maps prereleases to `~` ordering
+(`0.1.0-alpha.1` → `0.1.0~alpha.1`). `dpkg-deb` and `dpkg-query` are required;
+both are present on Debian/Ubuntu.
+
 `--skip-build` reuses the target-specific binary but still runs privacy and
 license checks. Use this only after a successful remapped build; it is not a
 way to bypass release checks. The archive is a candidate, not an automatic legal
@@ -60,6 +72,9 @@ xvfb-run -a -s '-screen 0 1280x960x24' python3 tests/startup_smoke.py
 xvfb-run -a -s '-screen 0 1280x960x24' python3 tests/settings_smoke.py
 ```
 
+The same variable can point at the system-wide executable from an installed
+`.deb` (`DISH_TEST_BIN=/usr/bin/dish`) to smoke-test the installed package.
+
 These use a synthetic Pi and isolated configuration. Install the Xvfb, XTest,
 xclip, Tesseract and ImageMagick dependencies described in the README. Headless
 hosts also need Mesa/EGL software graphics (`libegl1`, `libgl1-mesa-dri`,
@@ -69,8 +84,9 @@ hosts also need Mesa/EGL software graphics (`libegl1`, `libgl1-mesa-dri`,
 ## GitHub CI
 
 `.github/workflows/ci.yml` builds on Ubuntu 24.04, runs strict Clippy and unit
-checks, produces a candidate, tests the actual archive and extracted executable,
-and saves the candidate as a short-lived Actions artifact. It has read-only
+checks, produces a candidate plus a Debian package, installs the package with
+`apt` and smoke-tests the installed `/usr/bin/dish`, then saves both as
+short-lived Actions artifacts. It has read-only
 repository permissions and no release-publication step. The configured alpha
 version label must be updated when Cargo.toml's base version changes.
 

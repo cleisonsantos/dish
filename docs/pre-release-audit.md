@@ -161,3 +161,14 @@ binary). It was then published as the prerelease
 targeting that commit, and the published assets were downloaded again and
 verified. The icon remains provisional and is documented as such in the release
 notes and `BUILD.json`.
+
+## Debian package follow-up
+
+`scripts/package-deb.py` converts the exact verified candidate archive into a
+Debian package without changing the payload or license bundle. `Depends:` is
+derived from the binary's real dynamic linkage (libc6 with the minimum glibc,
+libgcc-s1, libxcb1, libxkbcommon0, libxkbcommon-x11-0); dlopen-only libraries
+(EGL, Vulkan, Wayland) are `Recommends:`. The Debian version uses `~` ordering
+(`0.1.0~alpha.1`). CI installs the built package with `apt` and smoke-tests the
+installed `/usr/bin/dish` before removing it, and the package is attached to the
+existing `v0.1.0-alpha.1` prerelease after download and checksum verification.

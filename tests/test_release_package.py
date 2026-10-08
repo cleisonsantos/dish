@@ -14,6 +14,9 @@ ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("package_linux", ROOT / "scripts/package-linux.py")
 package = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(package)
+deb_spec = importlib.util.spec_from_file_location("package_deb", ROOT / "scripts/package-deb.py")
+deb = importlib.util.module_from_spec(deb_spec)
+deb_spec.loader.exec_module(deb)
 
 
 class ReleaseToolTests(unittest.TestCase):
@@ -162,6 +165,81 @@ class CandidateArchiveTests(unittest.TestCase):
             self.assertTrue((data / "dish/licenses/sources" / mpl["source_archive"]).is_file())
             subprocess.run(["bash", str(app / "uninstall.sh")], env=env, check=True, capture_output=True)
             self.assertFalse((home / ".local/bin/dish").exists())
+
+
+@unittest.skipUnless(shutil.which("dpkg-deb") and shutil.which("dpkg-query") and shutil.which("readelf"),
+                     "Debian packaging tools (dpkg-deb, dpkg-query, readelf)")
+class DebianPackageTests(unittest.TestCase):
+    def test_debian_version_mapping_sorts_prereleases_below_releases(self):
+        self.assertEqual(deb.debian_version("0.1.0-alpha.1"), "0.1.0~alpha.1")
+        self.assertEqual(deb.debian_version("1.2.3-beta-2"), "1.2.3~beta.2")
+        self.assertEqual(deb.debian_version("1.2.3"), "1.2.3")
+        for invalid in ["", "1.2", "v1.2.3", "1.2.3-", "1.2.3-.."]:
+            with self.assertRaises(ValueError):
+                deb.debian_version(invalid)
+
+    def test_control_pins_glibc_and_lists_runtime_recommendations(self):
+        control = deb.control_text("0.1.0~alpha.1", "2.39", ["libc6", "libxcb1"], 100)
+        self.assertIn("Version: 0.1.0~alpha.1", control)
+        self.assertIn("Depends: libc6 (>= 2.39), libxcb1", control)
+        self.assertIn("Architecture: amd64", control)
+        self.assertIn("Recommends: libegl1, libvulkan1, libwayland-client0, libwayland-egl1", control)
+        # Missing libc6 must be added rather than silently dropped.
+        self.assertIn("libc6 (>= 2.39)", deb.control_text("1.0.0", "2.39", ["libgcc-s1"], 0))
+
+    def test_builds_a_package_from_a_candidate_archive(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            name = "dish-0.1.0-alpha.1-linux-x86_64"
+            staged = root / name
+            (staged / "bin").mkdir(parents=True)
+            shutil.copyfile("/bin/true", staged / "bin/dish")
+            (staged / "share/icons").mkdir(parents=True)
+            (staged / "share/icons/dish.png").write_bytes(b"icon")
+            (staged / "share/licenses").mkdir(parents=True)
+            (staged / "share/licenses/LICENSE").write_text("license")
+            (staged / "share/licenses/THIRD_PARTY_NOTICES.md").write_text("notices")
+            (staged / "share/licenses/dependencies").mkdir()
+            (staged / "share/licenses/dependencies/entry.txt").write_text("dependency")
+            (staged / "README.md").write_text("readme")
+            (staged / "BUILD.json").write_text(json.dumps({
+                "version": "0.1.0-alpha.1", "target": deb.TARGET, "minimum_glibc": "2.39",
+                "dependency_packages": 1, "icon_status": "provisional"}))
+            archive = root / f"{name}.tar.gz"
+            with tarfile.open(archive, "w:gz") as tar:
+                tar.add(staged, arcname=name)
+            output = root / "dist"
+            built = deb.build(archive, output)
+            self.assertEqual(built.name, "dish_0.1.0~alpha.1_amd64.deb")
+            self.assertEqual(built.parent, output)
+            self.assertTrue(Path(str(built) + ".sha256").is_file())
+            info = subprocess.check_output(["dpkg-deb", "--info", str(built)], text=True)
+            self.assertIn("Version: 0.1.0~alpha.1", info)
+            self.assertIn("Package: dish", info)
+            listing = subprocess.check_output(["dpkg-deb", "--contents", str(built)], text=True)
+            for member in ["usr/bin/dish", "usr/share/applications/dish.desktop",
+                           "usr/share/icons/hicolor/512x512/apps/dish.png", "usr/share/doc/dish/copyright",
+                           "usr/share/doc/dish/changelog", "usr/share/doc/dish/licenses/dependencies/entry.txt"]:
+                self.assertIn(member, listing)
+            # A sidecar checksum that no longer matches must stop the build.
+            Path(str(archive) + ".sha256").write_text("0" * 64 + f"  {archive.name}\n")
+            with self.assertRaisesRegex(RuntimeError, "Checksum mismatch"):
+                deb.build(archive, output)
+
+    def test_rejects_a_candidate_for_another_target(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            name = "dish-0.1.0-linux-aarch64"
+            staged = root / name
+            (staged / "bin").mkdir(parents=True)
+            (staged / "bin/dish").write_bytes(b"x")
+            (staged / "BUILD.json").write_text(json.dumps({
+                "version": "0.1.0", "target": "aarch64-unknown-linux-gnu", "minimum_glibc": "2.39"}))
+            archive = root / f"{name}.tar.gz"
+            with tarfile.open(archive, "w:gz") as tar:
+                tar.add(staged, arcname=name)
+            with self.assertRaisesRegex(RuntimeError, "Unexpected build target"):
+                deb.build(archive, root / "dist")
 
 
 if __name__ == "__main__":

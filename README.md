@@ -16,7 +16,9 @@ dish [pi-flags] [path] [prompt...]
 
 Dish is pre-release software. The initial release target is **Linux x86_64**;
 Windows and macOS are not currently supported or validated. Sessions and tools
-can modify project files, so review agent actions and keep backups.
+can modify project files, so review agent actions and keep backups. Prebuilt
+Linux previews are published as a Debian/Ubuntu package (`.deb`) and a portable
+`.tar.gz` on the releases page.
 
 Linux candidate packaging and validation are documented in
 [docs/releasing.md](docs/releasing.md). The GitHub workflow saves candidate
