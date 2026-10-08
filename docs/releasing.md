@@ -61,7 +61,10 @@ xvfb-run -a -s '-screen 0 1280x960x24' python3 tests/settings_smoke.py
 ```
 
 These use a synthetic Pi and isolated configuration. Install the Xvfb, XTest,
-xclip, Tesseract and ImageMagick dependencies described in the README.
+xclip, Tesseract and ImageMagick dependencies described in the README. Headless
+hosts also need Mesa/EGL software graphics (`libegl1`, `libgl1-mesa-dri`,
+`mesa-vulkan-drivers`); CI sets `LIBGL_ALWAYS_SOFTWARE=1` and creates a private
+`XDG_RUNTIME_DIR` for its virtual displays.
 
 ## GitHub CI
 
