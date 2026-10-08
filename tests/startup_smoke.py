@@ -55,6 +55,29 @@ printf '#!/bin/sh\\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@
             stdout=log, stderr=log)
         return process, log
 
+    def click_consent(label):
+        # Fonts and line wrapping vary between local desktops and clean CI.
+        # Find the consent button's text instead of assuming its vertical position.
+        def locate():
+            subprocess.run(["import", "-window", str(window), screenshot], check=True)
+            rows = subprocess.check_output(
+                ["tesseract", screenshot, "stdout", "--psm", "6", "tsv"],
+                stderr=subprocess.DEVNULL).decode().splitlines()[1:]
+            lines = {}
+            for row in rows:
+                fields = row.split("\t")
+                if len(fields) == 12 and fields[11].strip():
+                    lines.setdefault(tuple(fields[1:5]), []).append(fields)
+            for words in lines.values():
+                if label.lower() in " ".join(word[11] for word in words).lower():
+                    left = min(int(word[6]) for word in words)
+                    right = max(int(word[6]) + int(word[8]) for word in words)
+                    first = words[0]
+                    click(window, (left + right) // 2, int(first[7]) + int(first[9]) // 2)
+                    return True
+            return False
+        wait_for(locate, f"Consent button not found: {label}")
+
     process, log = launch()
     try:
         wait_for(lambda: find_window(), "Setup window not created")
@@ -70,7 +93,7 @@ printf '#!/bin/sh\\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@
         subprocess.run(["import", "-window", str(window), screenshot], check=True)
         print(f"Setup screenshot: {screenshot}", flush=True)
         # Official consent launches only a fake terminal, never a remote script.
-        click(window, 620, 320)
+        click_consent("Aceitar e abrir instalador oficial")
         wait_for(lambda: terminal_log.exists(), "Official consent did not open terminal")
         arguments = terminal_log.read_text().splitlines()
         assert arguments[:3] == ["-e", "/bin/sh", "-c"]
@@ -85,9 +108,8 @@ printf '#!/bin/sh\\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@
         x11.XSetInputFocus(display, window, 1, 0)
         x11.XFlush(display)
         time.sleep(2)
-        # Alternative npm consent button in the centered setup screen.
-        subprocess.run(["import", "-window", str(window), screenshot], check=True)
-        click(window, 620, 428)
+        # Locate the alternative npm consent button after the fresh launch.
+        click_consent("aceitar e instalar via npm")
         wait_for(lambda: install_log.exists(), "Consent did not start fake installation")
         wait_for(lambda: any(e.get("command", {}).get("type") == "get_messages" for e in events()),
                  "Installed Pi did not initialize")
