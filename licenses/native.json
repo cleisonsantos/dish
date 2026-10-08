@@ -1,0 +1,42 @@
+[
+  {
+    "name": "freetype-sys",
+    "version": "0.20.1",
+    "selected_native_license": "FTL",
+    "include_source": true,
+    "files": [
+      {
+        "path": "freetype2/docs/FTL.TXT",
+        "sha256": "08c135755dd589039470f1fdbb400daaabaaa50d0b366d19cebff4d22986baa1"
+      },
+      {
+        "path": "freetype2/src/bdf/README",
+        "sha256": "7984455e7e5a9faba3797c8bf095fbe10cc846316b7320aff8c58402e22b82fe"
+      },
+      {
+        "path": "freetype2/src/pcf/README",
+        "sha256": "18d9782898d9eac04476e2f744678137b2a889689ed3e923e052fc396a86f86b"
+      },
+      {
+        "path": "freetype2/src/gzip/zlib.h",
+        "sha256": "b3bff4c483860d26cec9587c3b287b79b0d40b5f5fe6bb6000deb663b03955bb"
+      },
+      {
+        "path": "freetype2/src/base/fthash.c",
+        "sha256": "73fca7e875ea7bfc7496dc9eb84abe9f16844ebd7589f0e4eafd9b1d1df137e3"
+      },
+      {
+        "path": "freetype2/include/freetype/internal/fthash.h",
+        "sha256": "351299f86d56190d44c829deb70256c3343b9da416f0451c6aabd4586b174dbe"
+      },
+      {
+        "path": "freetype2/src/autofit/ft-hb.c",
+        "sha256": "65c23597427a2954bed2145191d2f129fe26b6f290d371b900628ac0c6b5af37"
+      },
+      {
+        "path": "freetype2/src/autofit/ft-hb.h",
+        "sha256": "6f21bd19ea7d53accc407a3dbd18648de36940cfabf235e4970f009f7a4def04"
+      }
+    ]
+  }
+]

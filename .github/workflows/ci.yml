@@ -1,0 +1,52 @@
+name: Linux CI and candidate package
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install Linux build and UI test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libxkbcommon-x11-0 libx11-xcb-dev libvulkan-dev libfontconfig-dev libfreetype-dev libssl-dev binutils python3 xvfb xauth libxtst6 xclip tesseract-ocr imagemagick fonts-dejavu-core
+      - name: Install Rust
+        run: rustup update stable --no-self-update && rustup default stable && rustup component add clippy rust-docs
+      - name: Check
+        run: cargo check --locked
+      - name: Unit tests
+        run: cargo test --locked
+      - name: Clippy (no warnings)
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Release tooling tests
+        run: python3 -m unittest discover -s tests -p 'test_release_package.py' -v
+      - name: Build and package candidate (with path remapping and license checks)
+        run: python3 scripts/package-linux.py --version 0.1.0-alpha.1
+      - name: Test the real archive, installation and packaged executable
+        run: |
+          export DISH_TEST_ARCHIVE="$(realpath dist/dish-*-linux-x86_64.tar.gz)"
+          python3 -m unittest discover -s tests -p 'test_release_package.py' -v
+          mkdir -p /tmp/dish-candidate
+          tar -xzf dist/dish-*-linux-x86_64.tar.gz -C /tmp/dish-candidate
+          export DISH_TEST_BIN="$(find /tmp/dish-candidate -path '*/bin/dish' -type f)"
+          test -n "$DISH_TEST_BIN"
+          xvfb-run -a -s '-screen 0 1280x960x24' python3 tests/desktop_smoke.py
+          xvfb-run -a -s '-screen 0 1280x960x24' python3 tests/startup_smoke.py
+          xvfb-run -a -s '-screen 0 1280x960x24' python3 tests/settings_smoke.py
+      - name: Save candidate package (not a GitHub Release)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dish-linux-x86_64-candidate
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 14

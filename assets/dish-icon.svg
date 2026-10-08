@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none" role="img" aria-labelledby="title description">
+  <title id="title">Dish</title>
+  <desc id="description">Um prato pequeno de porcelana marfim em perspectiva. Sem texto ou símbolos.</desc>
+  <defs>
+    <radialGradient id="shadow">
+      <stop stop-color="#111C29" stop-opacity=".28"/>
+      <stop offset=".65" stop-color="#111C29" stop-opacity=".12"/>
+      <stop offset="1" stop-color="#111C29" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="edge" x1="256" y1="154" x2="256" y2="390" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#DCE5E8"/>
+      <stop offset=".65" stop-color="#BCC7C7"/>
+      <stop offset="1" stop-color="#96A8AD"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="174" y1="118" x2="334" y2="365" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset=".48" stop-color="#FBF9F2"/>
+      <stop offset="1" stop-color="#E4E8E2"/>
+    </linearGradient>
+    <linearGradient id="well-edge" x1="256" y1="159" x2="256" y2="337" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#B7C6C7"/>
+      <stop offset=".45" stop-color="#E0E7E1"/>
+      <stop offset="1" stop-color="#FFFFFF"/>
+    </linearGradient>
+    <radialGradient id="well" cx=".48" cy=".72" r=".85">
+      <stop stop-color="#FFFEF9"/>
+      <stop offset=".62" stop-color="#F4F5ED"/>
+      <stop offset="1" stop-color="#D5E0DD"/>
+    </radialGradient>
+    <linearGradient id="glint" x1="97" y1="154" x2="384" y2="194" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity="0"/>
+      <stop offset=".35" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="84" y1="138" x2="415" y2="352" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#A78242"/>
+      <stop offset=".28" stop-color="#E7CE91"/>
+      <stop offset=".52" stop-color="#B8934E"/>
+      <stop offset=".78" stop-color="#F3DFA7"/>
+      <stop offset="1" stop-color="#AD8948"/>
+    </linearGradient>
+  </defs>
+  <ellipse cx="256" cy="368" rx="211" ry="35" fill="url(#shadow)"/>
+  <path d="M48 248V256C48 326.692 141.125 384 256 384C370.875 384 464 326.692 464 256V248H48Z" fill="url(#edge)"/>
+  <ellipse cx="256" cy="248" rx="208" ry="128" fill="url(#rim)"/>
+  <ellipse cx="256" cy="248" rx="204" ry="124" stroke="#FFFFFF" stroke-opacity=".65" stroke-width="2"/>
+  <ellipse cx="256" cy="248" rx="157" ry="90" fill="url(#well-edge)"/>
+  <ellipse cx="256" cy="249" rx="151" ry="84" fill="url(#well)"/>
+  <path d="M109 285C139 317 195 336 256 336C317 336 373 317 403 285" stroke="#FFFFFF" stroke-opacity=".8" stroke-width="2" stroke-linecap="round"/>
+  <path d="M87 182C126 146 187 127 256 127C312 127 363 140 401 164" stroke="url(#glint)" stroke-width="4" stroke-linecap="round"/>
+</svg>

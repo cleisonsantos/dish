@@ -1,0 +1,26 @@
+[package]
+name = "dish"
+version = "0.1.0"
+edition = "2021"
+description = "Dish — a fast GPUI desktop interface for the Pi coding agent"
+license = "Apache-2.0"
+
+[dependencies]
+gpui-ce = "0.2.2"
+gpui_platform = { package = "gpui_ce_platform", version = "0.1.0", features = ["wayland", "x11", "font-kit"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-channel = "2"
+anyhow = "1"
+base64 = "0.22"
+url = "2"
+unicode-segmentation = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
