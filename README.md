@@ -78,8 +78,9 @@ sudo apt install libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb
 
 Wayland and X11 are both enabled in `Cargo.toml`; GPUI picks whichever session is
 available. GNOME/Wayland does not provide server-side decorations, so Dish draws
-the frame itself there: drag the conversation title to move the window and the
-outer edges to resize it. X11, macOS and Windows keep their native window frame.
+the frame itself there: drag the conversation title to move the window, use the
+minimize and close controls in the header, and drag the outer edges to resize.
+X11, macOS and Windows keep their native window frame.
 Set `DISH_BACKEND=x11` to run through XWayland instead — the system window manager
 then draws the decorations and handles resizing like it does for any other app
 (ignored on macOS and Windows).

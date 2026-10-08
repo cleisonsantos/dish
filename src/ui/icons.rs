@@ -26,6 +26,7 @@ pub enum Icon {
     File,
     Terminal,
     Dots,
+    Minimize,
     Close,
 }
 
@@ -185,6 +186,10 @@ fn build(icon: Icon, stroke: f32, scale: f32, origin: Point<Pixels>) -> Option<P
             circle(&mut b, 4., 8., 1.1, true);
             circle(&mut b, 8., 8., 1.1, true);
             circle(&mut b, 12., 8., 1.1, true);
+        }
+        Icon::Minimize => {
+            b.move_to(to(3., 8.));
+            b.line_to(to(13., 8.));
         }
         Icon::Close => {
             b.move_to(to(4.2, 4.2));

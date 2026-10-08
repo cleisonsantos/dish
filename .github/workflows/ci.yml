@@ -45,9 +45,9 @@ jobs:
       - name: Release tooling tests
         run: python3 -m unittest discover -s tests -p 'test_release_package.py' -v
       - name: Build and package candidate (with path remapping and license checks)
-        run: python3 scripts/package-linux.py --version 0.1.0-alpha.1
+        run: python3 scripts/package-linux.py --version 0.1.0-alpha.2
       - name: Build Debian package from the verified candidate
-        run: python3 scripts/package-deb.py --version 0.1.0-alpha.1
+        run: python3 scripts/package-deb.py --version 0.1.0-alpha.2
       - name: Test the real archive, installation and packaged executable
         run: |
           export DISH_TEST_ARCHIVE="$(realpath dist/dish-*-linux-x86_64.tar.gz)"

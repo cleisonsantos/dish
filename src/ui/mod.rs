@@ -316,8 +316,48 @@ fn conversation_header(state: &AppState, cx: &Context<AppState>, draggable: bool
                                 .text_color(theme::dim())
                                 .child("Detalhes"),
                         ),
-                ),
+                )
+                // Em compositores que deixam a moldura para o aplicativo
+                // (GNOME/Wayland) não existe botão do sistema: estes são os
+                // controles da janela.
+                .when(draggable, |el| el.child(window_controls())),
         )
+}
+
+/// Minimizar e fechar, desenhados pelo próprio app quando o compositor não
+/// fornece a moldura. O fechamento passa pela mesma ação do `ctrl-q`, para
+/// respeitar a confirmação de conversa em execução.
+fn window_controls() -> Div {
+    let button = |id: &'static str, glyph: Icon| {
+        div()
+            .id(id)
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .size(px(24.))
+            .rounded(theme::r_control())
+            .cursor_pointer()
+            .hover(|style| style.bg(theme::hover()))
+            .child(icon(glyph, 13., theme::dim()))
+    };
+
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(theme::S1))
+        .flex_none()
+        .child(
+            button("window-minimize", Icon::Minimize).on_click(
+                |_: &ClickEvent, window: &mut Window, _cx: &mut App| window.minimize_window(),
+            ),
+        )
+        .child(button("window-close", Icon::Close).on_click(
+            |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                window.dispatch_action(Box::new(CloseWindow), cx)
+            },
+        ))
 }
 
 /// Estado em um único ponto: ícone + texto, nunca só cor.
