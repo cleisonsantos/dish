@@ -124,15 +124,15 @@ license collection still requires a final review before public distribution.
 ## Publication gates
 
 - [x] Owner confirms the commit email identity; repository-local noreply configured.
-- [ ] Review the final staged file list and rerun a redacted secret scan.
-- [ ] After committing, scan the actual history before the first push.
+- [x] Review the final staged file list and rerun a redacted secret scan.
+- [x] After committing, scan the actual history before the first push.
 - [x] Generate the dependency/native/toolchain license bundle for the local candidate.
-- [ ] Finish the distribution review for the exact CI-built archive.
-- [ ] Build the Linux artifact in CI with appropriate path remapping.
-- [ ] Inspect and scan the final archive, including installer and metadata.
+- [x] Finish the distribution review for the exact CI-built archive.
+- [x] Build the Linux artifact in CI with appropriate path remapping.
+- [x] Inspect and scan the final archive, including installer and metadata.
 
-No push, repository creation or release publication was performed during the
-initial audit.
+No push, repository creation or release publication had been performed when
+this audit was first written.
 
 ## GitHub publication follow-up
 
@@ -141,9 +141,23 @@ https://github.com/cleisonsantos/dish and the source was pushed to `main`.
 Gitleaks found no leaks in the initial published history. Build outputs under
 `target/` and local candidate archives under `dist/` remain Git-ignored.
 
-The first clean CI exposed a missing `libxkbcommon-x11-dev` build dependency;
-the workflow and README were corrected. The next run exposed a transient Unix
-ETXTBSY executable-start race. A bounded, error-specific retry and regression
-test were added; all 35 Rust tests pass locally. Rust build caching was also
-added. The next GitHub run must still validate the complete package pipeline.
-No GitHub Release or version tag has been published.
+Successive CI runs exposed and fixed a missing `libxkbcommon-x11-dev` build
+dependency, a transient Unix ETXTBSY executable-start race (bounded,
+error-specific retry plus regression test), missing Mesa software graphics in
+the headless UI tests, and font-dependent coordinates in the setup smoke test.
+Rust build caching was added.
+
+## First published release
+
+The complete CI pipeline passed on commit `ac5673e` (all 35 Rust tests, strict
+Clippy, release tooling and archive tests, and desktop/setup/settings UI tests
+against the extracted CI executable). The CI archive requires glibc 2.39 and
+contains 510 dependency license entries.
+
+The exact CI artifact was downloaded, its SHA-256 sidecar verified, and it was
+rescanned with Gitleaks (no leaks; zero embedded personal home paths in the
+binary). It was then published as the prerelease
+[`v0.1.0-alpha.1`](https://github.com/cleisonsantos/dish/releases/tag/v0.1.0-alpha.1)
+targeting that commit, and the published assets were downloaded again and
+verified. The icon remains provisional and is documented as such in the release
+notes and `BUILD.json`.
