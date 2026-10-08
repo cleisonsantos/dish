@@ -70,7 +70,7 @@ service and does not guarantee cleanup after an uncatchable crash.
 GPUI needs a windowing backend plus a text stack:
 
 ```bash
-sudo apt install libwayland-dev libxkbcommon-dev libx11-xcb-dev libvulkan-dev \
+sudo apt install libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev libvulkan-dev \
                  libfontconfig-dev libfreetype-dev libssl-dev
 ```
 

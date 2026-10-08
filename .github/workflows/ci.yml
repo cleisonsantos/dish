@@ -17,7 +17,7 @@ jobs:
       - name: Install Linux build and UI test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwayland-dev libxkbcommon-dev libxkbcommon-x11-0 libx11-xcb-dev libvulkan-dev libfontconfig-dev libfreetype-dev libssl-dev binutils python3 xvfb xauth libxtst6 xclip tesseract-ocr imagemagick fonts-dejavu-core
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev libvulkan-dev libfontconfig-dev libfreetype-dev libssl-dev binutils python3 xvfb xauth libxtst6 xclip tesseract-ocr imagemagick fonts-dejavu-core
       - name: Install Rust
         run: rustup update stable --no-self-update && rustup default stable && rustup component add clippy rust-docs
       - name: Check
