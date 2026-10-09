@@ -24,7 +24,7 @@ pub mod window_frame;
 
 actions!(
     dish_ui,
-    [Dismiss, ModalSubmit, ToggleSidebar, NewSession, MenuUp, MenuDown, MenuAccept, CycleEffort, ToggleHelp, OpenModels, CloseWindow]
+    [Dismiss, ModalSubmit, ToggleSidebar, NewSession, MenuUp, MenuDown, MenuAccept, CycleEffort, ToggleHelp, OpenModels, CloseWindow, ModelUp, ModelDown, ModelAccept]
 );
 
 impl Render for AppState {
@@ -134,6 +134,12 @@ impl Render for AppState {
             )
             .on_action(cx.listener(|state, _: &MenuAccept, _window, cx| {
                 state.menu_accept(false, cx)
+            }))
+            // O seletor de modelos responde às mesmas teclas, com estado próprio.
+            .on_action(cx.listener(|state, _: &ModelUp, _, cx| state.model_move(-1, cx)))
+            .on_action(cx.listener(|state, _: &ModelDown, _, cx| state.model_move(1, cx)))
+            .on_action(cx.listener(|state, _: &ModelAccept, window, cx| {
+                state.model_accept(window, cx)
             }))
             .on_action(cx.listener(|state, _: &crate::editor::Paste, window, cx| {
                 state.paste(window, cx)

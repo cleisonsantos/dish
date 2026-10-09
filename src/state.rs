@@ -273,6 +273,10 @@ pub struct AppState {
     pub modal_editor: Entity<Editor>,
     pub model_search: Entity<Editor>,
     pub model_search_focus_pending: bool,
+    /// Linha destacada no seletor de modelos e a busca da qual ela veio.
+    model_index: usize,
+    model_query: String,
+    pub model_scroll: ScrollHandle,
     /// Busca dentro da janela de atalhos.
     pub help_search: Entity<Editor>,
     /// Foco pendente para a busca de atalhos, consumido no próximo frame.
@@ -380,6 +384,9 @@ impl AppState {
             modal_editor,
             model_search,
             model_search_focus_pending: false,
+            model_index: 0,
+            model_query: String::new(),
+            model_scroll: ScrollHandle::new(),
             help_search,
             help_focus_pending: false,
             composer_scroll: ScrollHandle::new(),
@@ -2129,6 +2136,8 @@ impl AppState {
     pub fn open_model_menu(&mut self, cx: &mut Context<Self>) {
         self.model_search.update(cx, |editor, cx| editor.clear(cx));
         self.model_menu = true;
+        self.model_index = 0;
+        self.model_query.clear();
         self.model_search_focus_pending = true;
         cx.notify();
     }
@@ -2144,6 +2153,72 @@ impl AppState {
         // A different model brings a different reasoning ladder.
         self.thinking_levels.clear();
         self.client.call("get_available_thinking_levels", Value::Null);
+    }
+
+    /// Modelos visíveis para a busca atual, na ordem exibida (o atual primeiro).
+    pub fn filtered_models(&self, query: &str) -> Vec<usize> {
+        let mut indices: Vec<usize> = self
+            .models
+            .iter()
+            .enumerate()
+            .filter(|(_, model)| model_matches(model, query))
+            .map(|(index, _)| index)
+            .collect();
+        if let Some(current) = &self.model {
+            indices.sort_by_key(|index| {
+                let model = &self.models[*index];
+                !(model.id == current.id && model.provider == current.provider)
+            });
+        }
+        indices
+    }
+
+    /// A posição destacada no seletor para a busca informada.
+    pub fn model_highlight(&self, query: &str) -> Option<usize> {
+        let count = self.filtered_models(query).len();
+        if count == 0 {
+            return None;
+        }
+        if self.model_query == query {
+            Some(self.model_index.min(count - 1))
+        } else {
+            Some(0)
+        }
+    }
+
+    /// A lista filtrada e o destaque atual; reinicia o destaque quando a busca muda.
+    fn model_state(&mut self, cx: &App) -> (Vec<usize>, usize) {
+        let query = self.model_search.read(cx).text(cx);
+        if query != self.model_query {
+            self.model_query = query.clone();
+            self.model_index = 0;
+        }
+        let order = self.filtered_models(&query);
+        let index = self.model_index.min(order.len().saturating_sub(1));
+        (order, index)
+    }
+
+    pub fn model_move(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let (order, index) = self.model_state(cx);
+        if order.is_empty() {
+            return;
+        }
+        let next = (index as isize + delta).rem_euclid(order.len() as isize) as usize;
+        self.model_index = next;
+        self.model_scroll.scroll_to_item(next);
+        cx.notify();
+    }
+
+    pub fn model_accept(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (order, index) = self.model_state(cx);
+        let Some(model_index) = order.get(index).copied() else {
+            return;
+        };
+        let model = self.models[model_index].clone();
+        self.set_model(&model);
+        let focus = self.editor.read(cx).focus_handle.clone();
+        focus.focus(window, cx);
+        cx.notify();
     }
 
     pub fn cycle_effort(&mut self, cx: &mut Context<Self>) {
@@ -2717,6 +2792,14 @@ fn tool_result_text(result: &Value) -> Option<String> {
         Some(other) => Some(other.to_string()),
         None => None,
     }
+}
+
+/// A busca do seletor de modelos: id e provedor, sem diferenciar maiúsculas.
+pub fn model_matches(model: &ModelInfo, query: &str) -> bool {
+    let searchable = format!("{} {}", model.id, model.provider).to_lowercase();
+    query
+        .split_whitespace()
+        .all(|term| searchable.contains(&term.to_lowercase()))
 }
 
 /// Format a token count for the status bar.

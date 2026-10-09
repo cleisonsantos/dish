@@ -220,6 +220,10 @@ fn main() {
             // the menu handler forwards to the caret when it is closed.
             KeyBinding::new("up", MenuUp, Some("DishInput")),
             KeyBinding::new("down", MenuDown, Some("DishInput")),
+            // No seletor de modelos as setas percorrem a lista e Enter escolhe.
+            KeyBinding::new("up", ui::ModelUp, Some("DishModelSearch")),
+            KeyBinding::new("down", ui::ModelDown, Some("DishModelSearch")),
+            KeyBinding::new("enter", ui::ModelAccept, Some("DishModelSearch")),
             KeyBinding::new("up", Up, Some("DishModal")),
             KeyBinding::new("down", Down, Some("DishModal")),
             KeyBinding::new("enter", SendPrompt, Some("DishInput")),

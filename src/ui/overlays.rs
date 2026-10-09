@@ -60,26 +60,20 @@ pub fn model_picker(state: &AppState, cx: &Context<AppState>) -> Stateful<Div> {
     let weak = cx.entity().downgrade();
     let current = state.model.clone();
 
-    // Float the model in use to the top: with 70-odd models the list is long,
-    // and the one you are on is the one you are looking for.
+    // O modelo em uso vem primeiro; o teclado percorre a mesma ordem.
     let query = state.model_search.read(cx).text(cx);
-    let mut ordered: Vec<&crate::state::ModelInfo> = state.models.iter()
-        .filter(|model| model_matches(model, &query))
-        .collect();
-    let count = ordered.len();
-    if let Some(current) = &state.model {
-        ordered.sort_by_key(|model| {
-            !(model.id == current.id && model.provider == current.provider)
-        });
-    }
+    let order = state.filtered_models(&query);
+    let count = order.len();
+    let highlighted = state.model_highlight(&query);
 
-    let rows = ordered.iter().enumerate().map(|(index, model)| {
+    let rows = order.iter().enumerate().map(|(index, model_index)| {
+        let model = &state.models[*model_index];
         let selected = current
             .as_ref()
             .map(|current| current.id == model.id && current.provider == model.provider)
             .unwrap_or(false);
         let weak = weak.clone();
-        let click = (**model).clone();
+        let click = model.clone();
         div()
             .id(SharedString::from(format!("model-option-{index}")))
             .flex()
@@ -90,7 +84,10 @@ pub fn model_picker(state: &AppState, cx: &Context<AppState>) -> Stateful<Div> {
             .py(px(6.))
             .rounded(px(3.))
             .cursor_pointer()
-            .when(!selected, |el| el.hover(|style| style.bg(theme::hover())))
+            .when(highlighted == Some(index), |el| el.bg(theme::hover()))
+            .when(highlighted != Some(index), |el| {
+                el.hover(|style| style.bg(theme::hover()))
+            })
             .on_click(move |_event: &ClickEvent, window: &mut Window, cx: &mut App| {
                 weak.update(cx, |state, cx| {
                     state.set_model(&click);
@@ -228,6 +225,7 @@ pub fn model_picker(state: &AppState, cx: &Context<AppState>) -> Stateful<Div> {
                 .flex_col()
                 .max_h(px(300.))
                 .overflow_y_scroll()
+                .track_scroll(&state.model_scroll)
                 .p(px(6.))
                 .when(count == 0, |el| {
                     el.child(div().p(px(12.)).child(micro("No models found")))
@@ -236,11 +234,6 @@ pub fn model_picker(state: &AppState, cx: &Context<AppState>) -> Stateful<Div> {
         );
 
     panel
-}
-
-fn model_matches(model: &crate::state::ModelInfo, query: &str) -> bool {
-    let searchable = format!("{} {}", model.id, model.provider).to_lowercase();
-    query.split_whitespace().all(|term| searchable.contains(&term.to_lowercase()))
 }
 
 pub fn modal(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) -> Vec<AnyElement> {
@@ -554,7 +547,7 @@ pub fn keyboard_shortcuts() -> Vec<(&'static str, &'static str)> {
 
 #[cfg(test)]
 mod model_search_tests {
-    use super::model_matches;
+    use crate::state::model_matches;
 
     #[test]
     fn matches_model_and_provider_case_insensitively() {
