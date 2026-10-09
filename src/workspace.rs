@@ -21,6 +21,14 @@ struct Conversation {
     unread_completion: bool,
 }
 
+/// A session sitting in the trash while the undo window is open.
+struct DeletedSession {
+    info: SessionInfo,
+    trashed: PathBuf,
+    meta: PathBuf,
+    id: u64,
+}
+
 /// O que está sob o mouse na faixa recolhida.
 enum NavHover {
     Project(PathBuf),
@@ -50,6 +58,11 @@ pub struct Workspace {
     refreshing: bool,
     opening: Option<PathBuf>,
     error: Option<String>,
+    /// Sessão salva aguardando confirmação de exclusão.
+    pending_delete: Option<PathBuf>,
+    /// Última sessão excluída, enquanto o "Desfazer" está disponível.
+    undo_delete: Option<DeletedSession>,
+    undo_seq: u64,
     confirm_close: bool,
     close_target: Option<usize>,
     pending: Option<(PathBuf, Option<PathBuf>, PiClient)>,
@@ -144,6 +157,9 @@ impl Workspace {
             refreshing: false,
             opening: None,
             error: None,
+            pending_delete: None,
+            undo_delete: None,
+            undo_seq: 0,
             confirm_close: false,
             close_target: None,
             pending: None,
@@ -349,6 +365,118 @@ impl Workspace {
         }
         self.active = self.active.min(self.conversations.len() - 1);
         self.select(self.active, window, cx);
+    }
+
+    /// Move uma sessão salva para a lixeira e oferece "Desfazer" por 10s.
+    fn delete_session(&mut self, info: SessionInfo, cx: &mut Context<Self>) {
+        match sessions::trash(&info) {
+            Ok(trashed) => {
+                drop_from_catalog(&mut self.catalog, &info.path);
+                self.pending_delete = None;
+                self.undo_seq += 1;
+                let id = self.undo_seq;
+                self.undo_delete = Some(DeletedSession {
+                    info,
+                    trashed: trashed.trashed,
+                    meta: trashed.meta,
+                    id,
+                });
+                cx.notify();
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor()
+                        .timer(Duration::from_secs(10))
+                        .await;
+                    this.update(cx, |workspace, cx| {
+                        if workspace
+                            .undo_delete
+                            .as_ref()
+                            .is_some_and(|undo| undo.id == id)
+                        {
+                            workspace.undo_delete = None;
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                })
+                .detach();
+            }
+            Err(error) => {
+                self.pending_delete = None;
+                self.error = Some(format!("Cannot delete session: {error}"));
+                cx.notify();
+            }
+        }
+    }
+
+    /// Devolve a última sessão excluída para o lugar de onde saiu.
+    fn undo_delete(&mut self, cx: &mut Context<Self>) {
+        let Some(undo) = self.undo_delete.take() else {
+            return;
+        };
+        match sessions::restore(&undo.trashed, &undo.info.path) {
+            Ok(()) => {
+                let _ = std::fs::remove_file(&undo.meta);
+                add_to_catalog(&mut self.catalog, undo.info);
+                self.refresh(cx);
+            }
+            Err(error) => {
+                self.undo_delete = Some(undo);
+                self.error = Some(format!("Cannot restore session: {error}"));
+            }
+        }
+        cx.notify();
+    }
+
+    /// Barra "Sessão excluída — Desfazer" acima do rodapé da navegação.
+    fn undo_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(undo) = &self.undo_delete else {
+            return div().into_any_element();
+        };
+        let title = undo.info.title.clone();
+        let weak = cx.entity().downgrade();
+        div()
+            .id("undo-session-delete")
+            .flex_none()
+            .mx(px(theme::S3))
+            .mb(px(theme::S2))
+            .px(px(theme::S2 + theme::S1))
+            .py(px(theme::S1 + 2.))
+            .rounded(theme::r_control())
+            .border_1()
+            .border_color(theme::line())
+            .bg(theme::surface_2())
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(theme::S2))
+            .child(crate::ui::icons::icon(
+                crate::ui::icons::Icon::Trash,
+                12.,
+                theme::faint(),
+            ))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .truncate()
+                    .text_size(px(theme::TEXT_XS))
+                    .text_color(theme::dim())
+                    .child(SharedString::from(format!("“{title}” excluída"))),
+            )
+            .child(
+                div()
+                    .id("undo-session-delete-action")
+                    .cursor_pointer()
+                    .text_size(px(theme::TEXT_XS))
+                    .text_color(theme::running())
+                    .hover(|style| style.text_color(theme::text()))
+                    .on_click(move |_event: &ClickEvent, _, cx: &mut App| {
+                        weak.update(cx, |workspace, cx| workspace.undo_delete(cx))
+                            .ok();
+                    })
+                    .child("Desfazer"),
+            )
+            .into_any_element()
     }
 
     /// Título de uma conversa aberta: nome da sessão, título salvo, ou o
@@ -762,7 +890,11 @@ impl Workspace {
                                 let unread = live.is_some_and(|i| self.conversations[i].unread_completion);
                                 let weak = cx.entity().downgrade();
                                 let info = info.clone();
+                                let delete_info = info.clone();
                                 let live_index = live;
+                                let pending = delete_info
+                                    .as_ref()
+                                    .is_some_and(|info| self.pending_delete.as_ref() == Some(&info.path));
                                 div()
                                     .id(SharedString::from(format!(
                                         "session-{row_index}-{title}"
@@ -878,13 +1010,24 @@ impl Workspace {
                                                 )),
                                         )
                                     })
+                                    .when(live_index.is_none(), |el| match delete_info.clone() {
+                                        Some(target) if pending => {
+                                            el.child(delete_confirm_controls(target, cx))
+                                        }
+                                        Some(target) => el.child(delete_session_button(target, cx)),
+                                        None => el,
+                                    })
                             },
                         ))
                     }),
             );
         }
 
-        rail.child(list).child(
+        rail = rail.child(list);
+        if self.undo_delete.is_some() {
+            rail = rail.child(self.undo_bar(cx));
+        }
+        rail.child(
             div()
                 .flex_none()
                 .px(px(theme::S3))
@@ -1400,6 +1543,106 @@ impl Render for Workspace {
     }
 }
 
+fn drop_from_catalog(catalog: &mut Vec<SessionInfo>, path: &std::path::Path) {
+    catalog.retain(|info| info.path.as_path() != path);
+}
+
+fn add_to_catalog(catalog: &mut Vec<SessionInfo>, info: SessionInfo) {
+    catalog.retain(|entry| entry.path != info.path);
+    catalog.push(info);
+    catalog.sort_by(|a, b| b.modified.cmp(&a.modified).then(a.path.cmp(&b.path)));
+}
+
+/// Lixeira de uma sessão salva; aparece no hover, como o botão de fechar.
+fn delete_session_button(target: SessionInfo, cx: &mut Context<Workspace>) -> AnyElement {
+    let weak = cx.entity().downgrade();
+    div()
+        .id(SharedString::from(format!(
+            "delete-{}",
+            target.path.display()
+        )))
+        .size(px(22.))
+        .rounded(theme::r_control())
+        .flex()
+        .items_center()
+        .justify_center()
+        .opacity(0.0)
+        .hover(|style| style.opacity(1.0))
+        .cursor_pointer()
+        .on_click(move |_event: &ClickEvent, _, cx: &mut App| {
+            cx.stop_propagation();
+            weak.update(cx, |workspace, cx| {
+                workspace.pending_delete = Some(target.path.clone());
+                cx.notify();
+            })
+            .ok();
+        })
+        .child(crate::ui::icons::icon(
+            crate::ui::icons::Icon::Trash,
+            12.,
+            theme::faint(),
+        ))
+        .into_any_element()
+}
+
+/// Confirmação embutida na linha: "Cancelar" / "Excluir".
+fn delete_confirm_controls(target: SessionInfo, cx: &mut Context<Workspace>) -> AnyElement {
+    let weak = cx.entity().downgrade();
+    let cancel = weak.clone();
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(theme::S1))
+        .child(
+            div()
+                .id(SharedString::from(format!(
+                    "delete-cancel-{}",
+                    target.path.display()
+                )))
+                .px(px(theme::S2))
+                .py(px(1.))
+                .rounded(theme::r_control())
+                .cursor_pointer()
+                .text_size(px(theme::TEXT_XS))
+                .text_color(theme::dim())
+                .hover(|style| style.bg(theme::hover()))
+                .on_click(move |_event: &ClickEvent, _, cx: &mut App| {
+                    cx.stop_propagation();
+                    cancel
+                        .update(cx, |workspace, cx| {
+                            workspace.pending_delete = None;
+                            cx.notify();
+                        })
+                        .ok();
+                })
+                .child("Cancelar"),
+        )
+        .child(
+            div()
+                .id(SharedString::from(format!(
+                    "delete-confirm-{}",
+                    target.path.display()
+                )))
+                .px(px(theme::S2))
+                .py(px(1.))
+                .rounded(theme::r_control())
+                .cursor_pointer()
+                .text_size(px(theme::TEXT_XS))
+                .text_color(theme::danger())
+                .hover(|style| style.bg(theme::hover()))
+                .on_click(move |_event: &ClickEvent, _, cx: &mut App| {
+                    cx.stop_propagation();
+                    weak.update(cx, |workspace, cx| {
+                        workspace.delete_session(target.clone(), cx)
+                    })
+                    .ok();
+                })
+                .child("Excluir"),
+        )
+        .into_any_element()
+}
+
 /// Nome curto de um projeto: o nome da pasta, ou o caminho inteiro.
 fn folder_of(cwd: &std::path::Path) -> String {
     cwd.file_name()
@@ -1409,7 +1652,18 @@ fn folder_of(cwd: &std::path::Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::select_item;
+    use super::{add_to_catalog, drop_from_catalog, select_item};
+    use crate::sessions::SessionInfo;
+    use std::path::PathBuf;
+
+    fn info(path: &str, modified: u64) -> SessionInfo {
+        SessionInfo {
+            path: PathBuf::from(path),
+            cwd: PathBuf::from("/project"),
+            title: path.into(),
+            modified: std::time::UNIX_EPOCH + std::time::Duration::from_secs(modified),
+        }
+    }
 
     #[test]
     fn selecting_removed_last_session_preserves_active_session() {
@@ -1437,5 +1691,30 @@ mod tests {
         let mut active = 0;
         assert!(select_item(&mut conversations, &mut active, 0).is_none());
         assert_eq!(active, 0);
+    }
+
+    #[test]
+    fn deleting_a_session_removes_it_from_the_catalog() {
+        let mut catalog = vec![info("/a.jsonl", 1), info("/b.jsonl", 2)];
+        drop_from_catalog(&mut catalog, std::path::Path::new("/a.jsonl"));
+        assert_eq!(catalog.len(), 1);
+        assert_eq!(catalog[0].path, PathBuf::from("/b.jsonl"));
+    }
+
+    #[test]
+    fn undoing_a_delete_reinserts_the_session_in_order() {
+        let mut catalog = vec![info("/a.jsonl", 1), info("/c.jsonl", 3)];
+        add_to_catalog(&mut catalog, info("/b.jsonl", 2));
+        assert_eq!(
+            catalog
+                .iter()
+                .map(|info| info.path.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                PathBuf::from("/c.jsonl"),
+                PathBuf::from("/b.jsonl"),
+                PathBuf::from("/a.jsonl")
+            ]
+        );
     }
 }
