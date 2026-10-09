@@ -117,6 +117,16 @@ paragraph and general clickable Markdown links are not yet supported.
   2px spine in the effort accent. Reasoning starts expanded and folds to a
   one-line preview when you click its row; `/thinking-view` chooses whether new
   turns start expanded or collapsed.
+- **Direct text selection** — drag across rendered paragraphs, table cells and
+  code within a Markdown section; double-click selects a word and shift-click
+  extends the range. `ctrl-c` copies the selected rendered text, `ctrl-a` selects
+  that section, `esc` clears a selection, and `ctrl-l` returns to the prompt.
+  Selection does not span separate messages or separate tool/text sections.
+- **Copy controls** — compact copy icons with Portuguese tooltips and a temporary
+  check mark copy complete messages/responses (Markdown), code without fences,
+  exact commands, arguments and tool output. Focused buttons accept Enter/Space.
+  Tool rows expose complete commands/arguments in a tooltip and expanded details;
+  inspecting or copying never executes a command.
 - **Tool rows** — every call is a single quiet row: a status light, the tool name,
   a one-line summary of its arguments, elapsed time. Expanding it reveals
   arguments, output and details in a recessed, scrollable block. Bash output

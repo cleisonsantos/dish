@@ -19,6 +19,7 @@ pub mod inspector;
 pub mod overlays;
 pub mod transcript;
 pub mod selectable;
+pub mod copy_button;
 pub mod window_frame;
 
 actions!(
