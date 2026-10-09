@@ -21,9 +21,11 @@ transcript/sidebar behavior inconsistent, so none of the three should be
 deferred as "nice to have".
 
 **Publication is not ready to execute:** the candidate commands in
-`.github/workflows/ci.yml` still carry the alpha.2 label, PRs #30 (#21) and #31
-(#23) are open, and no final integrated commit has been built, scanned or
-validated. Do not overwrite the existing alpha.2 release assets.
+`.github/workflows/ci.yml` still carry the alpha.2 label, and no final
+integrated commit has been built, scanned or validated. The feature work for
+#21/#23/#24 is merged; the remaining steps are the label change, a final
+candidate build on the exact release commit and real-desktop validation. Do not
+overwrite the existing alpha.2 release assets.
 
 ## Reviewed baseline and candidate changes
 
@@ -31,9 +33,9 @@ Latest published release:
 [`v0.1.0-alpha.2`](https://github.com/cleisonsantos/dish/releases/tag/v0.1.0-alpha.2),
 targeting `3ee77c7f3d5a5495f8e0ee1b47bcba3bf0fbc36e`.
 
-Reviewed main: `a7988c0eade09f66f840a7f6b8ae4f0f6301b6f7`, which includes the
-already-merged alpha.3 work (#25, #28, #29) on top of the previously audited
-`d4a9ce100112f0d2339c67b5108718e199b80b82`.
+Reviewed main: `710ec78373605736ac37a075b842aaf3d211f31b` (the merge of #31),
+which contains the merged alpha.3 work (#25, #28, #29, #30, #31) on top of the
+previously audited `d4a9ce100112f0d2339c67b5108718e199b80b82`.
 
 | PR / issue | Status at review | Release relevance |
 | --- | --- | --- |
@@ -46,8 +48,8 @@ already-merged alpha.3 work (#25, #28, #29) on top of the previously audited
 | [#25](https://github.com/cleisonsantos/dish/pull/25) | Merged at `abc5a7422d3cb1bb4b2078de7eeff2bfba89f76a`; closes #24 | Direct selection in rendered Markdown, consistent clipboard icons, and complete command/argument/output inspection and copying. |
 | [#28](https://github.com/cleisonsantos/dish/pull/28) | Merged at `b8acc4eae7c68c52d7fcbdea4a601e33c2d60c4d` | Keyboard navigation in dialogs and the session list. |
 | [#29](https://github.com/cleisonsantos/dish/pull/29) | Merged at `a7988c0eade09f66f840a7f6b8ae4f0f6301b6f7` | Reconcile reasoning effort with the model's ladder, fixing the Linux CI failure introduced with #28. |
-| [#30](https://github.com/cleisonsantos/dish/pull/30) (implements #21) | Open; CI green on its branch (two Linux jobs and Windows), awaiting review and merge | Independent session activity/attention/read state, filters, stable ordering and persisted read state. |
-| [#31](https://github.com/cleisonsantos/dish/pull/31) (implements #23) | Open; local checks pass, CI pending | Timestamp provenance, observed durations, response/tool status semantics and selectable metadata details. |
+| [#30](https://github.com/cleisonsantos/dish/pull/30) (closes #21) | Merged at `4b66c531868891d64ae40d7ae40022103dd4f610` | Independent session activity/attention/read state, filters, stable ordering and persisted read state. |
+| [#31](https://github.com/cleisonsantos/dish/pull/31) (closes #23) | Merged at `710ec78373605736ac37a075b842aaf3d211f31b` | Timestamp provenance, observed durations, response/tool status semantics and selectable metadata details. |
 
 `CLAUDE.md` was also added with development, release and concurrent-worktree
 rules. Existing functionality predating alpha.2 (such as global UI preference
@@ -57,15 +59,30 @@ persistence) should not be presented as newly delivered in alpha.3.
 
 ### Main CI
 
-For exactly the reviewed main commit `a7988c0eade09f66f840a7f6b8ae4f0f6301b6f7`:
+For the current reviewed main commit `710ec78373605736ac37a075b842aaf3d211f31b`
+(all three release features integrated):
 
-- [Linux run 37979418089](https://github.com/cleisonsantos/dish/actions/runs/37979418089)
-  completed successfully: locked Cargo checks/tests, strict Clippy, release-tool
-  tests, remapped build, license checks, archive and Debian packaging, tests of
-  the real archive, and desktop/startup/settings smoke tests.
-- [Windows run 37979418177](https://github.com/cleisonsantos/dish/actions/runs/37979418177)
-  compiled and uploaded an executable successfully. The Windows workflow does
-  not run the Linux-equivalent interaction, packaging or installation tests.
+- [Linux run 37987496119](https://github.com/cleisonsantos/dish/actions/runs/37987496119)
+  and
+  [Windows run 37987496161](https://github.com/cleisonsantos/dish/actions/runs/37987496161)
+  were triggered by the merge and are the definitive pipeline for this commit.
+  Their results must be confirmed green before the label change; a local run is
+  not a substitute.
+
+The previous baseline `a7988c0eade09f66f840a7f6b8ae4f0f6301b6f7` was fully
+green: [Linux run 37979418089](https://github.com/cleisonsantos/dish/actions/runs/37979418089)
+completed all locked checks/tests, strict Clippy, release-tool tests, remapped
+build, license checks, archive and Debian packaging, real-archive tests and the
+desktop/startup/settings smoke tests; and
+[Windows run 37979418177](https://github.com/cleisonsantos/dish/actions/runs/37979418177)
+compiled and uploaded an executable. The Windows workflow does not run the
+Linux-equivalent interaction, packaging or installation tests.
+
+The merge of #30 (`4b66c531868891d64ae40d7ae40022103dd4f610`) has a successful
+[Windows run 37984145335](https://github.com/cleisonsantos/dish/actions/runs/37984145335);
+its [Linux run 37984145480](https://github.com/cleisonsantos/dish/actions/runs/37984145480)
+was still queued at this snapshot, which is why #31's own green runs and the
+integrated 710ec78 pipeline matter more.
 
 The merge of #25 (`abc5a7422d3cb1bb4b2078de7eeff2bfba89f76a`) also had a green
 [Linux run 37971851081](https://github.com/cleisonsantos/dish/actions/runs/37971851081)
@@ -88,29 +105,29 @@ commit has not been built or audited yet.
 
 ### PR #31 (metadata, #23)
 
-Locally on the rebased branch `feat/transcript-metadata` and then in CI at its
-head `18d1840a05ac66107759121f9940eded652a0af7` (base `a7988c0`):
+Merged into main as `710ec78373605736ac37a075b842aaf3d211f31b` after review and
+green CI. On its final rebased head `dc307e53ff9ac4edea5b0ff127f48c4758d748bc`
+(base `4b66c53`, already including #30):
 
-- `cargo check --locked`, `cargo clippy --locked --all-targets -- -D warnings`
-  and 52 Rust tests pass.
-- The 12 release-package tests pass (1 skipped without `DISH_TEST_ARCHIVE`).
-- `desktop_smoke.py` passes end to end, including its second synthetic-Pi pass
-  for historical timestamps, cancellation, complete multiline commands and live
-  observed duration, with real clipboard verification.
+- 62 Rust tests, strict Clippy, `desktop_smoke.py` (including the second
+  synthetic-Pi pass for historical timestamps, cancellation, complete
+  multiline commands and live observed duration with real clipboard
+  verification) and `session_activity_smoke.py` passed locally.
+- CI was fully green: two Linux jobs
+  ([run 37986414668](https://github.com/cleisonsantos/dish/actions/runs/37986414668)
+  and
+  [run 37986419075](https://github.com/cleisonsantos/dish/actions/runs/37986419075),
+  including the packaged-install and smoke steps) and the
+  [Windows run 37986414669](https://github.com/cleisonsantos/dish/actions/runs/37986414669).
 - Timestamp origins and limits are documented in `docs/transcript-metadata.md`;
   the new `chrono` direct dependency resolves to the chrono version already in
   the lockfile, adding no new package.
-- CI on that head is fully green: two Linux jobs
-  ([run 37982210107](https://github.com/cleisonsantos/dish/actions/runs/37982210107)
-  and
-  [run 37982216026](https://github.com/cleisonsantos/dish/actions/runs/37982216026),
-  including the packaged-install and smoke steps) and the
-  [Windows run 37982210017](https://github.com/cleisonsantos/dish/actions/runs/37982210017).
-  The metadata work does not complete the full keyboard-coverage backlog (#10).
+- The metadata work does not complete the full keyboard-coverage backlog (#10).
 
 ### PR #30 (session activity, #21)
 
-Reported by its author and visible in the PR body at this snapshot: a testable
+Merged into main as `4b66c531868891d64ae40d7ae40022103dd4f610` after review.
+Reported by its author and visible in the PR body: a testable
 `src/session_activity.rs` signal model, response tracker, filters/ordering,
 persisted read state, keyboard filter shortcut, narrow-window wrapping,
 54 Rust tests plus dedicated `tests/session_activity_smoke.py` with synthetic
@@ -118,17 +135,16 @@ Pi. Its head commit `efd69ba` passed Windows and both Linux jobs
 ([run 37981557787](https://github.com/cleisonsantos/dish/actions/runs/37981557787),
 [run 37981557844](https://github.com/cleisonsantos/dish/actions/runs/37981557844),
 [run 37981563202](https://github.com/cleisonsantos/dish/actions/runs/37981563202))
-in the author's worktree. It still needs review and merge; the integration
-check below was done locally against that commit because #21 and #23 touch the
-same state and smoke files.
+in the author's worktree.
 
-Locally merging #30's head into #31 in a disposable branch resolved one
-`tests/desktop_smoke.py` conflict (keeping #30's OCR navigation and paste-retry
-with #31's stable-pixel/expose helpers) and auto-merged the rest. On that
+The merge with #23 was validated locally in a disposable branch: the one
+`tests/desktop_smoke.py` conflict was resolved by keeping #30's OCR navigation
+and paste-retry together with #31's stable-pixel/expose helpers. On that
 integration snapshot: 62 Rust tests, strict Clippy, `desktop_smoke.py`
 (including the metadata pass), `session_activity_smoke.py`, `settings_smoke.py`
-and `startup_smoke.py` all passed. This is integration evidence, not a
-substitute for CI on the final commit.
+and `startup_smoke.py` all passed; the same suite then passed again after #31
+was rebased onto the #30 merge for its final CI. This is integration evidence;
+the 710ec78 pipeline above is the release gate.
 
 ## Issue triage
 
@@ -136,8 +152,8 @@ substitute for CI on the final commit.
 | --- | --- |
 | #1, #2, #6, #8, #9 | Closed improvements; describe the post-alpha.2 changes actually included, not every historical feature. |
 | #24 | Closed by #25 after review and CI. |
-| #23 | Implemented by #31; do not claim completion until the PR is reviewed, CI passes and it is merged together with #21/#24. |
-| #21 | Implemented by #30; same requirement. Existing completion indicators are not the complete proposed model. |
+| #23 | Closed by #31; timestamp provenance, observed durations and status semantics are in main. |
+| #21 | Closed by #30; activity/attention/read signals, filters and ordering are in main. |
 | #10 | Full keyboard control remains incomplete. Keep open and document the limitation; #25/#28 and the metadata badges add subsets only. |
 | #18 | Git/worktree/branch context remains future work. |
 | #7 | Per-conversation UI preferences remain future work; current global persistence is not this feature. |
@@ -190,9 +206,11 @@ Keep explicit:
 Follow `docs/releasing.md`; publication remains a separate, explicit action.
 
 - [x] Decide the release scope: #21 + #23 + #24 are mandatory.
-- [ ] Review, rebase as needed and merge #30 and #31; resolve the shared
-      `src/state.rs` / `tests/desktop_smoke.py` / fake-Pi conflicts so both
-      features are validated together at one commit.
+- [x] Review and merge #25, #30 and #31, resolving the shared
+      `src/state.rs` / `tests/desktop_smoke.py` / fake-Pi conflicts; main now
+      contains all three features and their combined tests.
+- [ ] Confirm the final main CI for `710ec78` is green (the run was still in
+      progress at this snapshot).
 - [ ] Re-run every mandatory check and the entire CI package/installed-binary
       smoke pipeline on that exact integrated commit.
 - [ ] Update both Linux candidate commands in `.github/workflows/ci.yml` from
@@ -215,5 +233,5 @@ Follow `docs/releasing.md`; publication remains a separate, explicit action.
       sidecars.
 - [ ] Download the published assets again and verify their checksums.
 
-Nothing in this assessment merges #30/#31, edits version labels, creates a
-release or uploads local build artifacts.
+Nothing in this assessment changes version labels, creates a release or uploads
+local build artifacts.
