@@ -47,6 +47,10 @@ pub struct Workspace {
     flags: Vec<String>,
     collapsed: BTreeSet<PathBuf>,
     visible: bool,
+    /// Largura do painel de navegação, ajustável pela divisa.
+    nav_width: f32,
+    /// (x inicial, largura inicial) enquanto a divisa é arrastada.
+    resizing_nav: Option<(f32, f32)>,
     refreshing: bool,
     opening: Option<PathBuf>,
     error: Option<String>,
@@ -141,6 +145,8 @@ impl Workspace {
             flags: launch_flags,
             collapsed: preferences.collapsed_projects.clone(),
             visible: preferences.navigation_open.unwrap_or(true),
+            nav_width: preferences.navigation_width.unwrap_or(264.).clamp(200., 420.),
+            resizing_nav: None,
             refreshing: false,
             opening: None,
             error: None,
@@ -469,7 +475,7 @@ impl Workspace {
 
         let mut rail = div()
             .id("sessions-navigation")
-            .w(px(264.))
+            .w(px(self.nav_width))
             .h_full()
             .flex_none()
             .flex()
@@ -1066,6 +1072,30 @@ impl Render for Workspace {
             .bg(theme::bg())
             .text_color(theme::text())
             .font_family(theme::FONT_UI)
+            // Arrasto da divisa do painel de sessões.
+            .on_mouse_move(cx.listener(|workspace, event: &MouseMoveEvent, _, cx| {
+                let Some((start_x, start_width)) = workspace.resizing_nav else {
+                    return;
+                };
+                if event.pressed_button != Some(MouseButton::Left) {
+                    workspace.resizing_nav = None;
+                } else {
+                    let width = (start_width + (f32::from(event.position.x) - start_x))
+                        .clamp(200., 420.);
+                    if (width - workspace.nav_width).abs() > 0.5 {
+                        workspace.nav_width = width;
+                    }
+                }
+                cx.notify();
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|workspace, _: &MouseUpEvent, _, cx| {
+                    if workspace.resizing_nav.take().is_some() {
+                        cx.notify();
+                    }
+                }),
+            )
             .on_action(cx.listener(|workspace, _: &crate::ui::ToggleHelp, window, cx| {
                 workspace.open_settings(crate::settings::Section::Keys, window, cx);
             }))
@@ -1247,6 +1277,7 @@ impl Render for Workspace {
             preferences.details_open = Some(active.sidebar);
         }
         preferences.navigation_open = Some(self.visible);
+        preferences.navigation_width = Some(self.nav_width);
         preferences.show_thinking = Some(active.show_thinking);
         preferences.collapsed_projects = self.collapsed.clone();
         preferences.last_project = Some(active.cwd.clone());
@@ -1258,6 +1289,27 @@ impl Render for Workspace {
             self.preferences = preferences;
         }
         root = root.child(body.child(div().flex_1().min_w(px(0.)).h_full().child(state)));
+        // Divisória do painel de sessões: arrastar redimensiona.
+        if self.visible {
+            root = root.child(
+                div()
+                    .id("nav-resize-handle")
+                    .absolute()
+                    .left(px(self.nav_width))
+                    .top(px(0.))
+                    .bottom(px(0.))
+                    .w(px(6.))
+                    .cursor(CursorStyle::ResizeLeftRight)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|workspace, event: &MouseDownEvent, _, cx| {
+                            workspace.resizing_nav =
+                                Some((f32::from(event.position.x), workspace.nav_width));
+                            cx.notify();
+                        }),
+                    ),
+            );
+        }
         // Chip de identificação do que está sob o mouse na faixa recolhida.
         if !self.visible {
             if let Some(hovered) = &self.hovered {

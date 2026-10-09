@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 pub struct Preferences {
     pub details_open: Option<bool>,
     pub navigation_open: Option<bool>,
+    /// Largura do painel de sessões, em pixels.
+    pub navigation_width: Option<f32>,
     /// Se o raciocínio começa expandido ou recolhido.
     pub show_thinking: Option<bool>,
     pub collapsed_projects: BTreeSet<PathBuf>,
@@ -82,6 +84,7 @@ mod tests {
     fn preferences_round_trip() {
         let preferences = Preferences {
             details_open: Some(false), navigation_open: Some(true),
+            navigation_width: Some(264.),
             show_thinking: Some(false),
             collapsed_projects: [PathBuf::from("/tmp/projeto-á")].into(),
             last_project: Some("/tmp/projeto-á".into()), last_session: Some("/tmp/session.jsonl".into()),
