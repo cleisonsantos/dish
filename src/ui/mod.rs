@@ -172,6 +172,19 @@ impl Render for AppState {
                     state.abort(cx);
                 }
             }))
+            // Clicar fora fecha o seletor de modelo; o painel e o próprio botão
+            // seguram o evento para não fechar por engano.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|state, _: &MouseDownEvent, window, cx| {
+                    if state.model_menu {
+                        state.model_menu = false;
+                        let focus = state.editor.read(cx).focus_handle.clone();
+                        focus.focus(window, cx);
+                        cx.notify();
+                    }
+                }),
+            )
             .child(main_column);
 
         if self.sidebar {

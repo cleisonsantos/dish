@@ -145,6 +145,8 @@ pub fn model_picker(state: &AppState, cx: &Context<AppState>) -> Stateful<Div> {
 
     let panel = div()
         .id("model-picker")
+        // Clicar dentro não fecha; o clique fora chega ao root.
+        .on_mouse_down(MouseButton::Left, |_event, _window, cx| cx.stop_propagation())
         .mx(px(theme::S5))
         .flex()
         .flex_col()

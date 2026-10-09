@@ -159,6 +159,7 @@ fn model_control(state: &AppState, cx: &Context<AppState>) -> AnyElement {
         .map(|model| model.id.clone())
         .unwrap_or_else(|| "modelo".to_string());
     control_shell("composer-model")
+        .on_mouse_down(MouseButton::Left, |_event, _window, cx| cx.stop_propagation())
         .on_click(cx.listener(|state, _: &ClickEvent, window, cx| {
             if state.model_menu {
                 state.model_menu = false;
