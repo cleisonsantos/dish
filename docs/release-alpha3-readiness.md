@@ -46,7 +46,7 @@ already-merged alpha.3 work (#25, #28, #29) on top of the previously audited
 | [#25](https://github.com/cleisonsantos/dish/pull/25) | Merged at `abc5a7422d3cb1bb4b2078de7eeff2bfba89f76a`; closes #24 | Direct selection in rendered Markdown, consistent clipboard icons, and complete command/argument/output inspection and copying. |
 | [#28](https://github.com/cleisonsantos/dish/pull/28) | Merged at `b8acc4eae7c68c52d7fcbdea4a601e33c2d60c4d` | Keyboard navigation in dialogs and the session list. |
 | [#29](https://github.com/cleisonsantos/dish/pull/29) | Merged at `a7988c0eade09f66f840a7f6b8ae4f0f6301b6f7` | Reconcile reasoning effort with the model's ladder, fixing the Linux CI failure introduced with #28. |
-| [#30](https://github.com/cleisonsantos/dish/pull/30) (implements #21) | Open; CI pending (Windows passed, Linux failure being rerun) | Independent session activity/attention/read state, filters, stable ordering and persisted read state. |
+| [#30](https://github.com/cleisonsantos/dish/pull/30) (implements #21) | Open; CI green on its branch (two Linux jobs and Windows), awaiting review and merge | Independent session activity/attention/read state, filters, stable ordering and persisted read state. |
 | [#31](https://github.com/cleisonsantos/dish/pull/31) (implements #23) | Open; local checks pass, CI pending | Timestamp provenance, observed durations, response/tool status semantics and selectable metadata details. |
 
 `CLAUDE.md` was also added with development, release and concurrent-worktree
@@ -110,9 +110,21 @@ Reported by its author and visible in the PR body at this snapshot: a testable
 `src/session_activity.rs` signal model, response tracker, filters/ordering,
 persisted read state, keyboard filter shortcut, narrow-window wrapping,
 54 Rust tests plus dedicated `tests/session_activity_smoke.py` with synthetic
-Pi. Windows CI passed; the first Linux run failed and a rerun was pending, so
-the PR cannot be counted as validated until that run is green and the PR is
-reviewed and merged.
+Pi. Its head commit `efd69ba` passed Windows and both Linux jobs
+([run 37981557787](https://github.com/cleisonsantos/dish/actions/runs/37981557787),
+[run 37981557844](https://github.com/cleisonsantos/dish/actions/runs/37981557844),
+[run 37981563202](https://github.com/cleisonsantos/dish/actions/runs/37981563202))
+in the author's worktree. It still needs review and merge; the integration
+check below was done locally against that commit because #21 and #23 touch the
+same state and smoke files.
+
+Locally merging #30's head into #31 in a disposable branch resolved one
+`tests/desktop_smoke.py` conflict (keeping #30's OCR navigation and paste-retry
+with #31's stable-pixel/expose helpers) and auto-merged the rest. On that
+integration snapshot: 62 Rust tests, strict Clippy, `desktop_smoke.py`
+(including the metadata pass), `session_activity_smoke.py`, `settings_smoke.py`
+and `startup_smoke.py` all passed. This is integration evidence, not a
+substitute for CI on the final commit.
 
 ## Issue triage
 
