@@ -44,6 +44,10 @@ and `docs/session-format.md` (see the upstream
 - Live observed times/durations are kept in memory. After restarting, only
   metadata available from Pi's history is shown; missing start/end/duration
   is intentionally omitted.
+- The transcript response duration covers the assistant message stream. The
+  inspector's "Turnos" summary is a separate pre-existing estimate from the
+  user prompt to the observed end of the turn; it is still omitted rather than
+  fabricated when restored history lacks those boundaries.
 - An optimistic local user message retains its **Dish** provenance when an echo
   has no Pi timestamp; a valid Pi timestamp replaces it with **Pi** provenance.
 
