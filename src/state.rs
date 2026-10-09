@@ -359,6 +359,11 @@ impl AppState {
         let AppEditors { composer: editor, modal: modal_editor, model_search, help_search } = editors;
         let list_state = ListState::new(0, ListAlignment::Top, px(600.));
         list_state.set_follow_mode(FollowMode::Tail);
+        // O botão "ir para o fim" precisa saber quando o usuário rolou para cima.
+        let weak = cx.entity().downgrade();
+        list_state.set_scroll_handler(move |_event, _window, cx| {
+            weak.update(cx, |_state, cx| cx.notify()).ok();
+        });
         cx.observe(&model_search, |_, _, cx| cx.notify()).detach();
         cx.observe(&help_search, |_, _, cx| cx.notify()).detach();
 
