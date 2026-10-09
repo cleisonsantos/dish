@@ -31,6 +31,8 @@ x11.XTranslateCoordinates.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_
                                      ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_int),
                                      ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_ulong)]
 x11.XSetInputFocus.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+x11.XClearArea.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_int,
+                          ctypes.c_uint, ctypes.c_uint, ctypes.c_int]
 x11.XInternAtom.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
 x11.XInternAtom.restype = ctypes.c_ulong
 x11.XSendEvent.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_long, ctypes.c_void_p]
@@ -73,6 +75,13 @@ def wait_for(predicate, description, timeout=10):
     raise AssertionError(description)
 
 
+def expose_window(window):
+    # Xvfb has no window manager; request the expose a real desktop sends when
+    # a newly mapped window becomes visible. Do not clear during pixel checks.
+    x11.XClearArea(display, window, 0, 0, 0, 0, True)
+    x11.XFlush(display)
+
+
 def key(name, pressed):
     code = x11.XKeysymToKeycode(display, x11.XStringToKeysym(name.encode()))
     assert code, name
@@ -111,7 +120,10 @@ def click(window, x, y):
 def find_word(window, needle, last=False):
     """Locate rendered text instead of assuming transcript row coordinates."""
     with tempfile.NamedTemporaryFile(suffix=".png") as image:
-        subprocess.run(["import", "-window", str(window), image.name], check=True)
+        capture = subprocess.run(["import", "-window", str(window), image.name],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if capture.returncode != 0:
+            return None  # Window may have its title before it is mapped.
         rows = subprocess.check_output(
             ["tesseract", image.name, "stdout", "--psm", "11", "tsv"],
             stderr=subprocess.DEVNULL).decode().splitlines()[1:]
@@ -182,13 +194,29 @@ def click_beta_session(window, close=False):
 
 
 def park_mouse(window):
-    """Tira o ponteiro de cima da conversa: hover não deve entrar na captura."""
-    click(window, 5, 5)
+    """Normalize focus/hover so pixel checks compare scroll, not focus styles."""
+    chord("Control_L", "l")
+    root_x, root_y, child = ctypes.c_int(), ctypes.c_int(), ctypes.c_ulong()
+    x11.XTranslateCoordinates(display, window, root_window, 5, 5,
+                              ctypes.byref(root_x), ctypes.byref(root_y), ctypes.byref(child))
+    xtst.XTestFakeMotionEvent(display, -1, root_x.value, root_y.value, 0)
+    x11.XFlush(display)
 
 
 def transcript_pixels(window):
     return subprocess.check_output(
         ["import", "-window", str(window), "-crop", "600x400+280+100", "-depth", "8", "rgb:-"])
+
+
+def stable_transcript_pixels(window):
+    previous = [transcript_pixels(window)]
+    def stable():
+        current = transcript_pixels(window)
+        same = current == previous[0]
+        previous[0] = current
+        return same
+    wait_for(stable, "Transcript layout did not settle", timeout=3)
+    return previous[0]
 
 
 def request_window_close(window):
@@ -254,8 +282,13 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         wait_for(lambda: commands("get_messages"), "Initial Pi did not initialize")
         time.sleep(1)
         x11.XSetInputFocus(display, window, 1, 0)
-        # Clicking placeholder glyphs must not put the caret past an empty buffer.
-        click(window, 550, 780)
+        expose_window(window)
+        # Wait for rendered placeholder text, then click its actual glyphs.
+        # A native title/get_messages can exist before focus/layout is ready.
+        wait_for(lambda: find_word(window, "anything"), "Composer did not render")
+        placeholder = find_word(window, "anything")
+        click(window, placeholder[0] + placeholder[2] // 2, placeholder[1] + placeholder[3] // 2)
+        chord("Control_L", "l")
         type_text("long-a")
         press("Return")
         wait_for(lambda: commands("prompt"), "First prompt not sent")
@@ -263,7 +296,11 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         click(window, 550, 780)
         # Open beta's saved session from its project group while alpha runs.
         click_beta_session(window)
-        wait_for(lambda: len(commands("get_messages")) == 2, "Saved session did not open")
+        # A run can finish between the OCR snapshot and the click, changing row
+        # heights. Re-locate with bounded retries instead of using stale geometry.
+        wait_for(lambda: len(commands("get_messages")) == 2 or
+                 (click_beta_session(window) or len(commands("get_messages")) == 2),
+                 "Saved session did not open")
         click(window, 550, 780)
         type_text("long-b")
         press("Return")
@@ -289,11 +326,12 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         time.sleep(0.3)
         scroll_up(window)
         park_mouse(window)
-        scrolled = transcript_pixels(window)
+        scrolled = stable_transcript_pixels(window)
         click_nav_label(window, "long-a")
         click_beta_session(window)
         park_mouse(window)
-        assert transcript_pixels(window) == scrolled, "Transcript scroll position was lost"
+        wait_for(lambda: transcript_pixels(window) == scrolled,
+                 "Transcript scroll position was lost", timeout=3)
         click_nav_label(window, "long-a")
         press("Return")
         wait_for(lambda: len(commands("prompt")) == 4, "Alpha draft was lost")
@@ -411,11 +449,16 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
                              for item in events()), "Large streaming message not received")
         scroll_up(window)
         park_mouse(window)
-        before = transcript_pixels(window)
+        before = stable_transcript_pixels(window)
         time.sleep(0.65)
         assert transcript_pixels(window) == before, "Streaming pulled the reader back to the bottom"
         # Direct selection on formatted text, including Unicode and code.
+        placeholder = find_word(window, "anything")
+        click(window, placeholder[0] + placeholder[2] // 2, placeholder[1] + placeholder[3] // 2)
+        initializations = len(commands("get_messages"))
         chord("Control_L", "n")
+        wait_for(lambda: len(commands("get_messages")) > initializations,
+                 "Selection test conversation did not initialize")
         chord("Control_L", "l")
         previous_prompts = len(commands("prompt"))
         type_text("selection")
@@ -499,3 +542,118 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
                 pass
         if process.returncode not in (0, -15):
             print((temp / "dish.log").read_text())
+
+# Metadata: a fresh process with synthetic historical messages and fixed TZ.
+with tempfile.TemporaryDirectory(prefix="dish-metadata-") as directory:
+    directory = Path(directory)
+    wrapper = directory / "fake-pi"
+    wrapper.write_text(f'#!/bin/sh\nexec python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@"\n')
+    wrapper.chmod(0o700)
+    metadata_log = directory / "events.jsonl"
+    metadata_env = dict(os.environ, DISH_PI_BIN=str(wrapper),
+        PI_CODING_AGENT_DIR=str(directory / "agent"),
+        XDG_CONFIG_HOME=str(directory / "config"), XDG_DATA_HOME=str(directory / "data"),
+        DISH_FAKE_PI_LOG=str(metadata_log), TZ="UTC", XDG_SESSION_TYPE="x11",
+        DISH_FAKE_METADATA_HISTORY=str(ROOT / "tests/fixtures/metadata_history.json"))
+    metadata_env.pop("WAYLAND_DISPLAY", None)
+    metadata_env.pop("PI_CODING_AGENT_SESSION_DIR", None)
+    def metadata_events():
+        return [json.loads(line) for line in metadata_log.read_text().splitlines()] if metadata_log.exists() else []
+    def screen_text(window):
+        with tempfile.NamedTemporaryFile(suffix=".png") as image:
+            subprocess.run(["import", "-window", str(window), image.name], check=True)
+            return subprocess.check_output(["tesseract", image.name, "stdout", "--psm", "11"],
+                                           stderr=subprocess.DEVNULL).decode()
+    with open(directory / "dish.log", "w") as log:
+        process = subprocess.Popen([os.environ.get("DISH_TEST_BIN", str(ROOT / "target/debug/dish")), str(directory)],
+                                   env=metadata_env, stdout=log, stderr=log)
+        try:
+            wait_for(lambda: find_window(), "Metadata window not created")
+            window = find_window()
+            wait_for(lambda: any(item.get("command", {}).get("type") == "get_messages"
+                                 for item in metadata_events()), "Metadata Pi did not initialize")
+            x11.XSetInputFocus(display, window, 1, 0)
+            expose_window(window)
+            wait_for(lambda: find_word(window, "Historico"), "Synthetic history did not render")
+            initial = screen_text(window)
+            assert "03/12" in initial, initial
+            assert "interromp" in initial.lower(), initial
+            import datetime
+            assert datetime.datetime.now(
+                datetime.timezone.utc).strftime("%d/%m/%Y") not in initial, \
+                "History received fabricated current timestamps"
+            # Open the historical tool and copy its command from rendered details.
+            group = find_word(window, "comando")
+            click(window, group[0] + group[2] // 2, group[1] + group[3] // 2)
+            wait_for(lambda: find_word(window, "bash"), "Historical tool row did not open")
+            bash = find_word(window, "bash")
+            click(window, bash[0] + bash[2] // 2, bash[1] + bash[3] // 2)
+            wait_for(lambda: find_word(window, "COMANDO_COMPLETO"), "Complete command details missing")
+            marker = find_word(window, "COMANDO_COMPLETO")
+            click(window, marker[0] + marker[2] // 2, marker[1] + marker[3] // 2)
+            chord("Control_L", "a")
+            chord("Control_L", "c")
+            history = json.loads((ROOT / "tests/fixtures/metadata_history.json").read_text())
+            expected_command = history[1]["content"][0]["arguments"]["command"]
+            assert clipboard_text() == expected_command, repr(clipboard_text())
+            # With details closed, the full marker must still be readable in
+            # the hoverable tooltip, not only the truncated summary.
+            bash = find_word(window, "bash")
+            click(window, bash[0] + bash[2] // 2, bash[1] + bash[3] // 2)
+            wait_for(lambda: find_word(window, "COMANDO_COMPLETO"), "Full command tooltip missing", timeout=4)
+            park_mouse(window)
+            result = find_word(window, "resultado")
+            click(window, result[0] + result[2] // 2, result[1] + result[3] // 2)
+            park_mouse(window)
+            wait_for(lambda: find_word(window, "registrado"), "Historical timestamp details missing")
+            recorded = find_word(window, "registrado")
+            click(window, recorded[0] + recorded[2] // 2, recorded[1] + recorded[3] // 2)
+            chord("Control_L", "a")
+            chord("Control_L", "c")
+            historical_metadata = clipboard_text()
+            assert "Resultado registrado pelo Pi" in historical_metadata, historical_metadata
+            assert "03/12/2024 14:00:03.000 +00:00" in historical_metadata, historical_metadata
+            assert "Duração" not in historical_metadata and "Fim observado" not in historical_metadata, historical_metadata
+            # A live tool has observed boundaries and monotonic duration in
+            # addition to the Pi-authored result timestamp.
+            chord("Control_L", "l")
+            type_text("metadata-tool")
+            press("Return")
+            wait_for(lambda: any(item.get("record", {}).get("type") == "tool_execution_end" for item in metadata_events()), "Live tool did not finish")
+            wait_for(lambda: find_word(window, "comando", last=True), "Live activity group missing")
+            group = find_word(window, "comando", last=True)
+            click(window, group[0] + group[2] // 2, group[1] + group[3] // 2)
+            wait_for(lambda: find_word(window, "fim", last=True), "Live completion timestamp missing")
+            end = find_word(window, "fim", last=True)
+            click(window, end[0] + end[2] // 2, end[1] + end[3] // 2)
+            park_mouse(window)
+            wait_for(lambda: find_word(window, "monot", last=True), "Observed duration details missing")
+            duration_word = find_word(window, "monot", last=True)
+            click(window, duration_word[0] + duration_word[2] // 2, duration_word[1] + duration_word[3] // 2)
+            chord("Control_L", "a")
+            chord("Control_L", "c")
+            live_metadata = clipboard_text()
+            assert "Início observado pelo Dish" in live_metadata, live_metadata
+            assert "Fim observado pelo Dish" in live_metadata, live_metadata
+            assert "Resultado registrado pelo Pi" in live_metadata, live_metadata
+            assert "Duração observada pelo Dish" in live_metadata, live_metadata
+            assert process.poll() is None, (directory / "dish.log").read_text()
+            print("Metadata smoke passed: history, cancellation, full commands, timestamps and duration")
+        except Exception:
+            screenshot = tempfile.mktemp(prefix="dish-metadata-failure-", suffix=".png")
+            subprocess.run(["import", "-window", "root", screenshot], check=False)
+            print(f"Metadata failure screenshot: {screenshot}")
+            print((directory / "dish.log").read_text())
+            raise
+        finally:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            for pid in {item["pid"] for item in metadata_events()}:
+                try:
+                    os.kill(pid, 15)
+                except ProcessLookupError:
+                    pass

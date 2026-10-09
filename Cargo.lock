@@ -1301,6 +1301,7 @@ dependencies = [
  "anyhow",
  "async-channel",
  "base64 0.22.1",
+ "chrono",
  "gpui-ce",
  "gpui_ce_platform",
  "libc",

@@ -16,6 +16,7 @@ use crate::ui::icons::{Icon, icon};
 pub mod composer;
 pub mod icons;
 pub mod inspector;
+pub mod metadata_view;
 pub mod overlays;
 pub mod transcript;
 pub mod selectable;
@@ -581,7 +582,7 @@ pub fn status_word(status: crate::state::ToolStatus) -> (icons::Icon, Hsla, &'st
     use crate::state::ToolStatus;
     use icons::Icon;
     match status {
-        ToolStatus::Pending => (Icon::Clock, theme::faint(), "na fila"),
+        ToolStatus::Pending => (Icon::Clock, theme::faint(), "não iniciada"),
         ToolStatus::Running => (Icon::Activity, theme::running(), "rodando"),
         ToolStatus::Ok => (Icon::Check, theme::ok(), "concluído"),
         ToolStatus::Failed => (Icon::Alert, theme::failure(), "falhou"),
