@@ -374,8 +374,12 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         holder = clipboard(image_file.read_bytes(), "image/png")
         try:
             chord("Control_L", "v")
-            time.sleep(0.4)
-            press("Return")
+            # A leitura do clipboard é assíncrona: Return durante o carregamento
+            # é ignorado. Repetir com prazo é estável em CI carregada.
+            end = time.monotonic() + 10
+            while len(commands("prompt")) == 9 and time.monotonic() < end:
+                time.sleep(0.4)
+                press("Return")
             wait_for(lambda: len(commands("prompt")) == 10, "Pasted image not sent")
             import base64
             image_payload = commands("prompt")[-1]["command"]["images"][0]
@@ -390,8 +394,10 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         holder = clipboard((image_file.as_uri() + "\r\n").encode(), "text/uri-list")
         try:
             chord("Control_L", "v")
-            time.sleep(0.4)
-            press("Return")
+            end = time.monotonic() + 10
+            while len(commands("prompt")) == 10 and time.monotonic() < end:
+                time.sleep(0.4)
+                press("Return")
             wait_for(lambda: len(commands("prompt")) == 11, "Copied image file not sent")
             assert commands("prompt")[-1]["command"]["images"][0]["data"] == image_payload["data"]
         finally:
