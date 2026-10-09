@@ -25,9 +25,9 @@ use gpui::*;
 
 use crate::editor::{
     Backspace, CopySelection, CutSelection, Delete, DeleteWordBack, DeleteWordForward, DocEnd,
-    DocStart, Down, End, Home, Left, Newline, Paste, Redo, Right, SelectAllText, SelectDocEnd,
+    DocStart, End, Home, Left, Newline, Paste, Redo, Right, SelectAllText, SelectDocEnd,
     SelectDocStart, SelectDown, SelectEnd, SelectHome, SelectLeft, SelectRight, SelectUp,
-    SelectWordLeft, SelectWordRight, SendPrompt, Undo, Up, WordLeft, WordRight,
+    SelectWordLeft, SelectWordRight, SendPrompt, Undo, WordLeft, WordRight,
 };
 use crate::ui::{
     CloseWindow, CycleEffort, Dismiss, MenuAccept, MenuDown, MenuUp, ModalSubmit, NewSession,
@@ -224,8 +224,12 @@ fn main() {
             KeyBinding::new("up", ui::ModelUp, Some("DishModelSearch")),
             KeyBinding::new("down", ui::ModelDown, Some("DishModelSearch")),
             KeyBinding::new("enter", ui::ModelAccept, Some("DishModelSearch")),
-            KeyBinding::new("up", Up, Some("DishModal")),
-            KeyBinding::new("down", Down, Some("DishModal")),
+            // Na busca de sessões as setas destacam e Enter abre.
+            KeyBinding::new("up", workspace::NavUp, Some("DishNavSearch")),
+            KeyBinding::new("down", workspace::NavDown, Some("DishNavSearch")),
+            KeyBinding::new("enter", workspace::NavAccept, Some("DishNavSearch")),
+            KeyBinding::new("up", ui::ModalUp, Some("DishModal")),
+            KeyBinding::new("down", ui::ModalDown, Some("DishModal")),
             KeyBinding::new("enter", SendPrompt, Some("DishInput")),
             KeyBinding::new("shift-enter", Newline, Some("DishInput")),
             KeyBinding::new("enter", ModalSubmit, Some("DishModal")),

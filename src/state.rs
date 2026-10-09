@@ -333,6 +333,8 @@ pub struct AppState {
     pub toasts: Vec<Toast>,
     pub banner: Option<Banner>,
     pub modal: Option<Modal>,
+    /// Linha destacada nos diálogos de seleção de extensões.
+    modal_index: usize,
     pub ext_status: Vec<(String, String)>,
     pub ext_widget: Vec<String>,
     pub title_override: Option<String>,
@@ -429,6 +431,7 @@ impl AppState {
             toasts: Vec::new(),
             banner: None,
             modal: None,
+            modal_index: 0,
             ext_status: Vec::new(),
             ext_widget: Vec::new(),
             title_override: None,
@@ -1546,9 +1549,48 @@ impl AppState {
                         .map(str::to_string),
                     wants_input: matches!(kind, ModalKind::Input | ModalKind::Editor),
                 });
+                self.modal_index = 0;
             }
             _ => {}
         }
+    }
+
+    /// Um diálogo de seleção está aberto?
+    pub fn modal_select_open(&self) -> bool {
+        self.modal
+            .as_ref()
+            .is_some_and(|modal| modal.kind == ModalKind::Select)
+    }
+
+    /// Move o destaque no diálogo de seleção.
+    pub fn modal_move(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let Some(count) = self.modal.as_ref().map(|modal| modal.options.len()) else {
+            return;
+        };
+        if count == 0 {
+            return;
+        }
+        self.modal_index =
+            (self.modal_index as isize + delta).rem_euclid(count as isize) as usize;
+        cx.notify();
+    }
+
+    /// Responde o diálogo de seleção com a opção destacada.
+    pub fn submit_modal_select(&mut self, cx: &mut Context<Self>) {
+        let Some(option) = self
+            .modal
+            .as_ref()
+            .filter(|modal| modal.kind == ModalKind::Select)
+            .and_then(|modal| modal.options.get(self.modal_index).cloned())
+        else {
+            return;
+        };
+        self.respond_modal(ModalAnswer::Value(json!(option)), cx);
+    }
+
+    /// Linha destacada no diálogo de seleção atual.
+    pub fn modal_highlight(&self) -> usize {
+        self.modal_index
     }
 
     /// Respond to a dialog request from an extension.
@@ -1856,6 +1898,12 @@ impl AppState {
             }
             "/thinking-view" => {
                 self.show_thinking = !self.show_thinking;
+                true
+            }
+            "/auto-compact" => {
+                self.toggle_auto_compaction();
+                let enabled = if self.session.auto_compaction { "on" } else { "off" };
+                self.push_toast(format!("Auto-compaction {enabled}"), Tone::Info, cx);
                 true
             }
             "/clear" => {
@@ -2676,6 +2724,7 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("/model", "Switch model"),
     ("/thinking", "Set the reasoning level"),
     ("/thinking-view", "Show or hide reasoning by default"),
+    ("/auto-compact", "Toggle automatic compaction"),
     ("/export", "Write the session to an HTML file"),
     ("/name", "Name this session"),
     ("/sidebar", "Toggle the details rail"),

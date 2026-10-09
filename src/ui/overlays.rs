@@ -330,6 +330,11 @@ fn select_body(state: &AppState, cx: &Context<AppState>) -> AnyElement {
                 .text_size(px(theme::TEXT))
                 .text_color(theme::dim())
                 .cursor_pointer()
+                .when(index == state.modal_highlight(), |el| {
+                    el.bg(theme::hover())
+                        .border_color(theme::accent_edge())
+                        .text_color(theme::text())
+                })
                 .hover(|style| {
                     style
                         .bg(theme::hover())
@@ -503,17 +508,25 @@ fn input_body(state: &AppState, kind: ModalKind, cx: &Context<AppState>) -> AnyE
 
 /// Read the modal editor and answer the pending dialog.
 pub fn submit_modal(state: &mut AppState, cx: &mut Context<AppState>) {
+    // Um diálogo de seleção responde com a linha destacada, não com texto.
+    if state.modal_select_open() {
+        state.submit_modal_select(cx);
+        return;
+    }
     let text = state.modal_editor.read(cx).text(cx);
     state.respond_modal(ModalAnswer::Value(serde_json::json!(text)), cx);
 }
 
 pub fn keyboard_shortcuts() -> Vec<(&'static str, &'static str)> {
-    let app_keys: [(&'static str, &'static str); 16] = [
+    let app_keys: [(&'static str, &'static str); 19] = [
         ("⏎", "send the prompt"),
         ("⇧⏎", "insert a newline"),
         ("esc", "dismiss a menu, or stop the run"),
         ("↑ ↓", "choose in the slash menu"),
         ("⇥", "complete the highlighted command"),
+        ("↑ ↓ ⏎", "pick a model in the model picker"),
+        ("↑ ↓ ⏎", "open a session from the session search"),
+        ("↑ ↓ ⏎", "choose an option in a Pi dialog"),
         ("ctrl-n", "start a new session"),
         ("ctrl-tab", "next open conversation"),
         ("ctrl-⇧tab", "previous open conversation"),
