@@ -63,11 +63,16 @@ For the current reviewed main commit `710ec78373605736ac37a075b842aaf3d211f31b`
 (all three release features integrated):
 
 - [Linux run 37987496119](https://github.com/cleisonsantos/dish/actions/runs/37987496119)
-  and
-  [Windows run 37987496161](https://github.com/cleisonsantos/dish/actions/runs/37987496161)
-  were triggered by the merge and are the definitive pipeline for this commit.
-  Their results must be confirmed green before the label change; a local run is
-  not a substitute.
+  completed successfully: locked checks/tests, strict Clippy, release-tool
+  tests, remapped build, license checks, archive and Debian packaging, tests of
+  the real archive, the packaged-executable smoke tests (including the session
+  activity and metadata passes) and the installed `/usr/bin/dish` smoke.
+- [Windows run 37987496161](https://github.com/cleisonsantos/dish/actions/runs/37987496161)
+  compiled and uploaded an executable. The Windows workflow does not run the
+  Linux-equivalent interaction, packaging or installation tests.
+
+This is the integrated pipeline for all of #21, #23 and #24 and currently the
+reference evidence for the release label change.
 
 The previous baseline `a7988c0eade09f66f840a7f6b8ae4f0f6301b6f7` was fully
 green: [Linux run 37979418089](https://github.com/cleisonsantos/dish/actions/runs/37979418089)
@@ -209,8 +214,8 @@ Follow `docs/releasing.md`; publication remains a separate, explicit action.
 - [x] Review and merge #25, #30 and #31, resolving the shared
       `src/state.rs` / `tests/desktop_smoke.py` / fake-Pi conflicts; main now
       contains all three features and their combined tests.
-- [ ] Confirm the final main CI for `710ec78` is green (the run was still in
-      progress at this snapshot).
+- [x] Confirm the final main CI for `710ec78` is green (Linux and Windows both
+      completed successfully on the integrated commit).
 - [ ] Re-run every mandatory check and the entire CI package/installed-binary
       smoke pipeline on that exact integrated commit.
 - [ ] Update both Linux candidate commands in `.github/workflows/ci.yml` from
