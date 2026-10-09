@@ -228,6 +228,9 @@ fn main() {
             KeyBinding::new("up", workspace::NavUp, Some("DishNavSearch")),
             KeyBinding::new("down", workspace::NavDown, Some("DishNavSearch")),
             KeyBinding::new("enter", workspace::NavAccept, Some("DishNavSearch")),
+            // Esquerda/direita recolhem e expandem o projeto destacado.
+            KeyBinding::new("left", workspace::NavCollapse, Some("DishNavSearch")),
+            KeyBinding::new("right", workspace::NavExpand, Some("DishNavSearch")),
             KeyBinding::new("up", ui::ModalUp, Some("DishModal")),
             KeyBinding::new("down", ui::ModalDown, Some("DishModal")),
             KeyBinding::new("enter", SendPrompt, Some("DishInput")),

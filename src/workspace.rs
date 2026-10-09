@@ -11,7 +11,7 @@ use crate::sessions::{self, SessionInfo};
 use crate::state::AppState;
 use crate::theme;
 
-actions!(dish_workspace, [ToggleSessions, NextConversation, PreviousConversation, CloseConversation, SearchSessions, FocusPrompt, NavUp, NavDown, NavAccept]);
+actions!(dish_workspace, [ToggleSessions, NextConversation, PreviousConversation, CloseConversation, SearchSessions, FocusPrompt, NavUp, NavDown, NavAccept, NavCollapse, NavExpand]);
 
 struct Conversation {
     state: Entity<AppState>,
@@ -370,6 +370,33 @@ impl Workspace {
                 self.open(info, window, cx);
             }
         }
+    }
+
+    /// Recolhe ou expande o projeto da sessão destacada.
+    fn nav_toggle_project(&mut self, collapse: bool, cx: &mut Context<Self>) {
+        let Some(entry) = self.nav_entries.get(self.nav_index) else {
+            return;
+        };
+        let cwd = match entry {
+            NavEntry::Open(index) => self
+                .conversations
+                .get(*index)
+                .map(|conversation| conversation.state.read(cx).cwd.clone()),
+            NavEntry::Saved(path) => self
+                .catalog
+                .iter()
+                .find(|info| &info.path == path)
+                .map(|info| info.cwd.clone()),
+        };
+        let Some(cwd) = cwd else {
+            return;
+        };
+        if collapse {
+            self.collapsed.insert(cwd);
+        } else {
+            self.collapsed.remove(&cwd);
+        }
+        cx.notify();
     }
 
     fn spawn_conversation(&mut self, cwd: PathBuf, path: Option<PathBuf>, cx: &mut Context<Self>) {
@@ -1336,6 +1363,12 @@ impl Render for Workspace {
             .on_action(cx.listener(|workspace, _: &NavDown, _, cx| workspace.nav_move(1, cx)))
             .on_action(cx.listener(|workspace, _: &NavAccept, window, cx| {
                 workspace.nav_accept(window, cx)
+            }))
+            .on_action(cx.listener(|workspace, _: &NavCollapse, _, cx| {
+                workspace.nav_toggle_project(true, cx)
+            }))
+            .on_action(cx.listener(|workspace, _: &NavExpand, _, cx| {
+                workspace.nav_toggle_project(false, cx)
             }))
             .on_action(cx.listener(|workspace, _: &NextConversation, window, cx| {
                 if !workspace.confirm_close && !workspace.settings.as_ref().is_some_and(|s| s.read(cx).open) {
