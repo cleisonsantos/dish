@@ -88,8 +88,8 @@ commit has not been built or audited yet.
 
 ### PR #31 (metadata, #23)
 
-Locally on the rebased branch `feat/transcript-metadata` at
-`4462d92512efac3995f27b65ffa7b0a8dfb0c1f5` (base `a7988c0`):
+Locally on the rebased branch `feat/transcript-metadata` and then in CI at its
+head `18d1840a05ac66107759121f9940eded652a0af7` (base `a7988c0`):
 
 - `cargo check --locked`, `cargo clippy --locked --all-targets -- -D warnings`
   and 52 Rust tests pass.
@@ -100,9 +100,13 @@ Locally on the rebased branch `feat/transcript-metadata` at
 - Timestamp origins and limits are documented in `docs/transcript-metadata.md`;
   the new `chrono` direct dependency resolves to the chrono version already in
   the lockfile, adding no new package.
-- CI for the rebased commit was still pending at this snapshot. Local checks do
-  not replace CI of the final integrated release commit. The metadata work does
-  not complete the full keyboard-coverage backlog (#10).
+- CI on that head is fully green: two Linux jobs
+  ([run 37982210107](https://github.com/cleisonsantos/dish/actions/runs/37982210107)
+  and
+  [run 37982216026](https://github.com/cleisonsantos/dish/actions/runs/37982216026),
+  including the packaged-install and smoke steps) and the
+  [Windows run 37982210017](https://github.com/cleisonsantos/dish/actions/runs/37982210017).
+  The metadata work does not complete the full keyboard-coverage backlog (#10).
 
 ### PR #30 (session activity, #21)
 
