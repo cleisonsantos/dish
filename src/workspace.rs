@@ -10,8 +10,9 @@ use crate::rpc::{PiClient, PiConfig};
 use crate::sessions::{self, SessionInfo};
 use crate::state::AppState;
 use crate::theme;
+use crate::session_activity::{SessionFilter, SessionSignals, epoch_millis, from_epoch_millis, relative_time};
 
-actions!(dish_workspace, [ToggleSessions, NextConversation, PreviousConversation, CloseConversation, SearchSessions, FocusPrompt, NavUp, NavDown, NavAccept, NavCollapse, NavExpand]);
+actions!(dish_workspace, [ToggleSessions, NextConversation, PreviousConversation, CloseConversation, SearchSessions, FocusPrompt, NavUp, NavDown, NavAccept, NavCollapse, NavExpand, CycleSessionFilter]);
 
 struct Conversation {
     state: Entity<AppState>,
@@ -44,12 +45,52 @@ enum NavEntry {
     Saved(PathBuf),
 }
 
+impl SessionSignals {
+    fn from_state(state: &AppState, unread: bool) -> Self {
+        Self {
+            running: state.is_executing(),
+            needs_input: state.modal.is_some(),
+            unread,
+            queued: state.steering_queue.len() + state.follow_up_queue.len(),
+            error: state.activity_error || state.disconnected,
+            interrupted: state.activity_interrupted,
+            saved: false,
+        }
+    }
+}
+
 type SessionRow = (
     String,
     Option<SessionInfo>,
     Option<usize>,
     std::time::SystemTime,
 );
+
+fn attention_summary(pending: usize, unread: usize) -> String {
+    let mut labels = Vec::new();
+    if pending > 0 { labels.push(format!("{pending} pend.")); }
+    if unread > 0 { labels.push(format!("{unread} {}", if unread == 1 { "nova" } else { "novas" })); }
+    labels.join(" · ")
+}
+
+fn sort_session_rows(items: &mut [SessionRow], previous: &[String], interacting: bool) {
+    items.sort_by(|a, b| b.3.cmp(&a.3).then_with(|| row_key(a).cmp(&row_key(b))));
+    if interacting {
+        items.sort_by_key(|item| previous.iter().position(|key| *key == row_key(item)).unwrap_or(usize::MAX));
+    }
+}
+
+fn entry_key(entry: &NavEntry) -> String {
+    match entry {
+        NavEntry::Open(index) => format!("live-{index}"),
+        NavEntry::Saved(path) => format!("saved-{}", path.display()),
+    }
+}
+
+fn row_key(row: &SessionRow) -> String {
+    row.2.map(|index| format!("live-{index}"))
+        .unwrap_or_else(|| format!("saved-{}", row.1.as_ref().map(|info| info.path.to_string_lossy()).unwrap_or_default()))
+}
 
 fn select_item<'a, T>(items: &'a mut [T], active: &mut usize, index: usize) -> Option<&'a mut T> {
     let item = items.get_mut(index)?;
@@ -72,6 +113,8 @@ pub struct Workspace {
     nav_entries: Vec<NavEntry>,
     nav_index: usize,
     nav_query: String,
+    nav_filter: SessionFilter,
+    nav_last_project: Option<PathBuf>,
     nav_scroll: ScrollHandle,
     refreshing: bool,
     opening: Option<PathBuf>,
@@ -87,8 +130,10 @@ pub struct Workspace {
     confirm_focus: FocusHandle,
     /// Campo de busca da navegação.
     query: Entity<Editor>,
-    /// Filtro "em execução".
-    only_running: bool,
+    filter: SessionFilter,
+    nav_hovered: bool,
+    row_order: Vec<String>,
+    nav_anchors: BTreeMap<String, ScrollAnchor>,
     /// Se o usuário já decidiu mostrar/ocultar a navegação nesta janela.
     nav_user_choice: bool,
     /// O que está sob o mouse na faixa recolhida, para o chip de título.
@@ -177,6 +222,8 @@ impl Workspace {
             nav_entries: Vec::new(),
             nav_index: 0,
             nav_query: String::new(),
+            nav_filter: preferences.session_filter,
+            nav_last_project: None,
             nav_scroll: ScrollHandle::new(),
             refreshing: false,
             opening: None,
@@ -189,7 +236,10 @@ impl Workspace {
             pending: None,
             confirm_focus: cx.focus_handle(),
             query,
-            only_running: false,
+            filter: preferences.session_filter,
+            nav_hovered: false,
+            row_order: Vec::new(),
+            nav_anchors: BTreeMap::new(),
             nav_user_choice: preferences.navigation_open.is_some(),
             hovered: None,
             preferences,
@@ -296,7 +346,12 @@ impl Workspace {
             return;
         };
         conversation.unread_completion = false;
-        conversation.seen_completed_runs = conversation.state.read(cx).completed_runs;
+        conversation.seen_completed_runs = conversation.state.read(cx).completed_content_runs;
+        if let Some(path) = &conversation.path {
+            if self.preferences.unread_sessions.remove(path).is_some() {
+                crate::preferences::save(self.preferences.clone());
+            }
+        }
         let state = conversation.state.clone();
         let focus = {
             let state = state.read(cx);
@@ -342,12 +397,13 @@ impl Workspace {
     }
 
     /// Move o destaque na lista de sessões (abertas e salvas).
-    fn nav_move(&mut self, delta: isize, cx: &mut Context<Self>) {
+    fn nav_move(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
         if self.nav_entries.is_empty() {
             return;
         }
         let count = self.nav_entries.len();
         self.nav_index = (self.nav_index as isize + delta).rem_euclid(count as isize) as usize;
+        if let Some(anchor) = self.nav_anchors.get(&entry_key(&self.nav_entries[self.nav_index])) { anchor.scroll_to(window, cx); }
         cx.notify();
     }
 
@@ -374,23 +430,27 @@ impl Workspace {
 
     /// Recolhe ou expande o projeto da sessão destacada.
     fn nav_toggle_project(&mut self, collapse: bool, cx: &mut Context<Self>) {
-        let Some(entry) = self.nav_entries.get(self.nav_index) else {
-            return;
-        };
-        let cwd = match entry {
-            NavEntry::Open(index) => self
+        if !collapse {
+            if let Some(cwd) = &self.nav_last_project {
+                if self.collapsed.remove(cwd) { cx.notify(); return; }
+            }
+        }
+        let cwd = match self.nav_entries.get(self.nav_index) {
+            Some(NavEntry::Open(index)) => self
                 .conversations
                 .get(*index)
                 .map(|conversation| conversation.state.read(cx).cwd.clone()),
-            NavEntry::Saved(path) => self
+            Some(NavEntry::Saved(path)) => self
                 .catalog
                 .iter()
                 .find(|info| &info.path == path)
                 .map(|info| info.cwd.clone()),
+            None => self.nav_last_project.clone(),
         };
         let Some(cwd) = cwd else {
             return;
         };
+        self.nav_last_project = Some(cwd.clone());
         if collapse {
             self.collapsed.insert(cwd);
         } else {
@@ -604,17 +664,16 @@ impl Workspace {
     /// uma barra "Sessions" separada gastando uma linha inteira.
     fn navigation(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Stateful<Div> {
         let query = self.query.read(cx).text(cx).to_lowercase();
-        let only_running = self.only_running;
+        let filter = self.filter;
 
         let mut groups: BTreeMap<PathBuf, Vec<SessionRow>> = BTreeMap::new();
         for (index, conversation) in self.conversations.iter().enumerate() {
             let state = conversation.state.read(cx);
             let title = self.conversation_title(index, cx);
-            // Ordem de execução: manda o último prompt enviado. Uma sessão
-            // aberta e ainda não executada usa o mtime do arquivo; uma conversa
-            // nova sem arquivo usa o momento em que foi criada nesta janela.
+            // Recência observada nos limites de atividade, nunca nos deltas.
+            // Sem atividade ao vivo: prompt, mtime salvo ou criação da conversa.
             let last_run = state
-                .last_run
+                .last_activity.or(state.last_run)
                 .or_else(|| {
                     conversation.path.as_ref().and_then(|path| {
                         self.catalog
@@ -643,19 +702,27 @@ impl Workspace {
                 info.title.clone(),
                 Some(info.clone()),
                 None,
-                info.modified,
+                self.preferences.unread_sessions.get(&info.path).copied().map(from_epoch_millis).unwrap_or(info.modified),
             ));
         }
 
-        // Filtro local: por título do projeto/sessão e por "em execução".
-        if !query.is_empty() || only_running {
+        // Filtros independentes de atenção, leitura e atividade.
+        if !query.is_empty() || filter != SessionFilter::All {
             groups.retain(|cwd, items| {
                 let project_matches = cwd
                     .file_name()
                     .map(|name| name.to_string_lossy().to_lowercase().contains(&query))
                     .unwrap_or(false);
-                items.retain(|(title, _, live, _)| {
-                    if only_running && live.is_none() {
+                items.retain(|(title, info, live, _)| {
+                    let signals = live.map(|index| {
+                        let conversation = &self.conversations[index];
+                        SessionSignals::from_state(conversation.state.read(cx), conversation.unread_completion)
+                    }).unwrap_or(SessionSignals {
+                        saved: true,
+                        unread: info.as_ref().is_some_and(|info| self.preferences.unread_sessions.contains_key(&info.path)),
+                        ..Default::default()
+                    });
+                    if !signals.matches(filter) {
                         return false;
                     }
                     if project_matches || query.is_empty() {
@@ -667,15 +734,21 @@ impl Workspace {
             });
         }
 
-        // Lista plana na mesma ordem do desenho, para o teclado.
+        // Novos resultados de busca/filtro são revelados; recolher manualmente
+        // continua funcionando e a seta direita pode reabrir o último projeto.
+        if self.nav_query != query || self.nav_filter != filter {
+            for cwd in groups.keys() { self.collapsed.remove(cwd); }
+            self.nav_filter = filter;
+        }
+        // A mesma ordem estável alimenta o desenho e a navegação por teclado.
+        for items in groups.values_mut() {
+            sort_session_rows(items, &self.row_order,
+                self.nav_hovered || self.query.read(cx).focus_handle.is_focused(window));
+        }
         let mut entries: Vec<NavEntry> = Vec::new();
-        let mut entry_groups: Vec<usize> = Vec::new();
-        let mut group_position = 0usize;
         for (cwd, items) in &groups {
             if !self.collapsed.contains(cwd) {
-                let mut ordered: Vec<&SessionRow> = items.iter().collect();
-                ordered.sort_by_key(|item| std::cmp::Reverse(item.3));
-                for (_, info, live, _) in ordered {
+                for (_, info, live, _) in items {
                     if let Some(index) = live {
                         entries.push(NavEntry::Open(*index));
                     } else if let Some(info) = info {
@@ -683,27 +756,25 @@ impl Workspace {
                     } else {
                         continue;
                     }
-                    entry_groups.push(group_position);
                 }
             }
-            group_position += 1;
         }
+        let previous = self.nav_entries.get(self.nav_index);
         if self.nav_query != query {
             self.nav_query = query.clone();
             self.nav_index = 0;
+        } else if let Some(index) = previous.and_then(|previous| entries.iter().position(|entry| entry == previous)) {
+            self.nav_index = index;
         }
         self.nav_entries = entries;
         self.nav_index = self.nav_index.min(self.nav_entries.len().saturating_sub(1));
         let highlighted = self.nav_entries.get(self.nav_index).cloned();
-        if let Some(group) = entry_groups.get(self.nav_index) {
-            self.nav_scroll.scroll_to_item(*group);
-        }
 
         let open_count = self.conversations.len();
         let running_count = self
             .conversations
             .iter()
-            .filter(|c| c.state.read(cx).is_busy())
+            .filter(|c| c.state.read(cx).is_executing())
             .count();
         let focus = self.query.read(cx).focus_handle.clone();
         let query_editor = self.query.clone();
@@ -711,6 +782,7 @@ impl Workspace {
 
         let mut rail = div()
             .id("sessions-navigation")
+            .on_hover(cx.listener(|workspace, hovered: &bool, _, cx| { workspace.nav_hovered = *hovered; cx.notify(); }))
             .w(px(self.nav_width))
             .h_full()
             .flex_none()
@@ -831,25 +903,32 @@ impl Workspace {
                         div()
                             .flex()
                             .flex_row()
+                            .flex_wrap()
                             .items_center()
                             .gap(px(theme::S1))
                             .child(nav_filter_chip(
                                 "nav-filter-all",
                                 "Todas",
-                                !self.only_running,
+                                self.filter == SessionFilter::All,
                                 cx,
                                 |workspace, cx| {
-                                    workspace.only_running = false;
+                                    workspace.filter = SessionFilter::All;
                                     cx.notify();
                                 },
                             ))
+                            .child(nav_filter_chip("nav-filter-input", "Precisa de você", self.filter == SessionFilter::NeedsInput, cx, |workspace, cx| {
+                                workspace.filter = SessionFilter::NeedsInput; cx.notify();
+                            }))
+                            .child(nav_filter_chip("nav-filter-unread", "Não lidas", self.filter == SessionFilter::Unread, cx, |workspace, cx| {
+                                workspace.filter = SessionFilter::Unread; cx.notify();
+                            }))
                             .child(nav_filter_chip(
                                 "nav-filter-running",
-                                "Em execução",
-                                self.only_running,
+                                "Executando",
+                                self.filter == SessionFilter::Running,
                                 cx,
                                 |workspace, cx| {
-                                    workspace.only_running = true;
+                                    workspace.filter = SessionFilter::Running;
                                     cx.notify();
                                 },
                             )),
@@ -884,7 +963,7 @@ impl Workspace {
             let label = if !query.is_empty() {
                 format!("Nada corresponde a “{query}”")
             } else {
-                "Nenhuma sessão em execução".to_string()
+                "Nenhuma sessão neste filtro".to_string()
             };
             list = list.child(
                 div()
@@ -907,7 +986,7 @@ impl Workspace {
                             .cursor_pointer()
                             .hover(|style| style.text_color(theme::text()))
                             .on_click(cx.listener(|workspace, _: &ClickEvent, _, cx| {
-                                workspace.only_running = false;
+                                workspace.filter = SessionFilter::All;
                                 workspace.query.update(cx, |editor, cx| editor.clear(cx));
                                 cx.notify();
                             }))
@@ -916,17 +995,23 @@ impl Workspace {
             );
         }
 
-        for (cwd, mut items) in groups {
+        for (cwd, items) in groups {
             let collapsed = self.collapsed.contains(&cwd);
             let click_cwd = cwd.clone();
             let running = items
                 .iter()
                 .filter(|(_, _, live, _)| match live {
-                    Some(index) => self.conversations[*index].state.read(cx).is_busy(),
+                    Some(index) => self.conversations[*index].state.read(cx).is_executing(),
                     None => false,
                 })
                 .count();
-            items.sort_by_key(|item| std::cmp::Reverse(item.3));
+            let needs_input = items.iter().filter(|(_, _, live, _)| live.is_some_and(|i| self.conversations[i].state.read(cx).modal.is_some())).count();
+            let unread_count = items.iter().filter(|(_, info, live, _)| live.map(|i| self.conversations[i].unread_completion).unwrap_or_else(|| info.as_ref().is_some_and(|info| self.preferences.unread_sessions.contains_key(&info.path)))).count();
+            if !collapsed {
+                for item in &items {
+                    self.nav_anchors.entry(row_key(item)).or_insert_with(|| ScrollAnchor::for_handle(self.nav_scroll.clone()));
+                }
+            }
 
             list = list.child(
                 div()
@@ -975,6 +1060,10 @@ impl Workspace {
                                     .text_color(theme::dim())
                                     .child(SharedString::from(folder_of(&cwd))),
                             )
+                            .when(needs_input > 0 || unread_count > 0, |el| {
+                                el.child(div().text_size(px(theme::TEXT_XS)).text_color(theme::running())
+                                    .child(SharedString::from(attention_summary(needs_input, unread_count))))
+                            })
                             .when(running > 0, |el| {
                                 el.child(crate::ui::icons::icon(
                                     crate::ui::icons::Icon::Activity,
@@ -996,20 +1085,24 @@ impl Workspace {
                             ),
                     )
                     .when(!collapsed, |el| {
-                        el.children(items.into_iter().enumerate().map(
-                            |(row_index, (title, info, live, _))| {
-                                let running = live
-                                    .map(|i| self.conversations[i].state.read(cx).is_busy())
-                                    .unwrap_or(false);
+                        el.children(items.into_iter().map(
+                            |(title, info, live, activity_time)| {
+                                let key = row_key(&(title.clone(), info.clone(), live, activity_time));
                                 let highlighted_here = match &highlighted {
                                     Some(NavEntry::Open(index)) => live == Some(*index),
-                                    Some(NavEntry::Saved(path)) => {
-                                        info.as_ref().is_some_and(|info| &info.path == path)
-                                    }
+                                    Some(NavEntry::Saved(path)) => info.as_ref().is_some_and(|info| &info.path == path),
                                     None => false,
                                 };
+                                let keyboard_selected = highlighted_here && self.query.read(cx).focus_handle.is_focused(window);
+                                let signals = live.map(|i| {
+                                    let conversation = &self.conversations[i];
+                                    SessionSignals::from_state(conversation.state.read(cx), conversation.unread_completion)
+                                }).unwrap_or(SessionSignals { saved: true,
+                                    unread: info.as_ref().is_some_and(|info| self.preferences.unread_sessions.contains_key(&info.path)),
+                                    ..Default::default() });
+                                let running = signals.running;
                                 let active = live == Some(self.active);
-                                let unread = live.is_some_and(|i| self.conversations[i].unread_completion);
+                                let unread = signals.unread;
                                 let weak = cx.entity().downgrade();
                                 let info = info.clone();
                                 let delete_info = info.clone();
@@ -1017,10 +1110,10 @@ impl Workspace {
                                 let pending = delete_info
                                     .as_ref()
                                     .is_some_and(|info| self.pending_delete.as_ref() == Some(&info.path));
+                                let anchor = self.nav_anchors.get(&key).cloned();
                                 div()
-                                    .id(SharedString::from(format!(
-                                        "session-{row_index}-{title}"
-                                    )))
+                                    .id(SharedString::from(key))
+                                    .anchor_scroll(anchor)
                                     .flex()
                                     .flex_row()
                                     .items_center()
@@ -1035,7 +1128,7 @@ impl Workspace {
                                             .border_color(theme::line())
                                     })
                                     .when(!active && unread, |el| el.bg(theme::wash(theme::ok(), 0.10)))
-                                    .when(!active && highlighted_here, |el| el.bg(theme::hover()))
+                                    .when(keyboard_selected, |el| el.bg(theme::hover()).border_1().border_color(theme::running()))
                                     .when(!active, |el| el.hover(|s| s.bg(theme::hover())))
                                     .cursor_pointer()
                                     .on_click(move |_event: &ClickEvent, window, cx: &mut App| {
@@ -1081,6 +1174,7 @@ impl Workspace {
                                                 div()
                                                     .flex()
                                                     .flex_row()
+                                                    .flex_wrap()
                                                     .items_center()
                                                     .gap(px(theme::S1 + 1.))
                                                     .when(running, |el| {
@@ -1098,11 +1192,36 @@ impl Workspace {
                                                     })
                                                     .when(unread, |el| {
                                                         el.child(crate::ui::icons::icon(
-                                                            crate::ui::icons::Icon::Check, 11., theme::ok(),
+                                                            crate::ui::icons::Icon::File, 11., theme::ok(),
                                                         )).child(div().text_size(px(theme::TEXT_XS))
                                                             .text_color(theme::ok()).child("resposta nova"))
-                                                    }),
-                                            ),
+                                                    })
+                                                    .when(signals.needs_input, |el| {
+                                                        el.child(crate::ui::icons::icon(crate::ui::icons::Icon::Alert, 11., theme::running())).child(div().text_size(px(theme::TEXT_XS))
+                                                            .text_color(theme::running()).child("precisa de você"))
+                                                    })
+                                                    .when(signals.queued > 0, |el| {
+                                                        el.child(div().text_size(px(theme::TEXT_XS))
+                                                            .text_color(theme::dim()).child(SharedString::from(format!("{} em fila", signals.queued))))
+                                                    })
+                                                    .when(signals.error, |el| {
+                                                        el.child(crate::ui::icons::icon(crate::ui::icons::Icon::Alert, 11., theme::failure())).child(div().text_size(px(theme::TEXT_XS))
+                                                            .text_color(theme::failure()).child("erro"))
+                                                    })
+                                                    .when(signals.interrupted, |el| {
+                                                        el.child(crate::ui::icons::icon(crate::ui::icons::Icon::Stop, 11., theme::dim())).child(div().text_size(px(theme::TEXT_XS)).text_color(theme::dim()).child("interrompida"))
+                                                    })
+                                                    .when(!running && !signals.needs_input && !signals.error, |el| {
+                                                        el.child(div().text_size(px(theme::TEXT_XS))
+                                                            .text_color(theme::faint()).child(if live.is_some() { "inativa" } else { "salva" }))
+                                                    })
+                                                    .child(div().text_size(px(theme::TEXT_XS)).text_color(theme::faint())
+                                                        .child(SharedString::from(relative_time(activity_time, std::time::SystemTime::now())))),
+                                            )
+                                            .when(running, |el| {
+                                                el.child(div().truncate().text_size(px(theme::TEXT_XS)).text_color(theme::dim())
+                                                    .child(SharedString::from(live.and_then(|i| self.conversations[i].state.read(cx).activity.clone()).unwrap_or_default().replace("Thinking…", "Pensando…").replace("Compacting…", "Compactando…"))))
+                                            }),
                                     )
                                     .when_some(live_index, |el, index| {
                                         let weak = cx.entity().downgrade();
@@ -1146,6 +1265,8 @@ impl Workspace {
             );
         }
 
+        self.row_order = self.nav_entries.iter().map(entry_key).collect();
+        self.nav_anchors.retain(|key, _| self.row_order.contains(key));
         rail = rail.child(list);
         if self.undo_delete.is_some() {
             rail = rail.child(self.undo_bar(cx));
@@ -1244,11 +1365,27 @@ impl Render for Workspace {
                 if settings.read(cx).open { settings.update(cx, |settings, cx| settings.suspend(cx)); }
             }
         }
+        let active_viewed = window.is_window_active() && !self.confirm_close && !self.settings.as_ref().is_some_and(|settings| settings.read(cx).open);
         for (index, conversation) in self.conversations.iter_mut().enumerate() {
-            let completed = conversation.state.read(cx).completed_runs;
-            if completed != conversation.seen_completed_runs {
-                conversation.unread_completion = index != self.active;
+            let completed = conversation.state.read(cx).completed_content_runs;
+            let newly_completed = completed != conversation.seen_completed_runs;
+            if newly_completed {
+                conversation.unread_completion = index != self.active || !active_viewed;
                 conversation.seen_completed_runs = completed;
+            }
+            if index == self.active && active_viewed { conversation.unread_completion = false; }
+            if let Some(path) = &conversation.path {
+                if index == self.active && active_viewed {
+                    if self.preferences.unread_sessions.remove(path).is_some() { crate::preferences::save(self.preferences.clone()); }
+                } else if conversation.unread_completion {
+                    let time = epoch_millis(conversation.state.read(cx).last_activity.unwrap_or_else(std::time::SystemTime::now));
+                    if newly_completed || !self.preferences.unread_sessions.contains_key(path) {
+                        self.preferences.unread_sessions.insert(path.clone(), time);
+                        crate::preferences::save(self.preferences.clone());
+                    }
+                } else {
+                    conversation.unread_completion = self.preferences.unread_sessions.contains_key(path);
+                }
             }
         }
         if let Some((cwd, path, client)) = self.pending.take() {
@@ -1359,8 +1496,8 @@ impl Render for Workspace {
             .on_action(cx.listener(|workspace, _: &crate::ui::ToggleHelp, window, cx| {
                 workspace.open_settings(crate::settings::Section::Keys, window, cx);
             }))
-            .on_action(cx.listener(|workspace, _: &NavUp, _, cx| workspace.nav_move(-1, cx)))
-            .on_action(cx.listener(|workspace, _: &NavDown, _, cx| workspace.nav_move(1, cx)))
+            .on_action(cx.listener(|workspace, _: &NavUp, window, cx| workspace.nav_move(-1, window, cx)))
+            .on_action(cx.listener(|workspace, _: &NavDown, window, cx| workspace.nav_move(1, window, cx)))
             .on_action(cx.listener(|workspace, _: &NavAccept, window, cx| {
                 workspace.nav_accept(window, cx)
             }))
@@ -1416,6 +1553,21 @@ impl Render for Workspace {
         if !self.nav_user_choice {
             self.visible = f32::from(window.bounds().size.width) >= 1120.;
         }
+        root = root
+            .on_action(cx.listener(|workspace, _: &CycleSessionFilter, window, cx| {
+                if workspace.confirm_close || workspace.settings.as_ref().is_some_and(|settings| settings.read(cx).open) { return; }
+                workspace.filter = match workspace.filter {
+                    SessionFilter::All => SessionFilter::NeedsInput,
+                    SessionFilter::NeedsInput => SessionFilter::Unread,
+                    SessionFilter::Unread => SessionFilter::Running,
+                    SessionFilter::Running => SessionFilter::All,
+                };
+                workspace.visible = true;
+                workspace.nav_user_choice = true;
+                let focus = workspace.query.read(cx).focus_handle.clone();
+                focus.focus(window, cx);
+                cx.notify();
+            }));
         let mut body = div().relative().flex_1().min_h(px(0.)).flex().flex_row();
         if self.visible {
             body = body.child(self.navigation(window, cx));
@@ -1495,6 +1647,9 @@ impl Render for Workspace {
                 let open_indices = groups.get(&cwd).cloned().unwrap_or_default();
                 let saved_indices = saved.get(&cwd).cloned().unwrap_or_default();
                 let folder_cwd = cwd.clone();
+                let pending_count = open_indices.iter().filter(|i| self.conversations[**i].state.read(cx).modal.is_some()).count();
+                let new_count = open_indices.iter().filter(|i| self.conversations[**i].unread_completion).count()
+                    + saved_indices.iter().filter(|i| self.preferences.unread_sessions.contains_key(&self.catalog[**i].path)).count();
                 let mut group = div()
                     .flex()
                     .flex_col()
@@ -1526,8 +1681,13 @@ impl Render for Workspace {
                                 theme::faint(),
                             )),
                     );
+                if pending_count > 0 || new_count > 0 {
+                    group = group.child(div().text_size(px(theme::TEXT_XS)).text_color(theme::running())
+                        .child(SharedString::from(format!("{pending_count}P {new_count}N"))));
+                }
                 for index in open_indices {
-                    let busy = self.conversations[index].state.read(cx).is_busy();
+                    let signals = SessionSignals::from_state(self.conversations[index].state.read(cx), self.conversations[index].unread_completion);
+                    let busy = signals.running;
                     let unread = self.conversations[index].unread_completion;
                     let color = if index == self.active {
                         theme::text()
@@ -1556,7 +1716,13 @@ impl Render for Workspace {
                             .on_click(cx.listener(move |workspace, _: &ClickEvent, window, cx| {
                                 workspace.select(index, window, cx);
                             }))
-                            .child(crate::ui::dot(color, 8.)),
+                            .child(if signals.needs_input {
+                                crate::ui::icons::icon(crate::ui::icons::Icon::Alert, 12., theme::running()).into_any_element()
+                            } else if signals.error {
+                                crate::ui::icons::icon(crate::ui::icons::Icon::Alert, 12., theme::failure()).into_any_element()
+                            } else if unread {
+                                crate::ui::icons::icon(crate::ui::icons::Icon::File, 12., theme::ok()).into_any_element()
+                            } else { crate::ui::dot(color, 8.).into_any_element() }),
                     );
                 }
                 for info_index in saved_indices {
@@ -1592,6 +1758,7 @@ impl Render for Workspace {
         if active.inspector_initialized {
             preferences.details_open = Some(active.sidebar);
         }
+        preferences.session_filter = self.filter;
         preferences.navigation_open = Some(self.visible);
         preferences.navigation_width = Some(self.nav_width);
         preferences.show_thinking = Some(active.show_thinking);
@@ -1650,26 +1817,10 @@ impl Render for Workspace {
                     }
                     NavHover::Conversation(index) => {
                         let index = *index;
-                        let (busy, unread) = self
-                            .conversations
-                            .get(index)
-                            .map(|conversation| {
-                                (
-                                    conversation.state.read(cx).is_busy(),
-                                    conversation.unread_completion,
-                                )
-                            })
-                            .unwrap_or((false, false));
-                        let status = if index == self.active {
-                            "ativa"
-                        } else if busy {
-                            "executando"
-                        } else if unread {
-                            "resposta nova"
-                        } else {
-                            "aberta"
-                        };
-                        (self.conversation_title(index, cx), status.to_string())
+                        let signals = self.conversations.get(index).map(|conversation| {
+                            SessionSignals::from_state(conversation.state.read(cx), conversation.unread_completion)
+                        }).unwrap_or_default();
+                        (self.conversation_title(index, cx), signals.labels())
                     }
                     NavHover::Saved(index) => {
                         let info = self.catalog.get(*index);
@@ -1895,7 +2046,7 @@ fn folder_of(cwd: &std::path::Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{add_to_catalog, drop_from_catalog, select_item};
+    use super::{add_to_catalog, drop_from_catalog, select_item, sort_session_rows, row_key, attention_summary, SessionSignals, SessionFilter};
     use crate::sessions::SessionInfo;
     use std::path::PathBuf;
 
@@ -1906,6 +2057,46 @@ mod tests {
             title: path.into(),
             modified: std::time::UNIX_EPOCH + std::time::Duration::from_secs(modified),
         }
+    }
+
+    #[test]
+    fn row_order_has_stable_ties_and_freezes_during_interaction() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let old = UNIX_EPOCH + Duration::from_secs(1);
+        let recent = UNIX_EPOCH + Duration::from_secs(2);
+        let mut rows = vec![("b".into(), None, Some(1), old), ("a".into(), None, Some(0), old)];
+        sort_session_rows(&mut rows, &[], false);
+        assert_eq!(rows.iter().map(row_key).collect::<Vec<_>>(), ["live-0", "live-1"]);
+        let previous = rows.iter().map(row_key).collect::<Vec<_>>();
+        rows[1].3 = recent;
+        rows.push(("c".into(), None, Some(2), recent));
+        sort_session_rows(&mut rows, &previous, true);
+        assert_eq!(rows.iter().map(row_key).collect::<Vec<_>>(), ["live-0", "live-1", "live-2"]);
+        sort_session_rows(&mut rows, &previous, false);
+        assert_eq!(rows.iter().map(row_key).collect::<Vec<_>>(), ["live-1", "live-2", "live-0"]);
+    }
+
+    #[test]
+    fn attention_counts_are_compact_and_do_not_hide_real_counts() {
+        assert_eq!(attention_summary(0, 1), "1 nova");
+        assert_eq!(attention_summary(2, 3), "2 pend. · 3 novas");
+        assert_eq!(attention_summary(1, 0), "1 pend.");
+    }
+
+    #[test]
+    fn running_filter_excludes_open_but_inactive_sessions() {
+        assert!(!SessionSignals::default().matches(SessionFilter::Running));
+        assert!(SessionSignals { running: true, ..Default::default() }.matches(SessionFilter::Running));
+    }
+
+    #[test]
+    fn attention_signals_do_not_imply_running() {
+        let signals = SessionSignals {
+            needs_input: true, unread: true, queued: 2, ..Default::default()
+        };
+        assert!(!signals.matches(SessionFilter::Running));
+        assert!(signals.needs_input && signals.unread);
+        assert_eq!(signals.queued, 2);
     }
 
     #[test]

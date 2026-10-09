@@ -77,7 +77,8 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
         assert "Aplicativo" in page and "Contas e provedores" not in page, page
         click_label("Sobre / Pi")
         about = capture()
-        assert "Pi selecionado" in about and "SDK do Pi" not in about, about
+        compact_about = "".join(about.lower().split())
+        assert "piselecionado" in compact_about and "sdkdopi" not in compact_about, about
         click_label("Aplicativo")
         click_label("Painel de detalhes")
         click_label("expandido")

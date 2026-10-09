@@ -300,8 +300,15 @@ pub struct AppState {
     pending_local_user: Option<usize>,
 
     pub streaming: bool,
+    agent_active: bool,
     /// Monotonic counter of completed agent runs (not individual tool turns).
     pub completed_runs: u64,
+    /// Completed runs with live assistant text, not merely an agent_end event.
+    pub completed_content_runs: u64,
+    response_tracker: crate::session_activity::ResponseTracker,
+    pub last_activity: Option<std::time::SystemTime>,
+    pub activity_error: bool,
+    pub activity_interrupted: bool,
     pub activity: Option<String>,
 
     pub session: SessionState,
@@ -335,6 +342,7 @@ pub struct AppState {
     pub modal: Option<Modal>,
     /// Linha destacada nos diálogos de seleção de extensões.
     modal_index: usize,
+    pub composer_focus_pending: bool,
     pub ext_status: Vec<(String, String)>,
     pub ext_widget: Vec<String>,
     pub title_override: Option<String>,
@@ -404,7 +412,13 @@ impl AppState {
             local_bash: HashMap::new(),
             pending_local_user: None,
             streaming: false,
+            agent_active: false,
             completed_runs: 0,
+            completed_content_runs: 0,
+            response_tracker: crate::session_activity::ResponseTracker::default(),
+            last_activity: None,
+            activity_error: false,
+            activity_interrupted: false,
             activity: None,
             session: SessionState {
                 auto_compaction: true,
@@ -432,6 +446,7 @@ impl AppState {
             banner: None,
             modal: None,
             modal_index: 0,
+            composer_focus_pending: false,
             ext_status: Vec::new(),
             ext_widget: Vec::new(),
             title_override: None,
@@ -455,7 +470,10 @@ impl AppState {
             let _ = this.update(cx, |state, cx| {
                 state.activity = None;
                 state.streaming = false;
+                state.agent_active = false;
                 state.disconnected = true;
+                state.activity_error = true;
+                state.last_activity = Some(std::time::SystemTime::now());
                 state.loading = false;
                 state.push_toast("Pi exited. Restart Dish to reconnect.".to_string(), Tone::Error, cx);
             });
@@ -519,6 +537,20 @@ impl AppState {
         record: &Value,
         cx: &mut Context<Self>,
     ) -> Option<usize> {
+        self.response_tracker.observe(kind, record);
+        self.completed_content_runs = self.response_tracker.completed;
+        // Only boundaries affect navigator ordering; streaming deltas do not.
+        if matches!(kind, "agent_start" | "agent_end" | "tool_execution_start" | "tool_execution_end" | "extension_ui_request" | "queue_update" | "compaction_start" | "compaction_end") {
+            self.last_activity = Some(std::time::SystemTime::now());
+        }
+        if kind == "extension_error"
+            || (kind == "compaction_end" && record["aborted"] != true && record.get("errorMessage").and_then(Value::as_str).is_some())
+            || (kind == "auto_retry_end" && record.get("success").and_then(Value::as_bool) == Some(false)) {
+            self.activity_error = true;
+        }
+        if kind == "compaction_end" && record.get("aborted").and_then(Value::as_bool) == Some(true) {
+            self.activity_interrupted = true;
+        }
         match kind {
             "response" => {
                 if let Some(response) = RpcResponse::parse(record) {
@@ -527,6 +559,9 @@ impl AppState {
                 None
             }
             "agent_start" => {
+                self.agent_active = true;
+                self.activity_error = false;
+                self.activity_interrupted = false;
                 self.streaming = true;
                 self.activity = Some("Thinking…".into());
                 None
@@ -537,12 +572,14 @@ impl AppState {
                 None
             }
             "agent_end" => {
+                self.agent_active = false;
                 self.completed_runs = self.completed_runs.saturating_add(1);
                 self.streaming = false;
                 self.activity = None;
                 None
             }
             "agent_settled" => {
+                self.agent_active = false;
                 self.streaming = false;
                 self.activity = None;
                 self.refresh_after_settle();
@@ -553,10 +590,15 @@ impl AppState {
             "message_end" => self.apply_message_end(record),
             "turn_end" => {
                 if let Some(message) = record.get("message") {
+                    let (failed, interrupted) = crate::session_activity::message_outcome(message);
+                    self.activity_interrupted |= interrupted;
+                    self.activity_error |= failed;
                     if let Some(error) = message.get("errorMessage").and_then(Value::as_str) {
+                        let aborted = message["stopReason"] == "aborted";
+                        self.activity_error |= !aborted;
                         self.banner = Some(Banner {
                             text: error.to_string(),
-                            tone: Tone::Error,
+                            tone: if aborted { Tone::Warning } else { Tone::Error },
                         });
                     }
                 }
@@ -566,7 +608,10 @@ impl AppState {
             }
             "tool_execution_start" => self.apply_tool_start(record),
             "tool_execution_update" => self.apply_tool_update(record),
-            "tool_execution_end" => self.apply_tool_end(record),
+            "tool_execution_end" => {
+                self.activity_error |= record.get("isError").and_then(Value::as_bool).unwrap_or(false);
+                self.apply_tool_end(record)
+            }
             "bash_execution_update" => self.apply_bash_delta(record),
             "queue_update" => {
                 self.steering_queue = string_array(record.get("steering"));
@@ -705,6 +750,7 @@ impl AppState {
             }
         }
         if !response.success {
+            self.activity_error = true;
             if response.command == "get_messages" {
                 self.loading = false;
             }
@@ -766,6 +812,7 @@ impl AppState {
                     .get("isStreaming")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
+                self.agent_active = self.streaming;
                 self.session.steering_mode = data
                     .get("steeringMode")
                     .and_then(Value::as_str)
@@ -1137,6 +1184,11 @@ impl AppState {
     fn apply_message_end(&mut self, record: &Value) -> Option<usize> {
         let message = record.get("message")?;
         let role = message.get("role").and_then(Value::as_str).unwrap_or_default();
+        if role == "assistant" {
+            let (failed, interrupted) = crate::session_activity::message_outcome(message);
+            self.activity_interrupted |= interrupted;
+            self.activity_error |= failed;
+        }
         match role {
             "assistant" => {
                 let index = self.streaming_message.take().or_else(|| {
@@ -1618,6 +1670,7 @@ impl AppState {
             }),
         };
         self.client.send(payload);
+        self.composer_focus_pending = true;
         cx.notify();
     }
 
@@ -2170,9 +2223,12 @@ impl AppState {
         self.new_session_requested = true;
     }
 
+    pub fn is_executing(&self) -> bool {
+        !self.disconnected && (self.agent_active || self.streaming || self.session.is_compacting || !self.local_bash.is_empty())
+    }
+
     pub fn is_busy(&self) -> bool {
-        !self.disconnected && (self.streaming || self.session.is_compacting
-            || !self.local_bash.is_empty() || self.modal.is_some())
+        self.is_executing() || (!self.disconnected && self.modal.is_some())
     }
 
     pub fn compact(&mut self) {

@@ -37,6 +37,11 @@ def emit(record):
 def run(message, images):
     global level
     emit({"type": "agent_start"})
+    if message == "test-exit":
+        os._exit(1)
+    if message == "test-empty":
+        emit({"type": "agent_end", "messages": []})
+        return
     content = [{"type": "text", "text": message}] + images
     emit({"type": "message_start", "message": {"role": "user", "content": content}})
     emit({"type": "message_end", "message": {"role": "user", "content": content}})
@@ -51,7 +56,7 @@ def run(message, images):
               "id": "fake-dialog", "title": "Fake Pi needs input"})
         dialog_answer.wait(10)
     for index in range(5):
-        time.sleep(0.5 if message.startswith("long") else 0.2)
+        time.sleep(0.2 if message.startswith("long-activity") else 0.5 if message.startswith("long") else 0.2)
         delta = f"{message} / {os.path.basename(os.getcwd())} / {index}\n"
         if message == "table":
             delta = ("Tabela de teste\n\n| Arquivo | Avaliação |\n| --- | --- |\n"
@@ -64,7 +69,16 @@ def run(message, images):
         emit({"type": "message_update", "assistantMessageEvent": {
             "type": "text_delta", "contentIndex": 0,
             "delta": delta}})
+    gate_dir = os.environ.get("DISH_FAKE_PI_RUN_GATE_DIR")
+    if gate_dir and message.startswith("long-activity"):
+        # Deterministic UI tests release completion only after navigating away.
+        deadline = time.monotonic() + 30
+        while not os.path.exists(os.path.join(gate_dir, message)) and time.monotonic() < deadline:
+            time.sleep(0.05)
+    if message == "test-error":
+        emit({"type": "turn_end", "message": {"role": "assistant", "stopReason": "error", "errorMessage": "Synthetic failure"}})
     emit({"type": "message_end", "message": {"role": "assistant",
+          "stopReason": "aborted" if message == "test-interrupted" else "error" if message == "test-error" else "stop",
           "content": [{"type": "text", "text": (
               "| Arquivo | Avaliação |\n| --- | --- |\n"
               "| `dish-icon.svg` | Conceito próprio, mas sobrecarregado. |\n"
@@ -117,6 +131,8 @@ for line in sys.stdin:
     elif kind == "set_thinking_level":
         level = command["level"]
     elif kind == "prompt":
+        if running:
+            emit({"type": "queue_update", "steering": [], "followUp": [command["message"]]})
         prompts.put((command["message"], command.get("images", [])))
     elif kind == "extension_ui_response":
         dialog_answer.set()

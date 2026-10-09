@@ -1,5 +1,5 @@
 //! UI preferences, separate from Pi's conversation storage.
-use std::{collections::BTreeSet, path::PathBuf, sync::{mpsc, OnceLock}};
+use std::{collections::{BTreeMap, BTreeSet}, path::PathBuf, sync::{mpsc, OnceLock}};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -16,6 +16,9 @@ pub struct Preferences {
     pub last_session: Option<PathBuf>,
     pub window_size: Option<[f32; 2]>,
     pub pi_executable: Option<PathBuf>,
+    /// Client-observed completion time for responses not yet viewed.
+    pub unread_sessions: BTreeMap<PathBuf, u64>,
+    pub session_filter: crate::session_activity::SessionFilter,
 }
 
 fn path() -> Option<PathBuf> {
@@ -90,6 +93,8 @@ mod tests {
             last_project: Some("/tmp/projeto-á".into()), last_session: Some("/tmp/session.jsonl".into()),
             window_size: Some([1240., 860.]),
             pi_executable: None,
+            unread_sessions: [(PathBuf::from("/tmp/session.jsonl"), 123456)].into(),
+            session_filter: crate::session_activity::SessionFilter::Unread,
         };
         let bytes = serde_json::to_vec(&preferences).unwrap();
         assert_eq!(serde_json::from_slice::<Preferences>(&bytes).unwrap(), preferences);
