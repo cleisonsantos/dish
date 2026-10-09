@@ -183,6 +183,30 @@ fn model_control(state: &AppState, cx: &Context<AppState>) -> AnyElement {
 
 fn effort_control(state: &AppState, cx: &Context<AppState>) -> AnyElement {
     let level = state.thinking_level.clone().unwrap_or_default();
+    // Modelo sem escada de raciocínio: diga isso em vez de mostrar vazio.
+    if state.thinking_levels.is_empty() {
+        return div()
+            .id("composer-effort")
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(theme::S2))
+            .px(px(theme::S2 + 2.))
+            .py(px(theme::S1 + 2.))
+            .rounded(theme::r_control())
+            .child(crate::ui::dot(theme::faint(), 8.))
+            .child(
+                div()
+                    .text_size(px(theme::TEXT_SM))
+                    .text_color(theme::faint())
+                    .child(if state.loading {
+                        "esforço…"
+                    } else {
+                        "sem raciocínio"
+                    }),
+            )
+            .into_any_element();
+    }
     let color = theme::effort_color(&level, &state.thinking_levels);
     control_shell("composer-effort")
         .on_click(cx.listener(|state, _: &ClickEvent, _window, cx| {

@@ -736,6 +736,7 @@ impl AppState {
                     .get("thinkingLevel")
                     .and_then(Value::as_str)
                     .map(str::to_string);
+                self.reconcile_effort();
                 self.sync_effort_accent();
                 self.session.id = data
                     .get("sessionId")
@@ -788,6 +789,7 @@ impl AppState {
             }
             "get_available_thinking_levels" => {
                 self.thinking_levels = string_array(response.data.get("levels"));
+                self.reconcile_effort();
                 self.sync_effort_accent();
                 None
             }
@@ -2198,8 +2200,8 @@ impl AppState {
         );
         self.model = Some(model.clone());
         self.model_menu = false;
-        // A different model brings a different reasoning ladder.
-        self.thinking_levels.clear();
+        // A escada do novo modelo chega em seguida; até lá os níveis atuais
+        // continuam visíveis, em vez de o controle esvaziar.
         self.client.call("get_available_thinking_levels", Value::Null);
     }
 
@@ -2286,6 +2288,20 @@ impl AppState {
         self.thinking_level = Some(level.to_string());
         self.thinking_menu = false;
         self.sync_effort_accent();
+    }
+
+    /// Alinha o nível atual com a escada do modelo: um nível que a nova lista
+    /// não suporta vira `off` (ou o primeiro disponível) em vez de ficar pendurado.
+    fn reconcile_effort(&mut self) {
+        let Some(level) =
+            reconcile_effort_level(&self.thinking_levels, self.thinking_level.as_deref())
+                .map(str::to_string)
+        else {
+            return;
+        };
+        if self.thinking_level.as_deref() != Some(level.as_str()) {
+            self.set_thinking_level(&level);
+        }
     }
 
     pub fn toggle_auto_compaction(&mut self) {
@@ -2604,6 +2620,27 @@ fn clipboard_image(format: ImageFormat, bytes: &[u8]) -> Result<Value, String> {
 }
 
 /// Advance through the levels reported by Pi, wrapping after the last.
+/// Nível de esforço a usar quando a escada de um modelo chega: mantém o atual
+/// se ainda for válido; senão cai para `off` (ou o primeiro disponível).
+pub fn reconcile_effort_level<'a>(
+    levels: &'a [String],
+    current: Option<&str>,
+) -> Option<&'a str> {
+    if levels.is_empty() {
+        return None;
+    }
+    if let Some(current) = current {
+        if let Some(level) = levels.iter().find(|level| level.as_str() == current) {
+            return Some(level.as_str());
+        }
+    }
+    levels
+        .iter()
+        .find(|level| level.as_str() == "off")
+        .or_else(|| levels.first())
+        .map(String::as_str)
+}
+
 fn next_effort_level<'a>(levels: &'a [String], current: Option<&str>) -> Option<&'a str> {
     if levels.is_empty() {
         return None;
@@ -2618,6 +2655,20 @@ fn next_effort_level<'a>(levels: &'a [String], current: Option<&str>) -> Option<
 #[cfg(test)]
 mod effort_tests {
     use super::next_effort_level;
+
+    #[test]
+    fn reconcile_effort_keeps_valid_and_falls_back_deterministically() {
+        let levels = vec!["off".to_string(), "low".to_string(), "high".to_string()];
+        assert_eq!(super::reconcile_effort_level(&levels, Some("low")), Some("low"));
+        assert_eq!(super::reconcile_effort_level(&levels, Some("max")), Some("off"));
+        assert_eq!(super::reconcile_effort_level(&levels, None), Some("off"));
+        assert_eq!(super::reconcile_effort_level(&[], Some("low")), None);
+        let without_off = vec!["low".to_string(), "high".to_string()];
+        assert_eq!(
+            super::reconcile_effort_level(&without_off, Some("max")),
+            Some("low")
+        );
+    }
 
     #[test]
     fn image_clipboard_uses_pi_image_content_contract() {
