@@ -44,6 +44,7 @@ pub fn transcript(state: &AppState, cx: &Context<AppState>) -> Div {
     };
 
     let mut root = div()
+        .tab_group()
         .relative()
         .flex_1()
         .min_h(px(0.))
@@ -179,11 +180,10 @@ fn message_element(state: &AppState, index: usize, weak: &WeakEntity<AppState>) 
 }
 
 /// O pedido: superfície discreta, sem balão.
-fn request(state: &AppState, message: &Message, index: usize, weak: &WeakEntity<AppState>) -> AnyElement {
+fn request(state: &AppState, message: &Message, index: usize, _weak: &WeakEntity<AppState>) -> AnyElement {
     let text = message.text();
     let style = markdown_style();
     let copied = text.clone();
-    let weak = weak.clone();
 
     div()
         .w_full()
@@ -204,7 +204,7 @@ fn request(state: &AppState, message: &Message, index: usize, weak: &WeakEntity<
                 .border_color(theme::line_soft())
                 .px(px(theme::S4))
                 .py(px(theme::S2))
-                .children(markdown::blocks(&text, &style, &state.cwd))
+                .children(markdown::blocks(&text, &style, &state.cwd, SharedString::from(format!("request-text-{index}")).into()))
                 .child(
                     div()
                         .flex()
@@ -212,34 +212,11 @@ fn request(state: &AppState, message: &Message, index: usize, weak: &WeakEntity<
                         .items_center()
                         .justify_end()
                         .gap(px(theme::S3))
-                        .opacity(0.0)
-                        .group_hover("request", |style| style.opacity(1.0))
-                        .child(
-                            div()
-                                .id(SharedString::from(format!("copy-prompt-{index}")))
-                                .text_size(px(theme::TEXT_XS))
-                                .line_height(px(13.))
-                                .text_color(theme::faint())
-                                .cursor_pointer()
-                                .hover(|style| style.text_color(theme::text()))
-                                .on_click({
-                                    let weak = weak.clone();
-                                    move |_event: &ClickEvent, _window: &mut Window, cx: &mut App| {
-                                        cx.write_to_clipboard(ClipboardItem::new_string(
-                                            copied.clone(),
-                                        ));
-                                        weak.update(cx, |state, cx| {
-                                            state.push_toast(
-                                                "prompt copied".into(),
-                                                crate::state::Tone::Success,
-                                                cx,
-                                            )
-                                        })
-                                        .ok();
-                                    }
-                                })
-                                .child("copiar"),
-                        ),
+                        .child(super::copy_button::CopyButton {
+                            id: SharedString::from(format!("copy-prompt-{index}")).into(),
+                            text: copied,
+                            label: "Copiar mensagem",
+                        }),
                 ),
         )
         .into_any_element()
@@ -293,28 +270,11 @@ fn assistant_turn(
                     )
                 })
                 .when(!streaming && !message.text().is_empty(), |el| {
-                    let weak = weak.clone();
-                    let text = message.text();
-                    el.child(
-                        div()
-                            .id(SharedString::from(format!("copy-reply-{index}")))
-                            .text_size(px(theme::TEXT_XS))
-                            .text_color(theme::faint())
-                            .cursor_pointer()
-                            .hover(|style| style.text_color(theme::text()))
-                            .on_click(move |_event: &ClickEvent, _window: &mut Window, cx: &mut App| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
-                                weak.update(cx, |state, cx| {
-                                    state.push_toast(
-                                        "resposta copiada".into(),
-                                        crate::state::Tone::Success,
-                                        cx,
-                                    )
-                                })
-                                .ok();
-                            })
-                            .child("copiar"),
-                    )
+                    el.child(super::copy_button::CopyButton {
+                        id: SharedString::from(format!("copy-reply-{index}")).into(),
+                        text: message.text(),
+                        label: "Copiar resposta",
+                    })
                 }),
         );
 
@@ -348,8 +308,7 @@ fn assistant_turn(
                         .flex()
                         .flex_col()
                         .gap(px(theme::S2))
-                        .children(markdown::blocks(text, &style, &state.cwd))
-                        .child(super::selectable::SelectableText(text.clone()))
+                        .children(markdown::blocks(text, &style, &state.cwd, SharedString::from(format!("reply-text-{index}-{block_index}")).into()))
                         .into_any_element(),
                 );
             }
@@ -645,6 +604,17 @@ fn activity_group(
     column.into_any_element()
 }
 
+/// Copy the actual command, or complete arguments; never the truncated summary.
+fn tool_copy_text(args: &serde_json::Value, partial: &str) -> String {
+    if let Some(command) = args.get("command").and_then(serde_json::Value::as_str) {
+        command.to_owned()
+    } else if args.is_null() {
+        partial.to_owned()
+    } else {
+        serde_json::to_string_pretty(args).unwrap_or_else(|_| partial.to_owned())
+    }
+}
+
 fn tool_row(
     message_index: usize,
     block_index: usize,
@@ -654,18 +624,25 @@ fn tool_row(
     let (glyph, color, label) = crate::ui::status_word(card.status);
     let summary = card.summary();
     let expanded = card.expanded;
+    let keyboard_weak = weak.clone();
     let weak = weak.clone();
-
+    let command = card.args.get("command").and_then(serde_json::Value::as_str).map(str::to_owned);
+    let complete = tool_copy_text(&card.args, &card.args_text);
+    let tooltip = complete.clone();
+    let prefix = format!("tool-section-{message_index}-{block_index}");
     let mut sections: Vec<AnyElement> = Vec::new();
-    if !card.args.is_null() && card.name != "bash" {
+    if let Some(command) = command.as_ref() {
+        sections.push(section(&prefix, "comando", command));
+    }
+    if !card.args.is_null() {
         let args =
             serde_json::to_string_pretty(&card.args).unwrap_or_else(|_| card.args_text.clone());
         if !args.is_empty() && args != "{}" {
-            sections.push(section("argumentos", &args));
+            sections.push(section(&prefix, "argumentos", &args));
         }
     }
     if !card.output.is_empty() {
-        sections.push(section("saída", &card.output));
+        sections.push(section(&prefix, "saída", &card.output));
     }
     if let Some(details) = card
         .details
@@ -673,7 +650,7 @@ fn tool_row(
         .map(|details| serde_json::to_string_pretty(details).unwrap_or_default())
         .filter(|text| !text.is_empty() && text != "{}")
     {
-        sections.push(section("detalhes", &details));
+        sections.push(section(&prefix, "detalhes", &details));
     }
 
     let row = div()
@@ -688,6 +665,15 @@ fn tool_row(
         .pr(px(theme::S2))
         .rounded(theme::r_control())
         .cursor_pointer()
+        .focusable().tab_index(0)
+        .focus(|s| s.border_1().border_color(theme::accent()))
+        .hoverable_tooltip(move |_, cx| cx.new(|_| super::copy_button::TextTooltip(tooltip.clone())).into())
+        .on_key_down(move |event, _, cx| {
+            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                let _ = keyboard_weak.update(cx, |state, cx| state.toggle_tool(message_index, block_index, cx));
+                cx.stop_propagation();
+            }
+        })
         .hover(|style| style.bg(theme::hover()))
         .on_click(move |_event: &ClickEvent, _window: &mut Window, cx: &mut App| {
             weak.update(cx, |state, cx| {
@@ -714,6 +700,11 @@ fn tool_row(
                 .text_color(theme::faint())
                 .child(SharedString::from(summary)),
         )
+        .child(super::copy_button::CopyButton {
+            id: SharedString::from(format!("copy-tool-{message_index}-{block_index}")).into(),
+            text: complete,
+            label: if command.is_some() { "Copiar comando" } else { "Copiar argumentos" },
+        })
         .child(icon(glyph, 12., color))
         .child(
             div()
@@ -752,11 +743,15 @@ fn command_row(
         None => label.to_string(),
     };
 
+    let tooltip = card.command.clone();
+    let prefix = format!("bash-section-{message_index}-{block_index}");
     let mut column = div()
         .flex()
         .flex_col()
         .child(
             div()
+                .id(SharedString::from(format!("bash-command-{message_index}-{block_index}")))
+                .hoverable_tooltip(move |_, cx| cx.new(|_| super::copy_button::TextTooltip(tooltip.clone())).into())
                 .flex()
                 .flex_row()
                 .items_center()
@@ -772,8 +767,13 @@ fn command_row(
                         .font_family(theme::FONT_MONO)
                         .text_size(px(theme::MONO))
                         .text_color(theme::text())
-                        .child(SharedString::from(card.command.clone())),
+                        .child(super::selectable::plain(SharedString::from(format!("bash-command-text-{message_index}-{block_index}")).into(), &card.command)),
                 )
+                .child(super::copy_button::CopyButton {
+                    id: SharedString::from(format!("copy-bash-command-{message_index}-{block_index}")).into(),
+                    text: card.command.clone(),
+                    label: "Copiar comando",
+                })
                 .child(icon(glyph, 12., color))
                 .child(
                     div()
@@ -784,26 +784,7 @@ fn command_row(
         );
 
     if !card.output.is_empty() {
-        column = column.child(
-            div()
-                .id(SharedString::from(format!(
-                    "bash-{message_index}-{block_index}"
-                )))
-                .max_h(px(340.))
-                .overflow_y_scroll()
-                .mb(px(theme::S2))
-                .px(px(theme::S3))
-                .py(px(theme::S2))
-                .rounded(theme::r_control())
-                .bg(theme::inset())
-                .border_1()
-                .border_color(theme::line_soft())
-                .font_family(theme::FONT_MONO)
-                .text_size(px(theme::MONO))
-                .line_height(px(19.))
-                .text_color(theme::dim())
-                .child(SharedString::from(card.output.clone())),
-        );
+        column = column.child(section(&prefix, "saída", &card.output));
     }
     column.into_any_element()
 }
@@ -912,21 +893,30 @@ fn reasoning(
     column.into_any_element()
 }
 
-fn section(label: &str, body: &str) -> AnyElement {
+fn section(prefix: &str, label: &str, body: &str) -> AnyElement {
     div()
         .flex()
         .flex_col()
         .gap(px(theme::S1))
         .pt(px(theme::S1))
         .child(
-            div()
-                .text_size(px(theme::TEXT_XS))
-                .text_color(theme::faint())
-                .child(SharedString::from(label.to_string())),
+            div().flex().items_center().justify_between()
+                .child(div().text_size(px(theme::TEXT_XS)).text_color(theme::faint())
+                    .child(SharedString::from(label.to_string())))
+                .child(super::copy_button::CopyButton {
+                    id: SharedString::from(format!("{prefix}-copy-{label}")).into(),
+                    text: body.to_owned(),
+                    label: match label {
+                        "comando" => "Copiar comando",
+                        "argumentos" => "Copiar argumentos",
+                        "saída" => "Copiar saída",
+                        _ => "Copiar detalhes",
+                    },
+                }),
         )
         .child(
             div()
-                .id(content_id("section", body))
+                .id(SharedString::from(format!("{prefix}-{label}")))
                 .max_h(px(420.))
                 .overflow_y_scroll()
                 .px(px(theme::S3))
@@ -939,7 +929,7 @@ fn section(label: &str, body: &str) -> AnyElement {
                 .text_size(px(theme::MONO))
                 .line_height(px(19.))
                 .text_color(theme::dim())
-                .child(SharedString::from(body.to_string())),
+                .child(super::selectable::plain(SharedString::from(format!("{prefix}-text-{label}")).into(), body)),
         )
         .into_any_element()
 }
@@ -969,4 +959,25 @@ fn note(label: &str, text: &str, color: Hsla) -> AnyElement {
                 .child(SharedString::from(text.to_string())),
         )
         .into_any_element()
+}
+
+#[cfg(test)]
+mod copy_tests {
+    use super::tool_copy_text;
+    use serde_json::json;
+
+    #[test]
+    fn copies_exact_multiline_command_not_summary() {
+        let command = format!("printf 'ação\\n'\n{}", "echo café\n".repeat(100));
+        assert_eq!(tool_copy_text(&json!({"command": command}), "truncated"), command);
+    }
+
+    #[test]
+    fn preserves_partial_arguments_and_serializes_complete_arguments() {
+        let partial = "{\"path\":\"ação";
+        assert_eq!(tool_copy_text(&serde_json::Value::Null, partial), partial);
+        let args = json!({"path": "ação.rs", "limit": 5});
+        let copied = tool_copy_text(&args, "");
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&copied).unwrap(), args);
+    }
 }

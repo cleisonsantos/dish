@@ -5,7 +5,7 @@
 //! quotes, tables and inline emphasis — without pulling in a full parser.
 
 use gpui::{
-    AnyElement, ClipboardItem, Font, FontWeight, Hsla, IntoElement, SharedString, StyledText, TextRun,
+    AnyElement, Font, FontWeight, Hsla, IntoElement, SharedString, TextRun,
     div, img, prelude::*, px,
     ObjectFit,
 
@@ -164,7 +164,7 @@ fn push_runs(
 }
 
 /// Render one line of inline Markdown as a styled element.
-fn inline_element(source: &str, style: &MarkdownStyle) -> AnyElement {
+fn inline_element(source: &str, style: &MarkdownStyle, selection: &mut crate::ui::selectable::SelectionBuilder) -> AnyElement {
     let mut text = String::with_capacity(source.len());
     let mut runs = Vec::new();
     push_runs(source, Inline::default(), style, &mut text, &mut runs);
@@ -177,12 +177,10 @@ fn inline_element(source: &str, style: &MarkdownStyle) -> AnyElement {
         runs = vec![fallback];
     }
 
-    StyledText::new(SharedString::from(text))
-        .with_runs(runs)
-        .into_any_element()
+    selection.text(text, Some(runs))
 }
 
-fn code_block(language: Option<&str>, code: &str, style: &MarkdownStyle) -> AnyElement {
+fn code_block(language: Option<&str>, code: &str, style: &MarkdownStyle, selection: &mut crate::ui::selectable::SelectionBuilder, index: usize) -> AnyElement {
     let mut body = String::with_capacity(code.len());
     for (index, line) in code.lines().enumerate() {
         if index > 0 {
@@ -218,16 +216,15 @@ fn code_block(language: Option<&str>, code: &str, style: &MarkdownStyle) -> AnyE
                         .text_color(theme::faint())
                         .child(language.unwrap_or("code").to_uppercase()),
                 )
-                .child(div().id(crate::ui::content_id("copy-code", code))
-                    .cursor_pointer().text_size(px(theme::TEXT_XS))
-                    .text_color(theme::faint()).hover(|s| s.text_color(theme::text()))
-                    .on_click(move |_, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(copy_code.clone()));
-                    }).child("copiar código")),
+                .child(crate::ui::copy_button::CopyButton {
+                    id: ("copy-code", index).into(),
+                    text: copy_code,
+                    label: "Copiar código",
+                }),
         )
         .child(
             div()
-                .id(crate::ui::content_id("md-code", &body))
+                .id(("md-code", index))
                 .max_h(px(420.))
                 .overflow_y_scroll()
                 .px(px(12.))
@@ -237,7 +234,7 @@ fn code_block(language: Option<&str>, code: &str, style: &MarkdownStyle) -> AnyE
                 .font_family(SharedString::from(theme::FONT_MONO))
                 .text_color(style.code_color)
                 .whitespace_nowrap()
-                .child(SharedString::from(body)),
+                .child(selection.text(body, None)),
         )
         .into_any_element()
 }
@@ -296,7 +293,7 @@ fn table_header(lines: &[&str], index: usize) -> Option<Vec<gpui::TextAlign>> {
     }).collect()
 }
 
-fn table(rows: &[Vec<String>], alignments: &[gpui::TextAlign], style: &MarkdownStyle) -> AnyElement {
+fn table(rows: &[Vec<String>], alignments: &[gpui::TextAlign], style: &MarkdownStyle, selection: &mut crate::ui::selectable::SelectionBuilder) -> AnyElement {
     let widths: Vec<f32> = (0..alignments.len()).map(|col| {
         rows.iter().filter_map(|row| row.get(col))
             .map(|cell| cell.chars().count() as f32 * 7.5 + 24.)
@@ -311,7 +308,7 @@ fn table(rows: &[Vec<String>], alignments: &[gpui::TextAlign], style: &MarkdownS
         for (col, alignment) in alignments.iter().enumerate() {
             rendered = rendered.child(div().w(px(widths[col])).flex_none()
                 .px(px(12.)).py(px(8.)).text_align(*alignment)
-                .child(inline_element(row.get(col).map(String::as_str).unwrap_or(""), style)));
+                .child(inline_element(row.get(col).map(String::as_str).unwrap_or(""), style, selection)));
         }
         body = body.child(rendered);
     }
@@ -361,7 +358,8 @@ fn image_block(alt: &str, target: &str, cwd: &std::path::Path, index: usize, sty
 }
 
 /// Render Markdown into a list of block elements.
-pub fn blocks(text: &str, style: &MarkdownStyle, cwd: &std::path::Path) -> Vec<AnyElement> {
+pub fn blocks(text: &str, style: &MarkdownStyle, cwd: &std::path::Path, id: gpui::ElementId) -> Vec<AnyElement> {
+    let mut selection = crate::ui::selectable::SelectionBuilder::default();
     let lines: Vec<&str> = text.split('\n').collect();
     let mut elements: Vec<AnyElement> = Vec::new();
     let mut index = 0usize;
@@ -378,6 +376,7 @@ pub fn blocks(text: &str, style: &MarkdownStyle, cwd: &std::path::Path) -> Vec<A
 
         // Fenced code.
         if let Some(fence) = trimmed.strip_prefix("```").or_else(|| trimmed.strip_prefix("~~~")) {
+            let code_index = index;
             let language = fence.trim();
             let language = (!language.is_empty()).then_some(language);
             let mut code = String::new();
@@ -395,7 +394,7 @@ pub fn blocks(text: &str, style: &MarkdownStyle, cwd: &std::path::Path) -> Vec<A
                 code.push_str(candidate);
                 index += 1;
             }
-            elements.push(code_block(language, &code, style));
+            elements.push(code_block(language, &code, style, &mut selection, code_index));
             if !code.is_empty() {
                 // Breathing room after a code block.
                 elements.push(div().h(px(2.)).into_any_element());
@@ -417,7 +416,7 @@ pub fn blocks(text: &str, style: &MarkdownStyle, cwd: &std::path::Path) -> Vec<A
                 rows.push(table_cells(lines[index]));
                 index += 1;
             }
-            elements.push(table(&rows, &alignments, style));
+            elements.push(table(&rows, &alignments, style, &mut selection));
             continue;
         }
 
@@ -452,7 +451,7 @@ pub fn blocks(text: &str, style: &MarkdownStyle, cwd: &std::path::Path) -> Vec<A
                     .text_size(px(size))
                     .font_weight(FontWeight::BOLD)
                     .text_color(theme::text())
-                    .child(SharedString::from(title.to_string()))
+                    .child(selection.text(title.to_string(), None))
                     .into_any_element(),
             );
             index += 1;
@@ -481,7 +480,7 @@ pub fn blocks(text: &str, style: &MarkdownStyle, cwd: &std::path::Path) -> Vec<A
                     .pl(px(12.))
                     .py(px(2.))
                     .text_color(style.dim)
-                    .child(inline_element(&quote, style))
+                    .child(inline_element(&quote, style, &mut selection))
                     .into_any_element(),
             );
             continue;
@@ -525,7 +524,7 @@ pub fn blocks(text: &str, style: &MarkdownStyle, cwd: &std::path::Path) -> Vec<A
                                 .text_color(style.accent)
                                 .child(SharedString::from("•")),
                         )
-                        .child(div().flex_1().min_w(px(0.)).child(inline_element(&item, style)))
+                        .child(div().flex_1().min_w(px(0.)).child(inline_element(&item, style, &mut selection)))
                         .into_any_element(),
                 );
             }
@@ -566,7 +565,7 @@ pub fn blocks(text: &str, style: &MarkdownStyle, cwd: &std::path::Path) -> Vec<A
                                 .text_size(px(13.))
                                 .child(SharedString::from(format!("{marker}."))),
                         )
-                        .child(div().flex_1().min_w(px(0.)).child(inline_element(&item, style)))
+                        .child(div().flex_1().min_w(px(0.)).child(inline_element(&item, style, &mut selection)))
                         .into_any_element(),
                 );
             }
@@ -601,7 +600,7 @@ pub fn blocks(text: &str, style: &MarkdownStyle, cwd: &std::path::Path) -> Vec<A
             elements.push(
                 div()
                     .w_full()
-                    .child(inline_element(&paragraph, style))
+                    .child(inline_element(&paragraph, style, &mut selection))
                     .into_any_element(),
             );
         } else {
@@ -609,7 +608,7 @@ pub fn blocks(text: &str, style: &MarkdownStyle, cwd: &std::path::Path) -> Vec<A
         }
     }
 
-    elements
+    vec![selection.finish(id, elements)]
 }
 
 #[cfg(test)]

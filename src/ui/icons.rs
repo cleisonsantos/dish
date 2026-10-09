@@ -24,6 +24,7 @@ pub enum Icon {
     Send,
     Clock,
     File,
+    Copy,
     Terminal,
     Dots,
     Minimize,
@@ -163,6 +164,14 @@ fn build(icon: Icon, stroke: f32, scale: f32, origin: Point<Pixels>) -> Option<P
             b.move_to(to(8., 4.8));
             b.line_to(to(8., 8.2));
             b.line_to(to(10.6, 9.6));
+        }
+        Icon::Copy => {
+            rounded_rect(&mut b, 6., 6., 7., 7., 1.);
+            b.move_to(to(4., 10.));
+            b.line_to(to(3., 10.));
+            b.line_to(to(3., 3.));
+            b.line_to(to(10., 3.));
+            b.line_to(to(10., 4.));
         }
         Icon::File => {
             b.move_to(to(4., 2.6));

@@ -112,6 +112,44 @@ def click(window, x, y):
     time.sleep(0.2)
 
 
+def find_word(window, needle, last=False):
+    """Locate rendered text instead of assuming transcript row coordinates."""
+    with tempfile.NamedTemporaryFile(suffix=".png") as image:
+        subprocess.run(["import", "-window", str(window), image.name], check=True)
+        rows = subprocess.check_output(
+            ["tesseract", image.name, "stdout", "--psm", "11", "tsv"],
+            stderr=subprocess.DEVNULL).decode().splitlines()[1:]
+    matches = []
+    for row in rows:
+        fields = row.split("\t")
+        if len(fields) == 12 and needle.casefold() in fields[11].casefold():
+            matches.append(tuple(int(fields[i]) for i in (6, 7, 8, 9)))
+    return (matches[-1] if last else matches[0]) if matches else None
+
+
+def clipboard_text():
+    return subprocess.check_output(["xclip", "-selection", "clipboard", "-out"], timeout=3).decode()
+
+
+def drag(window, start, end):
+    root_x, root_y, child = ctypes.c_int(), ctypes.c_int(), ctypes.c_ulong()
+    x11.XTranslateCoordinates(display, window, root_window, 0, 0,
+                              ctypes.byref(root_x), ctypes.byref(root_y), ctypes.byref(child))
+    def move(position):
+        xtst.XTestFakeMotionEvent(display, -1, root_x.value + position[0], root_y.value + position[1], 0)
+        x11.XFlush(display)
+    move(start)
+    xtst.XTestFakeButtonEvent(display, 1, True, 0)
+    x11.XFlush(display)
+    time.sleep(0.1)
+    for step in range(1, 11):
+        move(tuple(round(a + (b - a) * step / 10) for a, b in zip(start, end)))
+        time.sleep(0.03)
+    xtst.XTestFakeButtonEvent(display, 1, False, 0)
+    x11.XFlush(display)
+    time.sleep(0.2)
+
+
 def scroll_up(window):
     click(window, 700, 300)
     for _ in range(8):
@@ -368,6 +406,66 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         before = transcript_pixels(window)
         time.sleep(0.65)
         assert transcript_pixels(window) == before, "Streaming pulled the reader back to the bottom"
+        # Direct selection on formatted text, including Unicode and code.
+        chord("Control_L", "n")
+        chord("Control_L", "l")
+        previous_prompts = len(commands("prompt"))
+        type_text("selection")
+        press("Return")
+        wait_for(lambda: len(commands("prompt")) > previous_prompts, "Selection prompt not sent")
+        wait_for(lambda: find_word(window, "Primeiro"), "Formatted selection response not rendered")
+        wait_for(lambda: any(item.get("record", {}).get("type") == "message_end"
+                             and "Final da resposta." in str(item["record"]) for item in events()),
+                 "Selection response did not finish")
+        first = find_word(window, "Primeiro")
+        click(window, first[0] + first[2] // 2, first[1] + first[3] // 2)
+        click(window, first[0] + first[2] // 2, first[1] + first[3] // 2)
+        chord("Control_L", "c")
+        assert clipboard_text() == "Primeiro", "Double click did not copy a rendered word"
+        chord("Control_L", "a")
+        chord("Control_L", "c")
+        expected_selection = ("Primeiro parágrafo com ação e café.\nSegundo parágrafo selecionável.\n"
+                              "printf 'ação\\n'\necho café\nFinal da resposta.")
+        assert clipboard_text() == expected_selection, repr(clipboard_text())
+        # The reply icon copies the complete Markdown, whereas direct selection
+        # copies rendered text. Both actions remain usable without the mouse.
+        chord("Shift_L", "Tab")
+        press("Return")
+        time.sleep(0.2)
+        expected_markdown = ("Primeiro **parágrafo** com ação e café.\n\n"
+                             "Segundo parágrafo selecionável.\n\n"
+                             "```sh\nprintf 'ação\\n'\necho café\n```\n\nFinal da resposta.")
+        assert clipboard_text() == expected_markdown, repr(clipboard_text())
+        click(window, first[0] + first[2] // 2, first[1] + first[3] // 2)
+        # Tab from the selection container reaches the code copy icon; Enter
+        # copies raw code (not Markdown fences), without sending a new prompt.
+        press("Tab")
+        press("Return")
+        time.sleep(0.2)
+        assert clipboard_text() == "printf 'ação\\n'\necho café", repr(clipboard_text())
+        assert len(commands("prompt")) == previous_prompts + 1, "Copy activated the composer"
+        last = find_word(window, "café", last=True)
+        drag(window, (first[0] + 1, first[1] + first[3] // 2),
+             (last[0] + last[2] - 1, last[1] + last[3] // 2))
+        chord("Control_L", "c")
+        selected = clipboard_text()
+        assert "parágrafo com ação e café.\nSegundo parágrafo selecionável.\nprintf" in selected, repr(selected)
+        assert "Final da resposta" not in selected, repr(selected)
+        drag(window, (last[0] + last[2] - 1, last[1] + last[3] // 2),
+             (first[0] + 1, first[1] + first[3] // 2))
+        chord("Control_L", "c")
+        assert clipboard_text() == selected, "Reverse drag changed the selected text"
+        press("Escape")
+        # Clearing selection must not destroy the existing clipboard contents.
+        chord("Control_L", "c")
+        assert clipboard_text() == selected
+        # Return to the composer and paste: selecting transcript text must not
+        # have mutated the response or turned it into an editable field.
+        chord("Control_L", "l")
+        chord("Control_L", "v")
+        press("Return")
+        wait_for(lambda: len(commands("prompt")) == previous_prompts + 2, "Selected text was not pasted")
+        assert commands("prompt")[-1]["command"]["message"] == selected
         screenshot = tempfile.mktemp(prefix="dish-desktop-", suffix=".png")
         subprocess.run(["import", "-window", str(window), screenshot], check=True)
         assert process.poll() is None, (temp / "dish.log").read_text()

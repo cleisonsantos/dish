@@ -20,6 +20,10 @@ level = "low"
 running = False
 prompts = queue.Queue()
 dialog_answer = threading.Event()
+selection_response = ("Primeiro **parágrafo** com ação e café.\n\n"
+                      "Segundo parágrafo selecionável.\n\n"
+                      "```sh\nprintf 'ação\\n'\necho café\n```\n\n"
+                      "Final da resposta.")
 
 
 def emit(record):
@@ -53,6 +57,8 @@ def run(message, images):
             delta = ("Tabela de teste\n\n| Arquivo | Avaliação |\n| --- | --- |\n"
                      "| `dish-icon.svg` | Conceito próprio, mas sobrecarregado. |\n"
                      "| `dish-logo.svg` | Prato em perspectiva, com filete dourado. |\n\n") if index == 0 else ""
+        elif message == "selection":
+            delta = selection_response if index == 0 else ""
         elif message == "long-scroll" and index == 0:
             delta = "\n\n".join(f"Parágrafo de teste {i}: conteúdo para ler sem saltos." for i in range(100)) + "\n\n"
         emit({"type": "message_update", "assistantMessageEvent": {
@@ -63,7 +69,7 @@ def run(message, images):
               "| Arquivo | Avaliação |\n| --- | --- |\n"
               "| `dish-icon.svg` | Conceito próprio, mas sobrecarregado. |\n"
               "| `dish-logo.svg` | Prato em perspectiva, com filete dourado. |"
-          ) if message == "table" else f"Finished {message} in {os.getcwd()}"}]}})
+          ) if message == "table" else selection_response if message == "selection" else f"Finished {message} in {os.getcwd()}"}]}})
     emit({"type": "agent_end", "messages": []})
 
 
