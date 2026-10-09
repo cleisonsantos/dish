@@ -64,7 +64,7 @@ impl Render for AppState {
             .child(transcript::transcript(self, cx));
 
         if let Some(banner) = self.banner.clone() {
-            main_column = main_column.child(banner_element(&banner));
+            main_column = main_column.child(banner_element(&banner, cx));
         }
         main_column = main_column.child(composer::composer(
             self,
@@ -203,6 +203,10 @@ impl Render for AppState {
                     state.dismiss_slash(cx);
                 } else if state.streaming {
                     state.abort(cx);
+                } else if state.banner.is_some() {
+                    // Aviso sem ação pendente: Esc dispensa, como o botão ×.
+                    state.banner = None;
+                    cx.notify();
                 }
             }))
             // Clicar fora fecha o seletor de modelo; o painel e o próprio botão
@@ -429,7 +433,7 @@ fn conversation_state(state: &AppState) -> (Icon, Hsla, String) {
 
 // ----------------------------------------------------------------- the rail
 
-fn banner_element(banner: &crate::state::Banner) -> Div {
+fn banner_element(banner: &crate::state::Banner, cx: &mut Context<AppState>) -> Div {
     let color = tone_color(banner.tone);
     div()
         .flex()
@@ -439,6 +443,7 @@ fn banner_element(banner: &crate::state::Banner) -> Div {
         .mx(px(24.))
         .mb(px(10.))
         .pl(px(12.))
+        .pr(px(6.))
         .py(px(8.))
         .border_l_2()
         .border_color(color)
@@ -446,7 +451,40 @@ fn banner_element(banner: &crate::state::Banner) -> Div {
         .text_size(px(theme::TEXT_SM))
         .text_color(theme::dim())
         .child(div().text_color(color).child("●"))
-        .child(SharedString::from(banner.text.clone()))
+        .child(div().flex_1().min_w(px(0.)).child(SharedString::from(banner.text.clone())))
+        .child(
+            div()
+                .id("banner-dismiss")
+                .size(px(22.))
+                .rounded(theme::r_control())
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .focusable()
+                .tab_index(0)
+                .hover(|style| style.bg(theme::hover()))
+                .focus(|style| style.bg(theme::hover()))
+                .tooltip(|_, cx| cx.new(|_| copy_button::TextTooltip("Dispensar aviso (Esc)".into())).into())
+                .on_click(cx.listener(|state, _: &ClickEvent, _, cx| {
+                    state.banner = None;
+                    cx.notify();
+                }))
+                .on_key_down(cx.listener(|state, event: &KeyDownEvent, window, cx| {
+                    if event.keystroke.key == "tab" {
+                        if event.keystroke.modifiers.shift {
+                            window.focus_prev(cx);
+                        } else {
+                            window.focus_next(cx);
+                        }
+                        cx.stop_propagation();
+                    } else if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        state.banner = None;
+                        cx.notify();
+                    }
+                }))
+                .child(icon(Icon::Close, 12., color)),
+        )
 }
 
 // ------------------------------------------------------------- vocabulary

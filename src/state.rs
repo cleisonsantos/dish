@@ -343,6 +343,8 @@ pub struct AppState {
     /// Completed runs with live assistant text, not merely an agent_end event.
     pub completed_content_runs: u64,
     response_tracker: crate::session_activity::ResponseTracker,
+    /// O erro da execução atual já apareceu em `message_end`.
+    run_error_in_transcript: bool,
     pub last_activity: Option<std::time::SystemTime>,
     pub activity_error: bool,
     pub activity_interrupted: bool,
@@ -453,6 +455,7 @@ impl AppState {
             completed_runs: 0,
             completed_content_runs: 0,
             response_tracker: crate::session_activity::ResponseTracker::default(),
+            run_error_in_transcript: false,
             last_activity: None,
             activity_error: false,
             activity_interrupted: false,
@@ -599,6 +602,10 @@ impl AppState {
                 self.agent_active = true;
                 self.activity_error = false;
                 self.activity_interrupted = false;
+                // Um aviso da execução anterior não vale mais; falhas ficam no
+                // transcript (ou viram nota no turn_end).
+                self.banner = None;
+                self.run_error_in_transcript = false;
                 self.streaming = true;
                 self.activity = Some("Thinking…".into());
                 None
@@ -626,22 +633,25 @@ impl AppState {
             "message_update" => self.apply_message_update(record),
             "message_end" => self.apply_message_end(record),
             "turn_end" => {
+                let mut pushed = None;
                 if let Some(message) = record.get("message") {
                     let (failed, interrupted) = crate::session_activity::message_outcome(message);
                     self.activity_interrupted |= interrupted;
                     self.activity_error |= failed;
-                    if let Some(error) = message.get("errorMessage").and_then(Value::as_str) {
-                        let aborted = message["stopReason"] == "aborted";
+                    if let Some((error, aborted)) = turn_end_error(message) {
                         self.activity_error |= !aborted;
                         self.banner = Some(Banner {
-                            text: error.to_string(),
+                            text: error,
                             tone: if aborted { Tone::Warning } else { Tone::Error },
                         });
+                        if let Some(note) = turn_end_note(message, self.run_error_in_transcript) {
+                            pushed = Some(self.push_message(note));
+                        }
                     }
                 }
                 self.streaming = false;
                 self.activity = None;
-                None
+                pushed
             }
             "tool_execution_start" => self.apply_tool_start(record),
             "tool_execution_update" => self.apply_tool_update(record),
@@ -1256,6 +1266,9 @@ impl AppState {
             let (failed, interrupted) = crate::session_activity::message_outcome(message);
             self.activity_interrupted |= interrupted;
             self.activity_error |= failed;
+            if message.get("errorMessage").and_then(Value::as_str).is_some() {
+                self.run_error_in_transcript = true;
+            }
         }
         match role {
             "assistant" => {
@@ -1798,6 +1811,7 @@ impl AppState {
         self.list_state.reset(0);
         self.list_count = 0;
         self.banner = None;
+        self.run_error_in_transcript = false;
         self.steering_queue.clear();
         self.follow_up_queue.clear();
     }
@@ -3078,4 +3092,59 @@ mod metadata_tests {
 /// Format a token count for the status bar.
 pub fn format_tokens(value: f64) -> String {
     compact_number(value.max(0.0) as u64)
+}
+
+/// Erro reportado em `turn_end`, com a marca de interrupção que o Pi envia.
+fn turn_end_error(message: &Value) -> Option<(String, bool)> {
+    let error = message.get("errorMessage").and_then(Value::as_str)?;
+    Some((error.to_owned(), message["stopReason"] == "aborted"))
+}
+
+/// Nota no transcript para um erro que só veio em `turn_end`. Sem ela,
+/// dispensar o banner (ou iniciar outra execução) perderia o registro.
+fn turn_end_note(message: &Value, already_in_transcript: bool) -> Option<Message> {
+    if already_in_transcript {
+        return None;
+    }
+    let (text, aborted) = turn_end_error(message)?;
+    let mut note = Message::new(Role::System);
+    note.blocks.push(Block::Note {
+        label: if aborted { "interrupção" } else { "erro" }.into(),
+        text,
+        tone: if aborted { Tone::Warning } else { Tone::Error },
+    });
+    Some(note)
+}
+
+#[cfg(test)]
+mod turn_end_tests {
+    use super::{turn_end_error, turn_end_note, Block, Tone};
+    use serde_json::json;
+
+    #[test]
+    fn only_an_explicit_error_message_produces_a_banner_or_note() {
+        assert_eq!(turn_end_error(&json!({})), None);
+        assert_eq!(turn_end_error(&json!({"stopReason":"error"})), None);
+        assert!(turn_end_note(&json!({}), false).is_none());
+    }
+
+    #[test]
+    fn interruption_keeps_the_warning_classification() {
+        let failure = json!({"stopReason":"error", "errorMessage":"falhou"});
+        assert_eq!(turn_end_error(&failure), Some(("falhou".into(), false)));
+        let note = turn_end_note(&failure, false).expect("nota do erro");
+        assert!(matches!(&note.blocks[0], Block::Note { label, tone: Tone::Error, .. } if label == "erro"));
+
+        let aborted = json!({"stopReason":"aborted", "errorMessage":"cancelado"});
+        assert_eq!(turn_end_error(&aborted), Some(("cancelado".into(), true)));
+        let note = turn_end_note(&aborted, false).expect("nota da interrupção");
+        assert!(matches!(&note.blocks[0], Block::Note { label, tone: Tone::Warning, .. } if label == "interrupção"));
+    }
+
+    #[test]
+    fn an_error_already_rendered_in_the_transcript_is_not_duplicated() {
+        let message = json!({"stopReason":"error", "errorMessage":"falhou"});
+        assert!(turn_end_note(&message, true).is_none());
+        assert!(turn_end_note(&message, false).is_some());
+    }
 }

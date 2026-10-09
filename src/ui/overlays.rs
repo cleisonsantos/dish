@@ -521,7 +521,7 @@ pub fn keyboard_shortcuts() -> Vec<(&'static str, &'static str)> {
     let app_keys: [(&'static str, &'static str); 21] = [
         ("⏎", "send the prompt"),
         ("⇧⏎", "insert a newline"),
-        ("esc", "dismiss a menu, or stop the run"),
+        ("esc", "dismiss a menu or notice, or stop the run"),
         ("↑ ↓", "choose in the slash menu"),
         ("⇥", "complete the highlighted command"),
         ("↑ ↓ ⏎", "pick a model in the model picker"),

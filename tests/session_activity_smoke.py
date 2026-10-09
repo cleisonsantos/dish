@@ -65,6 +65,25 @@ with tempfile.TemporaryDirectory(prefix="dish-activity-") as temporary:
         except (FileNotFoundError, json.JSONDecodeError):
             return {}
 
+    def error_mentions():
+        """Quantas vezes o erro sintético aparece na janela (banner + transcript)."""
+        capture = temp / "window.png"
+        subprocess.run(["import", "-window", str(window), str(capture)], check=True)
+        rows = subprocess.check_output(["tesseract", str(capture), "stdout", "--psm", "6", "tsv"],
+                                       stderr=subprocess.DEVNULL).decode().splitlines()[1:]
+        return len([row for row in rows if len(row.split("\t")) == 12 and "synthet" in normalized(row.split("\t")[11])])
+
+    def banner_visible():
+        """O banner tinge de rosa a faixa logo acima do composer; a nota do
+        transcript tem só uma barra fina e não altera a média da faixa."""
+        capture = temp / "window.png"
+        subprocess.run(["import", "-window", str(window), str(capture)], check=True)
+        height = int(subprocess.check_output(["identify", "-format", "%h", str(capture)]).decode())
+        mean = float(subprocess.check_output([
+            "convert", str(capture), "-crop", f"520x22+320+{height - 162}",
+            "-format", "%[fx:mean.r-mean.b]", "info:"]).decode())
+        return mean > -0.015
+
     def nav_text():
         subprocess.run(["import", "-window", str(window), "-crop", "264x860+0+0", str(screenshot)], check=True)
         return normalized(subprocess.check_output(["tesseract", str(screenshot), "stdout", "--psm", "6"],
@@ -179,16 +198,28 @@ with tempfile.TemporaryDirectory(prefix="dish-activity-") as temporary:
         send("test-error")
         wait_for(lambda: completed(beta_pid, 5), "Error test did not finish")
         wait_for(lambda: " erro " in f" {nav_text()} ", "Explicit error not displayed")
+        # O erro só veio em turn_end: o banner aparece; a nota é verificada
+        # logo após a dispensa, quando qualquer menção restante é a nota.
+        wait_for(banner_visible, "Turn-end error banner missing")
 
         send("test-empty")
         chord("Control_L", "Tab")  # alpha
         wait_for(lambda: completed(beta_pid, 6), "Empty run did not finish")
         assert beta_path not in preferences().get("unread_sessions", {}), "Bare agent_end created an unread response"
         select_title("beta saved")
+        # A nova execução limpou o banner antigo.
+        wait_for(lambda: not banner_visible(), "New run did not clear the stale error banner")
+        send("test-error")
+        wait_for(lambda: completed(beta_pid, 7), "Second error test did not finish")
+        wait_for(banner_visible, "Second error banner missing")
+        press("Escape")
+        wait_for(lambda: not banner_visible(), "Escape did not dismiss the banner")
+        # Com o banner dispensado, a menção restante é a nota do transcript.
+        wait_for(lambda: error_mentions() >= 1, "Escape removed the error record")
         send("long-activity-restart")
         chord("Control_L", "Tab")  # alpha
         release_run("long-activity-restart")
-        wait_for(lambda: completed(beta_pid, 7), "Restart test did not finish")
+        wait_for(lambda: completed(beta_pid, 8), "Restart test did not finish")
         wait_for(lambda: beta_path in preferences().get("unread_sessions", {}), "Unread state missing before restart")
         # Fold beta's project, then navigation: both must retain aggregate indicators.
         click_nav_label(window, "beta")
@@ -222,7 +253,7 @@ with tempfile.TemporaryDirectory(prefix="dish-activity-") as temporary:
         for path, original in original_sessions.items():
             assert path.read_bytes() == original, "Dish modified a Pi session file"
         assert process.poll() is None, (temp / "dish.log").read_text()
-        print("Session activity smoke passed: filters, queue, dialog, errors, interruption, transport, persistence and keyboard")
+        print("Session activity smoke passed: filters, queue, dialog, errors, interruption, banner lifecycle, transport, persistence and keyboard")
     except Exception:
         failure = tempfile.mktemp(prefix="dish-activity-failure-", suffix=".png")
         subprocess.run(["import", "-window", str(window) if window else "root", failure], check=False)
