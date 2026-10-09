@@ -18,6 +18,7 @@ use crate::ui::{content_id, markdown_style};
 pub fn transcript(state: &AppState, cx: &Context<AppState>) -> Div {
     let weak = cx.entity().downgrade();
     let list_state = state.list_state.clone();
+    let show_jump = !list_state.is_following_tail() && !state.messages.is_empty();
 
     let body = if state.messages.is_empty() {
         empty_state(&weak)
@@ -42,13 +43,41 @@ pub fn transcript(state: &AppState, cx: &Context<AppState>) -> Div {
             )
     };
 
-    div()
+    let mut root = div()
+        .relative()
         .flex_1()
         .min_h(px(0.))
         .w_full()
         .flex()
         .flex_col()
-        .child(body)
+        .child(body);
+
+    if show_jump {
+        root = root.child(
+            div()
+                .id("transcript-jump-end")
+                .absolute()
+                .bottom(px(theme::S3))
+                .right(px(theme::S3))
+                .size(px(32.))
+                .rounded(px(16.))
+                .border_1()
+                .border_color(theme::line_strong())
+                .bg(theme::surface_2())
+                .shadow(theme::shadow_overlay())
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .hover(|style| style.bg(theme::hover()))
+                .on_click(cx.listener(|state, _: &ClickEvent, _window, cx| {
+                    state.list_state.set_follow_mode(FollowMode::Tail);
+                    cx.notify();
+                }))
+                .child(icon(Icon::ChevronDown, 16., theme::dim())),
+        );
+    }
+    root
 }
 
 // ------------------------------------------------------------- empty state
@@ -168,13 +197,13 @@ fn request(state: &AppState, message: &Message, index: usize, weak: &WeakEntity<
                 .group("request")
                 .flex()
                 .flex_col()
-                .gap(px(theme::S2))
+                .gap(px(theme::S1))
                 .rounded(theme::r_surface())
                 .bg(theme::surface_2())
                 .border_1()
                 .border_color(theme::line_soft())
                 .px(px(theme::S4))
-                .py(px(theme::S3))
+                .py(px(theme::S2))
                 .children(markdown::blocks(&text, &style, &state.cwd))
                 .child(
                     div()
@@ -189,6 +218,7 @@ fn request(state: &AppState, message: &Message, index: usize, weak: &WeakEntity<
                             div()
                                 .id(SharedString::from(format!("copy-prompt-{index}")))
                                 .text_size(px(theme::TEXT_XS))
+                                .line_height(px(13.))
                                 .text_color(theme::faint())
                                 .cursor_pointer()
                                 .hover(|style| style.text_color(theme::text()))
