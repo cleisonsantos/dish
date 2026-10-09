@@ -1,5 +1,8 @@
 # Preparing a Linux candidate
 
+For the reviewed delivery scope and remaining publication gates for the next
+prerelease, see [the alpha.3 readiness assessment](release-alpha3-readiness.md).
+
 Publication is intentionally separate from the build scripts. None of these
 commands creates a GitHub repository, tag or Release, or uploads a package.
 
