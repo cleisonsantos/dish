@@ -25,6 +25,8 @@ struct Conversation {
 enum NavHover {
     Project(PathBuf),
     Conversation(usize),
+    /// Índice no catálogo de sessões salvas.
+    Saved(usize),
 }
 
 type SessionRow = (
@@ -1162,6 +1164,25 @@ impl Render for Workspace {
                     .or_default()
                     .push(index);
             }
+            // Sessões salvas que não estão abertas, para reabrir sem o painel.
+            let mut saved: BTreeMap<PathBuf, Vec<usize>> = BTreeMap::new();
+            for (index, info) in self.catalog.iter().enumerate() {
+                if self
+                    .conversations
+                    .iter()
+                    .any(|conversation| conversation.path.as_ref() == Some(&info.path))
+                {
+                    continue;
+                }
+                saved.entry(info.cwd.clone()).or_default().push(index);
+            }
+            let mut project_dirs: Vec<PathBuf> = groups.keys().cloned().collect();
+            for cwd in saved.keys() {
+                if !groups.contains_key(cwd) {
+                    project_dirs.push(cwd.clone());
+                }
+            }
+            project_dirs.sort();
             let mut dots = div()
                 .id("nav-collapsed-dots")
                 .flex_1()
@@ -1171,7 +1192,9 @@ impl Render for Workspace {
                 .flex_col()
                 .items_center()
                 .gap(px(theme::S2));
-            for (cwd, indices) in groups {
+            for cwd in project_dirs {
+                let open_indices = groups.get(&cwd).cloned().unwrap_or_default();
+                let saved_indices = saved.get(&cwd).cloned().unwrap_or_default();
                 let folder_cwd = cwd.clone();
                 let mut group = div()
                     .flex()
@@ -1204,7 +1227,7 @@ impl Render for Workspace {
                                 theme::faint(),
                             )),
                     );
-                for index in indices {
+                for index in open_indices {
                     let busy = self.conversations[index].state.read(cx).is_busy();
                     let unread = self.conversations[index].unread_completion;
                     let color = if index == self.active {
@@ -1237,6 +1260,30 @@ impl Render for Workspace {
                             .child(crate::ui::dot(color, 8.)),
                     );
                 }
+                for info_index in saved_indices {
+                    group = group.child(
+                        div()
+                            .id(SharedString::from(format!("nav-saved-{info_index}")))
+                            .size(px(28.))
+                            .rounded(theme::r_control())
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .hover(|style| style.bg(theme::hover()))
+                            .on_hover(cx.listener(move |workspace, hovered: &bool, _, cx| {
+                                workspace.hovered =
+                                    hovered.then_some(NavHover::Saved(info_index));
+                                cx.notify();
+                            }))
+                            .on_click(cx.listener(move |workspace, _: &ClickEvent, window, cx| {
+                                if let Some(info) = workspace.catalog.get(info_index).cloned() {
+                                    workspace.open(info, window, cx);
+                                }
+                            }))
+                            .child(crate::ui::ring(theme::faint(), 7.)),
+                    );
+                }
                 dots = dots.child(group);
             }
             body = body.child(rail.child(dots));
@@ -1263,12 +1310,22 @@ impl Render for Workspace {
             if let Some(hovered) = &self.hovered {
                 let (title, status) = match hovered {
                     NavHover::Project(cwd) => {
-                        let count = self
+                        let open = self
                             .conversations
                             .iter()
                             .filter(|conversation| conversation.state.read(cx).cwd == *cwd)
                             .count();
-                        (folder_of(cwd), format!("{count} conversas abertas"))
+                        let saved = self
+                            .catalog
+                            .iter()
+                            .filter(|info| info.cwd == *cwd)
+                            .count();
+                        let status = match (open, saved) {
+                            (0, saved) => format!("{saved} salvas"),
+                            (open, 0) => format!("{open} abertas"),
+                            (open, saved) => format!("{open} abertas · {saved} salvas"),
+                        };
+                        (folder_of(cwd), status)
                     }
                     NavHover::Conversation(index) => {
                         let index = *index;
@@ -1292,6 +1349,14 @@ impl Render for Workspace {
                             "aberta"
                         };
                         (self.conversation_title(index, cx), status.to_string())
+                    }
+                    NavHover::Saved(index) => {
+                        let info = self.catalog.get(*index);
+                        (
+                            info.map(|info| info.title.clone())
+                                .unwrap_or_else(|| "sessão salva".into()),
+                            "salva".to_string(),
+                        )
                     }
                 };
                 root = root.child(
