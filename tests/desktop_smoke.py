@@ -368,18 +368,28 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
                                       stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             holder.stdin.write(data)
             holder.stdin.close()
-            time.sleep(0.2)
+            # O dono do clipboard precisa assumir a seleção antes do Ctrl+V;
+            # um sleep fixo perdia a corrida em CI carregada.
+            end = time.monotonic() + 5
+            while time.monotonic() < end:
+                probe = subprocess.run(["xclip", "-selection", "clipboard", "-out", "-target", mime],
+                                       capture_output=True, timeout=5)
+                if probe.stdout:
+                    break
+                time.sleep(0.1)
             return holder
 
         holder = clipboard(image_file.read_bytes(), "image/png")
         try:
-            chord("Control_L", "v")
-            # A leitura do clipboard é assíncrona: Return durante o carregamento
-            # é ignorado. Repetir com prazo é estável em CI carregada.
-            end = time.monotonic() + 10
-            while len(commands("prompt")) == 9 and time.monotonic() < end:
-                time.sleep(0.4)
+            # Ctrl+V e Return são repetidos juntos: uma leitura vazia do
+            # clipboard descarta a colagem, e Return durante o carregamento é
+            # ignorado de propósito.
+            deadline = time.monotonic() + 30
+            while len(commands("prompt")) == 9 and time.monotonic() < deadline:
+                chord("Control_L", "v")
+                time.sleep(1.0)
                 press("Return")
+                time.sleep(1.0)
             wait_for(lambda: len(commands("prompt")) == 10, "Pasted image not sent")
             import base64
             image_payload = commands("prompt")[-1]["command"]["images"][0]
@@ -393,11 +403,12 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         # File managers often offer only URI-list, which GPUI does not request.
         holder = clipboard((image_file.as_uri() + "\r\n").encode(), "text/uri-list")
         try:
-            chord("Control_L", "v")
-            end = time.monotonic() + 10
-            while len(commands("prompt")) == 10 and time.monotonic() < end:
-                time.sleep(0.4)
+            deadline = time.monotonic() + 30
+            while len(commands("prompt")) == 10 and time.monotonic() < deadline:
+                chord("Control_L", "v")
+                time.sleep(1.0)
                 press("Return")
+                time.sleep(1.0)
             wait_for(lambda: len(commands("prompt")) == 11, "Copied image file not sent")
             assert commands("prompt")[-1]["command"]["images"][0]["data"] == image_payload["data"]
         finally:
