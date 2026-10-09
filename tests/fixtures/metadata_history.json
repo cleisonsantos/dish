@@ -1,0 +1,7 @@
+[
+  {"role":"assistant","timestamp":1733234400000,"stopReason":"aborted","errorMessage":"Solicitação interrompida","content":[{"type":"text","text":"Resposta interrompida no histórico."}]},
+  {"role":"assistant","timestamp":1733234401000,"stopReason":"toolUse","content":[{"type":"toolCall","id":"metadata-history-call","name":"bash","arguments":{"command":"printf 'ação\\n'\necho LONGO_abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz\necho COMANDO_COMPLETO"}}]},
+  {"role":"toolResult","toolCallId":"metadata-history-call","toolName":"bash","timestamp":1733234403000,"isError":false,"content":[{"type":"text","text":"Saída histórica com café"}]},
+  {"role":"bashExecution","command":"echo comando_cancelado","output":"Saída parcial preservada","cancelled":true,"truncated":false,"timestamp":1733234404000},
+  {"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"Historico sem horario."}]}
+]

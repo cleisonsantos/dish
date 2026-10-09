@@ -11,6 +11,7 @@ mod installation;
 mod startup;
 mod preferences;
 mod markdown;
+mod metadata;
 mod rpc;
 mod state;
 mod sessions;

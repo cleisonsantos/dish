@@ -45,7 +45,23 @@ def run(message, images):
     content = [{"type": "text", "text": message}] + images
     emit({"type": "message_start", "message": {"role": "user", "content": content}})
     emit({"type": "message_end", "message": {"role": "user", "content": content}})
-    emit({"type": "message_start", "message": {"role": "assistant", "content": []}})
+    assistant_start = {"role": "assistant", "content": []}
+    if message.startswith("metadata"):
+        assistant_start["timestamp"] = int(time.time() * 1000)
+    emit({"type": "message_start", "message": assistant_start})
+    if message == "metadata-tool":
+        call = {"type": "toolCall", "id": "metadata-live-call", "name": "bash",
+                "arguments": {"command": "printf 'ação\\n'\necho COMANDO_AO_VIVO"}}
+        emit({"type": "message_end", "message": {
+            **assistant_start, "stopReason": "toolUse", "content": [call]}})
+        emit({"type": "tool_execution_start", "toolCallId": call["id"], "toolName": "bash", "args": call["arguments"]})
+        time.sleep(0.2)
+        result = {"content": [{"type": "text", "text": "ação\nCOMANDO_AO_VIVO"}]}
+        emit({"type": "tool_execution_end", "toolCallId": call["id"], "toolName": "bash", "result": result, "isError": False})
+        emit({"type": "message_end", "message": {"role": "toolResult", "toolCallId": call["id"],
+              "timestamp": int(time.time() * 1000), "isError": False, **result}})
+        emit({"type": "agent_end", "messages": []})
+        return
     emit({"type": "message_update", "assistantMessageEvent": {
         "type": "text_start", "contentIndex": 0}})
     if message == "dialog":
@@ -120,6 +136,9 @@ for line in sys.stdin:
         data["levels"] = ["off", "low", "high", "max"]
     elif kind == "get_available_models":
         data["models"] = [{"id": "fake-model", "provider": "test", "reasoning": True}]
+    elif kind == "get_messages" and os.environ.get("DISH_FAKE_METADATA_HISTORY"):
+        with open(os.environ["DISH_FAKE_METADATA_HISTORY"], encoding="utf-8") as history:
+            data["messages"] = json.load(history)
     elif kind == "get_messages":
         data["messages"] = [
             {"role": "user" if index % 2 == 0 else "assistant",

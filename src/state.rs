@@ -5,11 +5,12 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use gpui::*;
-use serde_json::{Value, json};
 use base64::Engine as _;
+use gpui::*;
+use serde_json::{json, Value};
 
 use crate::editor::Editor;
+use crate::metadata::{TimeOrigin, Timing};
 use crate::rpc::{PiClient, RpcResponse};
 use crate::theme;
 
@@ -49,6 +50,7 @@ pub struct ToolCard {
     pub details: Option<Value>,
     pub started_at: Option<i64>,
     pub elapsed_ms: Option<u64>,
+    pub timing: Timing,
 }
 
 impl ToolCard {
@@ -64,7 +66,30 @@ impl ToolCard {
             details: None,
             started_at: None,
             elapsed_ms: None,
+            timing: Timing::default(),
         }
+    }
+
+    fn record_result(&mut self, message: &Value) {
+        if let Some(output) = tool_result_text(message) {
+            self.output = output;
+        }
+        self.status = if message
+            .get("isError")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            ToolStatus::Failed
+        } else {
+            ToolStatus::Ok
+        };
+        self.details = message.get("details").cloned();
+        self.timing.record(
+            message
+                .get("timestamp")
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
+        );
     }
 
 
@@ -108,6 +133,7 @@ pub struct BashCard {
     pub cancelled: bool,
     pub truncated: bool,
     pub status: ToolStatus,
+    pub timing: Timing,
 }
 
 pub enum Block {
@@ -132,6 +158,8 @@ pub struct Message {
     pub streaming: bool,
     /// Quando o Pi criou a mensagem.
     pub timestamp: i64,
+    pub timestamp_origin: TimeOrigin,
+    pub timing: Timing,
     /// Quando o Dish viu esta mensagem terminar, em ms locais. `0` quando a
     /// mensagem veio de uma sessão restaurada e o dado não existe.
     pub finished_at: i64,
@@ -149,12 +177,21 @@ impl Message {
             blocks: Vec::new(),
             streaming: false,
             timestamp: 0,
+            timestamp_origin: TimeOrigin::Pi,
+            timing: Timing::default(),
             finished_at: 0,
             usage: None,
             stop_reason: None,
             error: None,
             local: false,
             model: None,
+        }
+    }
+
+    fn record_timestamp(&mut self, timestamp: i64) {
+        if let Some(timestamp) = crate::metadata::valid_timestamp(timestamp) {
+            self.timestamp = timestamp;
+            self.timestamp_origin = TimeOrigin::Pi;
         }
     }
 
@@ -760,6 +797,27 @@ impl AppState {
                     tone: Tone::Error,
                 });
             }
+            if response.command == "bash" {
+                if let Some(index) = response
+                    .id
+                    .as_ref()
+                    .and_then(|id| self.local_bash.remove(id))
+                {
+                    if let Some(Block::Bash(card)) = self
+                        .messages
+                        .get_mut(index)
+                        .and_then(|entry| entry.blocks.first_mut())
+                    {
+                        card.status = ToolStatus::Failed;
+                        card.output = response
+                            .error
+                            .clone()
+                            .unwrap_or_else(|| "Comando rejeitado pelo Pi".into());
+                        card.timing.finish();
+                    }
+                    return Some(index);
+                }
+            }
             // A rejected prompt should not leave a phantom message behind.
             if response.command == "prompt" {
                 if let Some(index) = self.pending_local_user.take() {
@@ -917,6 +975,7 @@ impl AppState {
                             } else {
                                 ToolStatus::Failed
                             };
+                            card.timing.finish();
                         }
                     }
                     return Some(index);
@@ -963,7 +1022,7 @@ impl AppState {
                     if let Some(existing) = self.messages.get_mut(index) {
                         if existing.text().trim() == text.trim() {
                             existing.local = false;
-                            existing.timestamp = timestamp;
+                            existing.record_timestamp(timestamp);
                             return Some(index);
                         }
                     }
@@ -978,6 +1037,7 @@ impl AppState {
             "assistant" => {
                 let mut entry = Message::new(Role::Assistant);
                 entry.streaming = true;
+                entry.timing.start();
                 entry.timestamp = timestamp;
                 entry.model = message.get("model").and_then(Value::as_str).map(str::to_string);
                 self.content_slots.clear();
@@ -1008,6 +1068,14 @@ impl AppState {
                         .and_then(Value::as_bool)
                         .unwrap_or(false),
                     status: ToolStatus::Ok,
+                    timing: Timing::default(),
+                };
+                let mut card = card;
+                card.timing.record(timestamp);
+                card.status = if card.cancelled || card.exit_code.is_some_and(|code| code != 0) {
+                    ToolStatus::Failed
+                } else {
+                    ToolStatus::Ok
                 };
                 let mut entry = Message::new(Role::Bash);
                 entry.blocks.push(Block::Bash(Box::new(card)));
@@ -1199,13 +1267,15 @@ impl AppState {
                 let Some(index) = index else {
                     let index = self.apply_message_end_value(message)?;
                     if let Some(entry) = self.messages.get_mut(index) {
-                        entry.finished_at = now_ms().unwrap_or(0);
+                        entry.timing.finish();
+                        entry.finished_at = entry.timing.observed_end.unwrap_or(0);
                     }
                     return Some(index);
                 };
                 self.rebuild_from_value(index, message);
                 if let Some(entry) = self.messages.get_mut(index) {
-                    entry.finished_at = now_ms().unwrap_or(0);
+                    entry.timing.finish();
+                    entry.finished_at = entry.timing.observed_end.unwrap_or(0);
                 }
                 Some(index)
             }
@@ -1245,12 +1315,22 @@ impl AppState {
                         } else {
                             ToolStatus::Failed
                         };
+                        card.timing.record(
+                            message
+                                .get("timestamp")
+                                .and_then(Value::as_i64)
+                                .unwrap_or(0),
+                        );
+                        if card.timing.observed_start.is_some() {
+                            card.timing.finish();
+                        }
                     }
                     return Some(index);
                 }
                 self.apply_message_start(&json!({ "message": message }))
             }
-            "user" | "toolResult" | "system" => None,
+            "toolResult" => self.apply_message_end_value(message),
+            "user" | "system" => None,
             "custom" => self.apply_message_start(&json!({ "message": message })),
             _ => None,
         }
@@ -1289,20 +1369,13 @@ impl AppState {
                 // card created for the matching call.
                 let id = message.get("toolCallId").and_then(Value::as_str)?;
                 let (message_index, block_index) = *self.tool_slots.get(id)?;
-                let is_error = message
-                    .get("isError")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-                let output = tool_result_text(message).unwrap_or_default();
-                let details = message.get("details").cloned();
+
                 if let Some(Block::Tool(card)) = self
                     .messages
                     .get_mut(message_index)
                     .and_then(|entry| entry.blocks.get_mut(block_index))
                 {
-                    card.output = output;
-                    card.status = if is_error { ToolStatus::Failed } else { ToolStatus::Ok };
-                    card.details = details;
+                    card.record_result(message);
                 }
                 Some(message_index)
             }
@@ -1410,10 +1483,12 @@ impl AppState {
         let existing_error = entry.error.clone();
         entry.blocks = blocks;
         entry.streaming = false;
-        entry.timestamp = message
-            .get("timestamp")
-            .and_then(Value::as_i64)
-            .unwrap_or(entry.timestamp);
+        entry.record_timestamp(
+            message
+                .get("timestamp")
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
+        );
         if let Some(usage) = message.get("usage") {
             if !usage.is_null() {
                 entry.usage = Some(usage.clone());
@@ -1449,7 +1524,8 @@ impl AppState {
                 card.name = name.clone();
                 card.args = args.clone();
                 card.args_text = args.to_string();
-                card.started_at = now_ms();
+                card.timing.start();
+                card.started_at = card.timing.observed_start;
             }
         }
         self.activity = Some(format!("Running {name}…"));
@@ -1485,9 +1561,8 @@ impl AppState {
                 }
                 card.details = result.get("details").cloned();
                 card.status = if is_error { ToolStatus::Failed } else { ToolStatus::Ok };
-                card.elapsed_ms = card
-                    .started_at
-                    .and_then(|started| now_ms().map(|now| (now - started).max(0) as u64));
+                card.timing.finish();
+                card.elapsed_ms = card.timing.elapsed_ms;
             }
         }
         self.activity = Some("Thinking…".into());
@@ -1707,6 +1782,7 @@ impl AppState {
         let mut message = Message::new(Role::User);
         message.local = true;
         message.timestamp = now_ms().unwrap_or(0);
+        message.timestamp_origin = TimeOrigin::Dish;
         message.blocks.push(Block::Text(text.to_string()));
         self.messages.push(message);
         self.pending_local_user = Some(self.messages.len() - 1);
@@ -2001,6 +2077,9 @@ impl AppState {
         let id = self.client.bash(&command);
         let mut message = Message::new(Role::Bash);
         message.timestamp = now_ms().unwrap_or(0);
+        message.timestamp_origin = TimeOrigin::Dish;
+        let mut timing = Timing::default();
+        timing.start_command();
         message.blocks.push(Block::Bash(Box::new(BashCard {
             command,
             output: String::new(),
@@ -2008,6 +2087,7 @@ impl AppState {
             cancelled: false,
             truncated: false,
             status: ToolStatus::Running,
+            timing,
         })));
         let index = self.push_message(message);
         self.local_bash.insert(id, index);
@@ -2956,6 +3036,43 @@ pub fn model_matches(model: &ModelInfo, query: &str) -> bool {
     query
         .split_whitespace()
         .all(|term| searchable.contains(&term.to_lowercase()))
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::{Message, Role, ToolCard, ToolStatus};
+    use crate::metadata::TimeOrigin;
+    use serde_json::json;
+
+    #[test]
+    fn restored_tool_result_keeps_pi_time_without_fake_execution_times() {
+        let mut card = ToolCard::new("synthetic-call".into(), "bash".into());
+        card.record_result(&json!({"role":"toolResult", "timestamp":1733234400000_i64,
+            "isError":true, "content":[{"type":"text", "text":"ação falhou"}]}));
+        assert_eq!(card.timing.recorded, Some(1733234400000));
+        assert_eq!(card.timing.observed_start, None);
+        assert_eq!(card.timing.observed_end, None);
+        assert_eq!(card.elapsed_ms, None);
+        assert_eq!(card.status, ToolStatus::Failed);
+        assert_eq!(card.output, "ação falhou");
+        card.record_result(&json!({"isError":false, "content":[]}));
+        assert_eq!(card.timing.recorded, Some(1733234400000));
+    }
+
+    #[test]
+    fn absent_pi_timestamp_does_not_relabel_a_local_echo() {
+        let mut message = Message::new(Role::User);
+        message.timestamp = 1733234400000;
+        message.timestamp_origin = TimeOrigin::Dish;
+        message.record_timestamp(0);
+        assert_eq!(message.timestamp, 1733234400000);
+        assert_eq!(message.timestamp_origin, TimeOrigin::Dish);
+        message.record_timestamp(1733234401000);
+        assert_eq!(message.timestamp_origin, TimeOrigin::Pi);
+        assert_eq!(message.timestamp, 1733234401000);
+        assert_eq!(message.finished_at, 0);
+        assert_eq!(message.timing.elapsed_ms, None);
+    }
 }
 
 /// Format a token count for the status bar.

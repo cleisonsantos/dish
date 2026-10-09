@@ -212,6 +212,19 @@ fn request(state: &AppState, message: &Message, index: usize, _weak: &WeakEntity
                         .items_center()
                         .justify_end()
                         .gap(px(theme::S3))
+                        .when_some(
+                            crate::metadata::describe(
+                                Some((message.timestamp, message.timestamp_origin)),
+                                &message.timing,
+                            ),
+                            |el, metadata| {
+                                el.child(super::metadata_view::MetadataView {
+                                    id: SharedString::from(format!("request-metadata-{index}"))
+                                        .into(),
+                                    metadata,
+                                })
+                            },
+                        )
                         .child(super::copy_button::CopyButton {
                             id: SharedString::from(format!("copy-prompt-{index}")).into(),
                             text: copied,
@@ -234,7 +247,12 @@ fn assistant_turn(
         .model
         .clone()
         .unwrap_or_else(|| "assistente".to_string());
-    let duration = turn_duration(state, index);
+    let duration = message.timing.elapsed_ms.map(crate::metadata::duration);
+    let (response_status, response_error) = crate::metadata::assistant_status(
+        streaming,
+        message.stop_reason.as_deref(),
+        message.error.is_some(),
+    );
 
     let mut column = div()
         .w_full()
@@ -248,6 +266,7 @@ fn assistant_turn(
             div()
                 .flex()
                 .flex_row()
+                .flex_wrap()
                 .items_center()
                 .gap(px(theme::S2))
                 .child(
@@ -256,9 +275,31 @@ fn assistant_turn(
                         .text_color(theme::faint())
                         .child(SharedString::from(model)),
                 )
+                .child(
+                    div()
+                        .text_size(px(theme::TEXT_XS))
+                        .text_color(if response_error {
+                            theme::failure()
+                        } else {
+                            theme::dim()
+                        })
+                        .child(response_status),
+                )
                 .when(streaming, |el| {
                     el.child(crate::ui::pulse("turn-pulse", 6.0, theme::running()))
                 })
+                .when_some(
+                    crate::metadata::describe(
+                        Some((message.timestamp, message.timestamp_origin)),
+                        &message.timing,
+                    ),
+                    |el, metadata| {
+                        el.child(super::metadata_view::MetadataView {
+                            id: SharedString::from(format!("reply-metadata-{index}")).into(),
+                            metadata,
+                        })
+                    },
+                )
                 .child(div().flex_1())
                 .when_some(duration, |el, duration| {
                     el.child(
@@ -347,48 +388,21 @@ fn assistant_turn(
 
     if let Some(error) = &message.error {
         column = column.child(note(
-            "erro",
+            if message.stop_reason.as_deref() == Some("aborted") {
+                "interrupção"
+            } else {
+                "erro"
+            },
             error,
-            crate::ui::tone_color(crate::state::Tone::Error),
+            crate::ui::tone_color(if message.stop_reason.as_deref() == Some("aborted") {
+                crate::state::Tone::Warning
+            } else {
+                crate::state::Tone::Error
+            }),
         ));
     }
 
     column.into_any_element()
-}
-
-/// Duração do turno: do pedido anterior até o fim desta resposta. O Pi datou
-/// a mensagem quando ela começou; `finished_at` marca o fim local. Só a última
-/// resposta do turno carrega o total.
-fn turn_duration(state: &AppState, index: usize) -> Option<String> {
-    if state
-        .messages
-        .get(index + 1..)?
-        .iter()
-        .take_while(|entry| entry.role != Role::User)
-        .any(|entry| entry.role == Role::Assistant)
-    {
-        return None;
-    }
-    let message = state.messages.get(index)?;
-    if message.finished_at == 0 {
-        return None;
-    }
-    let start = state
-        .messages
-        .get(..index)?
-        .iter()
-        .rev()
-        .find(|entry| entry.role == Role::User)
-        .map(|entry| entry.timestamp)?;
-    if start == 0 {
-        return None;
-    }
-    let elapsed = (message.finished_at - start).max(0) as f64 / 1000.0;
-    Some(if elapsed < 10. {
-        format!("{elapsed:.1}s")
-    } else {
-        format!("{elapsed:.0}s")
-    })
 }
 
 // ------------------------------------------------------------------ atividade
@@ -461,6 +475,37 @@ fn tool_icon(name: &str) -> Icon {
     }
 }
 
+fn group_status(
+    failed: usize,
+    running: usize,
+    pending: usize,
+    interrupted: usize,
+) -> (Icon, Hsla, Option<String>) {
+    if failed > 0 {
+        (
+            Icon::Alert,
+            theme::failure(),
+            Some(format!("{failed} falhou")),
+        )
+    } else if running > 0 {
+        (Icon::Activity, theme::running(), Some("rodando".into()))
+    } else if pending > 0 {
+        (
+            Icon::Clock,
+            theme::faint(),
+            Some(format!("{pending} não iniciada(s)")),
+        )
+    } else if interrupted > 0 {
+        (
+            Icon::Stop,
+            theme::warn(),
+            Some(format!("{interrupted} interrompida(s)")),
+        )
+    } else {
+        (Icon::Check, theme::ok(), None)
+    }
+}
+
 /// Grupo de atividade: um resumo que abre para as linhas de ferramenta.
 fn activity_group(
     state: &AppState,
@@ -472,6 +517,8 @@ fn activity_group(
     let mut elapsed: u64 = 0;
     let mut failed = 0usize;
     let mut running = 0usize;
+    let mut pending = 0usize;
+    let mut interrupted = 0usize;
     for (_, tool) in group {
         let entry = counts
             .iter_mut()
@@ -486,10 +533,15 @@ fn activity_group(
             }
             ToolRef::Bash(_) => {}
         }
-        match tool.status() {
-            ToolStatus::Failed => failed += 1,
-            ToolStatus::Running => running += 1,
-            _ => {}
+        if matches!(tool, ToolRef::Bash(card) if card.cancelled) {
+            interrupted += 1;
+        } else {
+            match tool.status() {
+                ToolStatus::Failed => failed += 1,
+                ToolStatus::Running => running += 1,
+                ToolStatus::Pending => pending += 1,
+                ToolStatus::Ok => {}
+            }
         }
     }
 
@@ -506,17 +558,7 @@ fn activity_group(
     let open = state.activity_open(message_index).unwrap_or(default_open);
     let _ = any_expanded;
 
-    let (glyph, color, extra) = if failed > 0 {
-        (
-            Icon::Alert,
-            theme::failure(),
-            Some(format!("{failed} falhou")),
-        )
-    } else if running > 0 {
-        (Icon::Activity, theme::running(), Some("rodando".into()))
-    } else {
-        (Icon::Check, theme::ok(), None)
-    };
+    let (glyph, color, extra) = group_status(failed, running, pending, interrupted);
 
     let mut column = div()
         .flex()
@@ -659,6 +701,7 @@ fn tool_row(
         )))
         .flex()
         .flex_row()
+        .flex_wrap()
         .items_center()
         .gap(px(theme::S2))
         .py(px(theme::S1))
@@ -667,10 +710,14 @@ fn tool_row(
         .cursor_pointer()
         .focusable().tab_index(0)
         .focus(|s| s.border_1().border_color(theme::accent()))
-        .hoverable_tooltip(move |_, cx| cx.new(|_| super::copy_button::TextTooltip(tooltip.clone())).into())
+        .hoverable_tooltip(move |_, cx| {
+            cx.new(|_| super::copy_button::TextTooltip(tooltip.clone())).into()
+        })
         .on_key_down(move |event, _, cx| {
             if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                let _ = keyboard_weak.update(cx, |state, cx| state.toggle_tool(message_index, block_index, cx));
+                let _ = keyboard_weak.update(cx, |state, cx| {
+                    state.toggle_tool(message_index, block_index, cx)
+                });
                 cx.stop_propagation();
             }
         })
@@ -705,6 +752,24 @@ fn tool_row(
             text: complete,
             label: if command.is_some() { "Copiar comando" } else { "Copiar argumentos" },
         })
+        .when_some(
+            crate::metadata::describe(None, &card.timing),
+            |el, metadata| {
+                el.child(super::metadata_view::MetadataView {
+                    id: SharedString::from(format!("tool-metadata-{message_index}-{block_index}"))
+                        .into(),
+                    metadata,
+                })
+            },
+        )
+        .when_some(card.elapsed_ms, |el, elapsed| {
+            el.child(
+                div()
+                    .text_size(px(theme::TEXT_XS))
+                    .text_color(theme::faint())
+                    .child(crate::metadata::duration(elapsed)),
+            )
+        })
         .child(icon(glyph, 12., color))
         .child(
             div()
@@ -736,7 +801,13 @@ fn command_row(
     block_index: usize,
     card: &crate::state::BashCard,
 ) -> AnyElement {
-    let (glyph, color, label) = crate::ui::status_word(card.status);
+    let (glyph, color, label) = if card.cancelled {
+        (Icon::Stop, theme::warn(), "interrompido")
+    } else if card.exit_code.is_none() && card.status == ToolStatus::Ok {
+        (Icon::Clock, theme::faint(), "sem código de saída")
+    } else {
+        crate::ui::status_word(card.status)
+    };
     let status_text = match card.exit_code {
         Some(code) if code != 0 => format!("{label} · saída {code}"),
         Some(_) => label.to_string(),
@@ -751,9 +822,12 @@ fn command_row(
         .child(
             div()
                 .id(SharedString::from(format!("bash-command-{message_index}-{block_index}")))
-                .hoverable_tooltip(move |_, cx| cx.new(|_| super::copy_button::TextTooltip(tooltip.clone())).into())
+                .hoverable_tooltip(move |_, cx| {
+                    cx.new(|_| super::copy_button::TextTooltip(tooltip.clone())).into()
+                })
                 .flex()
                 .flex_row()
+                .flex_wrap()
                 .items_center()
                 .gap(px(theme::S2))
                 .py(px(theme::S1))
@@ -773,6 +847,26 @@ fn command_row(
                     id: SharedString::from(format!("copy-bash-command-{message_index}-{block_index}")).into(),
                     text: card.command.clone(),
                     label: "Copiar comando",
+                })
+                .when_some(
+                    crate::metadata::describe(None, &card.timing),
+                    |el, metadata| {
+                        el.child(super::metadata_view::MetadataView {
+                            id: SharedString::from(format!(
+                                "bash-metadata-{message_index}-{block_index}"
+                            ))
+                            .into(),
+                            metadata,
+                        })
+                    },
+                )
+                .when_some(card.timing.elapsed_ms, |el, elapsed| {
+                    el.child(
+                        div()
+                            .text_size(px(theme::TEXT_XS))
+                            .text_color(theme::faint())
+                            .child(crate::metadata::duration(elapsed)),
+                    )
                 })
                 .child(icon(glyph, 12., color))
                 .child(
@@ -963,8 +1057,18 @@ fn note(label: &str, text: &str, color: Hsla) -> AnyElement {
 
 #[cfg(test)]
 mod copy_tests {
-    use super::tool_copy_text;
+    use super::{group_status, tool_copy_text};
+    use crate::ui::icons::Icon;
     use serde_json::json;
+
+    #[test]
+    fn unstarted_or_cancelled_tools_are_not_reported_as_success() {
+        assert_eq!(group_status(0, 0, 1, 0).0, Icon::Clock);
+        assert_eq!(group_status(0, 0, 0, 1).0, Icon::Stop);
+        assert_eq!(group_status(1, 0, 0, 0).0, Icon::Alert);
+        assert_eq!(group_status(0, 1, 0, 0).0, Icon::Activity);
+        assert_eq!(group_status(0, 0, 0, 0).0, Icon::Check);
+    }
 
     #[test]
     fn copies_exact_multiline_command_not_summary() {
