@@ -11,7 +11,7 @@ use crate::sessions::{self, SessionInfo};
 use crate::state::AppState;
 use crate::theme;
 
-actions!(dish_workspace, [ToggleSessions, NextConversation, PreviousConversation, CloseConversation, SearchSessions, FocusPrompt]);
+actions!(dish_workspace, [ToggleSessions, NextConversation, PreviousConversation, CloseConversation, SearchSessions, FocusPrompt, NavUp, NavDown, NavAccept, NavCollapse, NavExpand]);
 
 struct Conversation {
     state: Entity<AppState>,
@@ -35,6 +35,13 @@ enum NavHover {
     Conversation(usize),
     /// Índice no catálogo de sessões salvas.
     Saved(usize),
+}
+
+/// Uma linha navegável da lista de sessões.
+#[derive(Clone, PartialEq)]
+enum NavEntry {
+    Open(usize),
+    Saved(PathBuf),
 }
 
 type SessionRow = (
@@ -61,6 +68,11 @@ pub struct Workspace {
     nav_width: f32,
     /// (x inicial, largura inicial) enquanto a divisa é arrastada.
     resizing_nav: Option<(f32, f32)>,
+    /// Navegação por teclado na lista de sessões.
+    nav_entries: Vec<NavEntry>,
+    nav_index: usize,
+    nav_query: String,
+    nav_scroll: ScrollHandle,
     refreshing: bool,
     opening: Option<PathBuf>,
     error: Option<String>,
@@ -162,6 +174,10 @@ impl Workspace {
             visible: preferences.navigation_open.unwrap_or(true),
             nav_width: preferences.navigation_width.unwrap_or(264.).clamp(200., 420.),
             resizing_nav: None,
+            nav_entries: Vec::new(),
+            nav_index: 0,
+            nav_query: String::new(),
+            nav_scroll: ScrollHandle::new(),
             refreshing: false,
             opening: None,
             error: None,
@@ -323,6 +339,64 @@ impl Workspace {
             return;
         }
         self.spawn_conversation(info.cwd, Some(info.path), cx);
+    }
+
+    /// Move o destaque na lista de sessões (abertas e salvas).
+    fn nav_move(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if self.nav_entries.is_empty() {
+            return;
+        }
+        let count = self.nav_entries.len();
+        self.nav_index = (self.nav_index as isize + delta).rem_euclid(count as isize) as usize;
+        cx.notify();
+    }
+
+    /// Abre a sessão destacada na lista de sessões.
+    fn nav_accept(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(entry) = self.nav_entries.get(self.nav_index).cloned() else {
+            return;
+        };
+        match entry {
+            NavEntry::Open(index) => self.select(index, window, cx),
+            NavEntry::Saved(path) => {
+                let Some(info) = self
+                    .catalog
+                    .iter()
+                    .find(|info| info.path == path)
+                    .cloned()
+                else {
+                    return;
+                };
+                self.open(info, window, cx);
+            }
+        }
+    }
+
+    /// Recolhe ou expande o projeto da sessão destacada.
+    fn nav_toggle_project(&mut self, collapse: bool, cx: &mut Context<Self>) {
+        let Some(entry) = self.nav_entries.get(self.nav_index) else {
+            return;
+        };
+        let cwd = match entry {
+            NavEntry::Open(index) => self
+                .conversations
+                .get(*index)
+                .map(|conversation| conversation.state.read(cx).cwd.clone()),
+            NavEntry::Saved(path) => self
+                .catalog
+                .iter()
+                .find(|info| &info.path == path)
+                .map(|info| info.cwd.clone()),
+        };
+        let Some(cwd) = cwd else {
+            return;
+        };
+        if collapse {
+            self.collapsed.insert(cwd);
+        } else {
+            self.collapsed.remove(&cwd);
+        }
+        cx.notify();
     }
 
     fn spawn_conversation(&mut self, cwd: PathBuf, path: Option<PathBuf>, cx: &mut Context<Self>) {
@@ -593,6 +667,38 @@ impl Workspace {
             });
         }
 
+        // Lista plana na mesma ordem do desenho, para o teclado.
+        let mut entries: Vec<NavEntry> = Vec::new();
+        let mut entry_groups: Vec<usize> = Vec::new();
+        let mut group_position = 0usize;
+        for (cwd, items) in &groups {
+            if !self.collapsed.contains(cwd) {
+                let mut ordered: Vec<&SessionRow> = items.iter().collect();
+                ordered.sort_by_key(|item| std::cmp::Reverse(item.3));
+                for (_, info, live, _) in ordered {
+                    if let Some(index) = live {
+                        entries.push(NavEntry::Open(*index));
+                    } else if let Some(info) = info {
+                        entries.push(NavEntry::Saved(info.path.clone()));
+                    } else {
+                        continue;
+                    }
+                    entry_groups.push(group_position);
+                }
+            }
+            group_position += 1;
+        }
+        if self.nav_query != query {
+            self.nav_query = query.clone();
+            self.nav_index = 0;
+        }
+        self.nav_entries = entries;
+        self.nav_index = self.nav_index.min(self.nav_entries.len().saturating_sub(1));
+        let highlighted = self.nav_entries.get(self.nav_index).cloned();
+        if let Some(group) = entry_groups.get(self.nav_index) {
+            self.nav_scroll.scroll_to_item(*group);
+        }
+
         let open_count = self.conversations.len();
         let running_count = self
             .conversations
@@ -767,6 +873,7 @@ impl Workspace {
             .flex_1()
             .min_h(px(0.))
             .overflow_y_scroll()
+            .track_scroll(&self.nav_scroll)
             .px(px(theme::S2))
             .pb(px(theme::S4))
             .flex()
@@ -894,6 +1001,13 @@ impl Workspace {
                                 let running = live
                                     .map(|i| self.conversations[i].state.read(cx).is_busy())
                                     .unwrap_or(false);
+                                let highlighted_here = match &highlighted {
+                                    Some(NavEntry::Open(index)) => live == Some(*index),
+                                    Some(NavEntry::Saved(path)) => {
+                                        info.as_ref().is_some_and(|info| &info.path == path)
+                                    }
+                                    None => false,
+                                };
                                 let active = live == Some(self.active);
                                 let unread = live.is_some_and(|i| self.conversations[i].unread_completion);
                                 let weak = cx.entity().downgrade();
@@ -921,6 +1035,7 @@ impl Workspace {
                                             .border_color(theme::line())
                                     })
                                     .when(!active && unread, |el| el.bg(theme::wash(theme::ok(), 0.10)))
+                                    .when(!active && highlighted_here, |el| el.bg(theme::hover()))
                                     .when(!active, |el| el.hover(|s| s.bg(theme::hover())))
                                     .cursor_pointer()
                                     .on_click(move |_event: &ClickEvent, window, cx: &mut App| {
@@ -1243,6 +1358,17 @@ impl Render for Workspace {
             )
             .on_action(cx.listener(|workspace, _: &crate::ui::ToggleHelp, window, cx| {
                 workspace.open_settings(crate::settings::Section::Keys, window, cx);
+            }))
+            .on_action(cx.listener(|workspace, _: &NavUp, _, cx| workspace.nav_move(-1, cx)))
+            .on_action(cx.listener(|workspace, _: &NavDown, _, cx| workspace.nav_move(1, cx)))
+            .on_action(cx.listener(|workspace, _: &NavAccept, window, cx| {
+                workspace.nav_accept(window, cx)
+            }))
+            .on_action(cx.listener(|workspace, _: &NavCollapse, _, cx| {
+                workspace.nav_toggle_project(true, cx)
+            }))
+            .on_action(cx.listener(|workspace, _: &NavExpand, _, cx| {
+                workspace.nav_toggle_project(false, cx)
             }))
             .on_action(cx.listener(|workspace, _: &NextConversation, window, cx| {
                 if !workspace.confirm_close && !workspace.settings.as_ref().is_some_and(|s| s.read(cx).open) {

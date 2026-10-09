@@ -24,7 +24,7 @@ pub mod window_frame;
 
 actions!(
     dish_ui,
-    [Dismiss, ModalSubmit, ToggleSidebar, NewSession, MenuUp, MenuDown, MenuAccept, CycleEffort, ToggleHelp, OpenModels, CloseWindow]
+    [Dismiss, ModalSubmit, ToggleSidebar, NewSession, MenuUp, MenuDown, MenuAccept, CycleEffort, ToggleHelp, OpenModels, CloseWindow, ModelUp, ModelDown, ModelAccept, ModalUp, ModalDown]
 );
 
 impl Render for AppState {
@@ -126,6 +126,26 @@ impl Render for AppState {
             .on_action(cx.listener(|state, _: &ModalSubmit, _window, cx| {
                 overlays::submit_modal(state, cx);
             }))
+            // Nos diálogos de seleção as setas andam pelo destaque; nos demais,
+            // continuam movendo o caret do editor.
+            .on_action(cx.listener(|state, _: &ModalUp, window, cx| {
+                if state.modal_select_open() {
+                    state.modal_move(-1, cx);
+                } else {
+                    state
+                        .modal_editor
+                        .update(cx, |editor, cx| editor.up(&crate::editor::Up, window, cx));
+                }
+            }))
+            .on_action(cx.listener(|state, _: &ModalDown, window, cx| {
+                if state.modal_select_open() {
+                    state.modal_move(1, cx);
+                } else {
+                    state
+                        .modal_editor
+                        .update(cx, |editor, cx| editor.down(&crate::editor::Down, window, cx));
+                }
+            }))
             .on_action(
                 cx.listener(|state, _: &MenuUp, window, cx| state.menu_move(-1, window, cx)),
             )
@@ -134,6 +154,12 @@ impl Render for AppState {
             )
             .on_action(cx.listener(|state, _: &MenuAccept, _window, cx| {
                 state.menu_accept(false, cx)
+            }))
+            // O seletor de modelos responde às mesmas teclas, com estado próprio.
+            .on_action(cx.listener(|state, _: &ModelUp, _, cx| state.model_move(-1, cx)))
+            .on_action(cx.listener(|state, _: &ModelDown, _, cx| state.model_move(1, cx)))
+            .on_action(cx.listener(|state, _: &ModelAccept, window, cx| {
+                state.model_accept(window, cx)
             }))
             .on_action(cx.listener(|state, _: &crate::editor::Paste, window, cx| {
                 state.paste(window, cx)

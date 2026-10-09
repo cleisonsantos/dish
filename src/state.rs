@@ -273,6 +273,10 @@ pub struct AppState {
     pub modal_editor: Entity<Editor>,
     pub model_search: Entity<Editor>,
     pub model_search_focus_pending: bool,
+    /// Linha destacada no seletor de modelos e a busca da qual ela veio.
+    model_index: usize,
+    model_query: String,
+    pub model_scroll: ScrollHandle,
     /// Busca dentro da janela de atalhos.
     pub help_search: Entity<Editor>,
     /// Foco pendente para a busca de atalhos, consumido no próximo frame.
@@ -329,6 +333,8 @@ pub struct AppState {
     pub toasts: Vec<Toast>,
     pub banner: Option<Banner>,
     pub modal: Option<Modal>,
+    /// Linha destacada nos diálogos de seleção de extensões.
+    modal_index: usize,
     pub ext_status: Vec<(String, String)>,
     pub ext_widget: Vec<String>,
     pub title_override: Option<String>,
@@ -380,6 +386,9 @@ impl AppState {
             modal_editor,
             model_search,
             model_search_focus_pending: false,
+            model_index: 0,
+            model_query: String::new(),
+            model_scroll: ScrollHandle::new(),
             help_search,
             help_focus_pending: false,
             composer_scroll: ScrollHandle::new(),
@@ -422,6 +431,7 @@ impl AppState {
             toasts: Vec::new(),
             banner: None,
             modal: None,
+            modal_index: 0,
             ext_status: Vec::new(),
             ext_widget: Vec::new(),
             title_override: None,
@@ -1539,9 +1549,48 @@ impl AppState {
                         .map(str::to_string),
                     wants_input: matches!(kind, ModalKind::Input | ModalKind::Editor),
                 });
+                self.modal_index = 0;
             }
             _ => {}
         }
+    }
+
+    /// Um diálogo de seleção está aberto?
+    pub fn modal_select_open(&self) -> bool {
+        self.modal
+            .as_ref()
+            .is_some_and(|modal| modal.kind == ModalKind::Select)
+    }
+
+    /// Move o destaque no diálogo de seleção.
+    pub fn modal_move(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let Some(count) = self.modal.as_ref().map(|modal| modal.options.len()) else {
+            return;
+        };
+        if count == 0 {
+            return;
+        }
+        self.modal_index =
+            (self.modal_index as isize + delta).rem_euclid(count as isize) as usize;
+        cx.notify();
+    }
+
+    /// Responde o diálogo de seleção com a opção destacada.
+    pub fn submit_modal_select(&mut self, cx: &mut Context<Self>) {
+        let Some(option) = self
+            .modal
+            .as_ref()
+            .filter(|modal| modal.kind == ModalKind::Select)
+            .and_then(|modal| modal.options.get(self.modal_index).cloned())
+        else {
+            return;
+        };
+        self.respond_modal(ModalAnswer::Value(json!(option)), cx);
+    }
+
+    /// Linha destacada no diálogo de seleção atual.
+    pub fn modal_highlight(&self) -> usize {
+        self.modal_index
     }
 
     /// Respond to a dialog request from an extension.
@@ -1851,6 +1900,12 @@ impl AppState {
                 self.show_thinking = !self.show_thinking;
                 true
             }
+            "/auto-compact" => {
+                self.toggle_auto_compaction();
+                let enabled = if self.session.auto_compaction { "on" } else { "off" };
+                self.push_toast(format!("Auto-compaction {enabled}"), Tone::Info, cx);
+                true
+            }
             "/clear" => {
                 self.reset_transcript();
                 true
@@ -2129,6 +2184,8 @@ impl AppState {
     pub fn open_model_menu(&mut self, cx: &mut Context<Self>) {
         self.model_search.update(cx, |editor, cx| editor.clear(cx));
         self.model_menu = true;
+        self.model_index = 0;
+        self.model_query.clear();
         self.model_search_focus_pending = true;
         cx.notify();
     }
@@ -2144,6 +2201,72 @@ impl AppState {
         // A different model brings a different reasoning ladder.
         self.thinking_levels.clear();
         self.client.call("get_available_thinking_levels", Value::Null);
+    }
+
+    /// Modelos visíveis para a busca atual, na ordem exibida (o atual primeiro).
+    pub fn filtered_models(&self, query: &str) -> Vec<usize> {
+        let mut indices: Vec<usize> = self
+            .models
+            .iter()
+            .enumerate()
+            .filter(|(_, model)| model_matches(model, query))
+            .map(|(index, _)| index)
+            .collect();
+        if let Some(current) = &self.model {
+            indices.sort_by_key(|index| {
+                let model = &self.models[*index];
+                !(model.id == current.id && model.provider == current.provider)
+            });
+        }
+        indices
+    }
+
+    /// A posição destacada no seletor para a busca informada.
+    pub fn model_highlight(&self, query: &str) -> Option<usize> {
+        let count = self.filtered_models(query).len();
+        if count == 0 {
+            return None;
+        }
+        if self.model_query == query {
+            Some(self.model_index.min(count - 1))
+        } else {
+            Some(0)
+        }
+    }
+
+    /// A lista filtrada e o destaque atual; reinicia o destaque quando a busca muda.
+    fn model_state(&mut self, cx: &App) -> (Vec<usize>, usize) {
+        let query = self.model_search.read(cx).text(cx);
+        if query != self.model_query {
+            self.model_query = query.clone();
+            self.model_index = 0;
+        }
+        let order = self.filtered_models(&query);
+        let index = self.model_index.min(order.len().saturating_sub(1));
+        (order, index)
+    }
+
+    pub fn model_move(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let (order, index) = self.model_state(cx);
+        if order.is_empty() {
+            return;
+        }
+        let next = (index as isize + delta).rem_euclid(order.len() as isize) as usize;
+        self.model_index = next;
+        self.model_scroll.scroll_to_item(next);
+        cx.notify();
+    }
+
+    pub fn model_accept(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (order, index) = self.model_state(cx);
+        let Some(model_index) = order.get(index).copied() else {
+            return;
+        };
+        let model = self.models[model_index].clone();
+        self.set_model(&model);
+        let focus = self.editor.read(cx).focus_handle.clone();
+        focus.focus(window, cx);
+        cx.notify();
     }
 
     pub fn cycle_effort(&mut self, cx: &mut Context<Self>) {
@@ -2601,6 +2724,7 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("/model", "Switch model"),
     ("/thinking", "Set the reasoning level"),
     ("/thinking-view", "Show or hide reasoning by default"),
+    ("/auto-compact", "Toggle automatic compaction"),
     ("/export", "Write the session to an HTML file"),
     ("/name", "Name this session"),
     ("/sidebar", "Toggle the details rail"),
@@ -2717,6 +2841,14 @@ fn tool_result_text(result: &Value) -> Option<String> {
         Some(other) => Some(other.to_string()),
         None => None,
     }
+}
+
+/// A busca do seletor de modelos: id e provedor, sem diferenciar maiúsculas.
+pub fn model_matches(model: &ModelInfo, query: &str) -> bool {
+    let searchable = format!("{} {}", model.id, model.provider).to_lowercase();
+    query
+        .split_whitespace()
+        .all(|term| searchable.contains(&term.to_lowercase()))
 }
 
 /// Format a token count for the status bar.
