@@ -62,6 +62,7 @@ jobs:
           xvfb-run -a -s '-screen 0 1280x960x24' python3 tests/desktop_smoke.py
           xvfb-run -a -s '-screen 0 1280x960x24' python3 tests/startup_smoke.py
           xvfb-run -a -s '-screen 0 1280x960x24' python3 tests/settings_smoke.py
+          xvfb-run -a -s '-screen 0 1280x960x24' python3 tests/session_activity_smoke.py
       - name: Install the Debian package and smoke-test /usr/bin/dish
         run: |
           sudo apt-get install -y ./dist/dish_*_amd64.deb

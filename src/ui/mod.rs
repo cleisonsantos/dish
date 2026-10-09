@@ -29,6 +29,11 @@ actions!(
 
 impl Render for AppState {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.visible && self.composer_focus_pending && self.modal.is_none() {
+            self.composer_focus_pending = false;
+            let focus = self.editor.read(cx).focus_handle.clone();
+            focus.focus(window, cx);
+        }
         if self.visible && self.model_menu && self.model_search_focus_pending {
             self.model_search_focus_pending = false;
             let focus = self.model_search.read(cx).focus_handle.clone();

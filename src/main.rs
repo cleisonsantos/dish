@@ -14,6 +14,7 @@ mod markdown;
 mod rpc;
 mod state;
 mod sessions;
+mod session_activity;
 mod workspace;
 mod theme;
 mod ui;
@@ -243,6 +244,7 @@ fn main() {
             KeyBinding::new("ctrl-n", NewSession, None),
             KeyBinding::new("ctrl-shift-e", CycleEffort, None),
             KeyBinding::new("ctrl-shift-b", workspace::ToggleSessions, None),
+            KeyBinding::new("ctrl-alt-f", workspace::CycleSessionFilter, None),
             KeyBinding::new("ctrl-tab", workspace::NextConversation, None),
             KeyBinding::new("ctrl-shift-tab", workspace::PreviousConversation, None),
             KeyBinding::new("ctrl-w", workspace::CloseConversation, None),

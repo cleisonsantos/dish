@@ -91,10 +91,6 @@ def type_text(text):
     time.sleep(0.1)
 
 
-# Geometria da navegação (largura 264): cabeçalho de 52px, bloco de
-# busca/filtros de ~84px, linha de projeto de ~26px e linha de sessão de ~45px.
-# ALPHA é a conversa viva do primeiro projeto; BETA é localizada pelo texto.
-ALPHA_ROW = (90, 193)
 # O ponto de accent visível: o marcador de esforço no compositor.
 ACCENT_PROBE = "220x80+300+740"
 # Botão de nova sessão no cabeçalho da navegação.
@@ -159,24 +155,30 @@ def scroll_up(window):
     time.sleep(0.3)
 
 
-def click_beta_session(window, close=False):
+def click_nav_label(window, label, close=False):
     # Busy indicators change row heights; saved sessions have no fixed y.
     with tempfile.NamedTemporaryFile(suffix=".png") as image:
-        subprocess.run(["import", "-window", str(window), "-crop", "264x10000+0+0", image.name], check=True)
+        subprocess.run(["import", "-window", str(window), "-crop", "264x10000+0+0", "-resize", "200%", image.name], check=True)
         rows = subprocess.check_output(
             ["tesseract", image.name, "stdout", "--psm", "6", "tsv"],
             stderr=subprocess.DEVNULL).decode().splitlines()[1:]
     lines = {}
     for row in rows:
         fields = row.split("\t")
-        if len(fields) == 12 and fields[11].strip() and int(fields[6]) < 264:
+        if len(fields) == 12 and fields[11].strip() and int(fields[6]) < 528:
             lines.setdefault(tuple(fields[1:5]), []).append(fields)
     for words in lines.values():
-        if "beta saved" in " ".join(word[11] for word in words).lower():
+        def match_text(text):
+            return "".join(char for char in text.lower() if char.isalnum())
+        if match_text(label) in match_text(" ".join(word[11] for word in words)):
             first = words[0]
-            click(window, 230 if close else 90, int(first[7]) + int(first[9]) // 2)
+            click(window, 230 if close else 90, (int(first[7]) + int(first[9]) // 2) // 2)
             return
-    raise AssertionError("Beta session row not found")
+    raise AssertionError(f"Navigation label not found: {label}")
+
+
+def click_beta_session(window, close=False):
+    click_nav_label(window, "beta saved", close)
 
 
 def park_mouse(window):
@@ -268,7 +270,7 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         wait_for(lambda: len(commands("prompt")) == 2, "Second prompt not sent")
         type_text("draft-b")
         # Return to alpha (the initial, unsaved conversation).
-        click(window, *ALPHA_ROW)
+        click_nav_label(window, "long-a")
         type_text("draft-a")
         # Return to beta, whose draft must survive.
         click_beta_session(window)
@@ -288,11 +290,11 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         scroll_up(window)
         park_mouse(window)
         scrolled = transcript_pixels(window)
-        click(window, *ALPHA_ROW)
+        click_nav_label(window, "long-a")
         click_beta_session(window)
         park_mouse(window)
         assert transcript_pixels(window) == scrolled, "Transcript scroll position was lost"
-        click(window, *ALPHA_ROW)
+        click_nav_label(window, "long-a")
         press("Return")
         wait_for(lambda: len(commands("prompt")) == 4, "Alpha draft was lost")
         assert commands("prompt")[3]["command"]["message"] == "draft-a"
@@ -311,7 +313,7 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         press("Return")
         wait_for(lambda: len(commands("prompt")) == 6, "Hidden dialog stole keyboard focus")
         assert commands("prompt")[-1]["pid"] == prompts[1]["pid"]
-        click(window, *ALPHA_ROW)
+        click_nav_label(window, "long-a")
         type_text("answer")
         press("Return")
         wait_for(lambda: commands("extension_ui_response"), "Pending dialog could not be answered")
@@ -372,8 +374,12 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         holder = clipboard(image_file.read_bytes(), "image/png")
         try:
             chord("Control_L", "v")
-            time.sleep(0.4)
-            press("Return")
+            # A leitura do clipboard é assíncrona: Return durante o carregamento
+            # é ignorado. Repetir com prazo é estável em CI carregada.
+            end = time.monotonic() + 10
+            while len(commands("prompt")) == 9 and time.monotonic() < end:
+                time.sleep(0.4)
+                press("Return")
             wait_for(lambda: len(commands("prompt")) == 10, "Pasted image not sent")
             import base64
             image_payload = commands("prompt")[-1]["command"]["images"][0]
@@ -388,8 +394,10 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         holder = clipboard((image_file.as_uri() + "\r\n").encode(), "text/uri-list")
         try:
             chord("Control_L", "v")
-            time.sleep(0.4)
-            press("Return")
+            end = time.monotonic() + 10
+            while len(commands("prompt")) == 10 and time.monotonic() < end:
+                time.sleep(0.4)
+                press("Return")
             wait_for(lambda: len(commands("prompt")) == 11, "Copied image file not sent")
             assert commands("prompt")[-1]["command"]["images"][0]["data"] == image_payload["data"]
         finally:
