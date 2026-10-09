@@ -22,12 +22,17 @@ pub fn remember(program: &str) {
     crate::preferences::save(preferences);
 }
 
-pub fn prefix() -> Option<PathBuf> {
+/// Dish's data directory (`$XDG_DATA_HOME/dish`, default `~/.local/share/dish`).
+pub fn data_dir() -> Option<PathBuf> {
     std::env::var_os("XDG_DATA_HOME")
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".local/share")))
-        .map(|p| p.join("dish/pi"))
+        .map(|p| p.join("dish"))
+}
+
+pub fn prefix() -> Option<PathBuf> {
+    data_dir().map(|dir| dir.join("pi"))
 }
 
 fn executable(prefix: &Path) -> PathBuf {

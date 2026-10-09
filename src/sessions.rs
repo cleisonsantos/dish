@@ -1,6 +1,6 @@
 use serde_json::Value;
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug)]
@@ -9,6 +9,21 @@ pub struct SessionInfo {
     pub cwd: PathBuf,
     pub title: String,
     pub modified: std::time::SystemTime,
+}
+
+/// A session file waiting in Dish's trash, with the paths needed to restore it.
+#[derive(Clone, Debug)]
+pub struct TrashedSession {
+    pub trashed: PathBuf,
+    pub meta: PathBuf,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct TrashMeta {
+    original: PathBuf,
+    cwd: PathBuf,
+    title: String,
+    deleted_at: u64,
 }
 
 pub fn expand_path(value: &str, cwd: &Path) -> PathBuf {
@@ -52,6 +67,86 @@ pub fn roots(cwd: &Path, flags: &[String]) -> Vec<PathBuf> {
         }
     }
     roots
+}
+
+/// Dish's trash for deleted session files. It lives outside the discovery
+/// roots, so a trashed session never shows up in the rail again.
+pub fn trash_root() -> Option<PathBuf> {
+    crate::installation::data_dir().map(|dir| dir.join("trash"))
+}
+
+/// Moves a session file to Dish's trash.
+pub fn trash(info: &SessionInfo) -> std::io::Result<TrashedSession> {
+    let root = trash_root()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no data directory available"))?;
+    trash_into(&root, info)
+}
+
+/// `trash` with an explicit destination, so tests never touch the real data dir.
+pub fn trash_into(root: &Path, info: &SessionInfo) -> std::io::Result<TrashedSession> {
+    if info.path.extension().is_none_or(|ext| ext != "jsonl") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a session file",
+        ));
+    }
+    fs::create_dir_all(root)?;
+    let stem = unique_trash_name();
+    let trashed = root.join(format!("{stem}.jsonl"));
+    let meta = root.join(format!("{stem}.json"));
+    move_file(&info.path, &trashed)?;
+    let metadata = TrashMeta {
+        original: info.path.clone(),
+        cwd: info.cwd.clone(),
+        title: info.title.clone(),
+        deleted_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0),
+    };
+    let encoded = serde_json::to_vec_pretty(&metadata).map_err(io::Error::other)?;
+    if let Err(error) = fs::write(&meta, encoded) {
+        // Never leave a session in the trash without its metadata.
+        let _ = move_file(&trashed, &info.path);
+        return Err(error);
+    }
+    Ok(TrashedSession { trashed, meta })
+}
+
+/// Moves a trashed session back to its original path and drops the metadata.
+pub fn restore(trashed: &Path, original: &Path) -> std::io::Result<()> {
+    if let Some(parent) = original.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    move_file(trashed, original)?;
+    let _ = fs::remove_file(trashed.with_extension("json"));
+    Ok(())
+}
+
+fn unique_trash_name() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    format!(
+        "{millis}-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+/// `rename` fails across filesystems (a custom `--session-dir` on another
+/// mount); fall back to a copy.
+fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
+    match fs::rename(from, to) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            fs::copy(from, to)?;
+            fs::remove_file(from)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -218,6 +313,51 @@ mod tests {
             launch_flags(&flags),
             vec!["--model", "test", "--session-dir=/tmp/custom"]
         );
+    }
+
+    #[test]
+    fn trashes_and_restores_a_session() {
+        let root = std::env::temp_dir().join(format!("dish-trash-{}", std::process::id()));
+        let sessions = root.join("sessions");
+        let trash = root.join("trash");
+        fs::create_dir_all(&sessions).unwrap();
+        let path = sessions.join("a.jsonl");
+        fs::write(&path, "{\"type\":\"session\",\"cwd\":\"/project/a\"}\n").unwrap();
+        let info = SessionInfo {
+            path: path.clone(),
+            cwd: PathBuf::from("/project/a"),
+            title: "Named thread".into(),
+            modified: fs::metadata(&path).unwrap().modified().unwrap(),
+        };
+
+        let entry = trash_into(&trash, &info).unwrap();
+        assert!(!path.exists());
+        assert!(entry.trashed.exists());
+        assert!(entry.meta.exists());
+
+        restore(&entry.trashed, &path).unwrap();
+        assert!(path.exists());
+        assert!(!entry.trashed.exists());
+        assert!(!entry.meta.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn refuses_to_trash_a_non_session_file() {
+        let root = std::env::temp_dir().join(format!("dish-trash-guard-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("notes.txt");
+        fs::write(&path, "keep me").unwrap();
+        let info = SessionInfo {
+            path: path.clone(),
+            cwd: root.clone(),
+            title: "notes".into(),
+            modified: fs::metadata(&path).unwrap().modified().unwrap(),
+        };
+
+        assert!(trash_into(&root.join("trash"), &info).is_err());
+        assert!(path.exists());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

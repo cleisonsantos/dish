@@ -28,6 +28,7 @@ pub enum Icon {
     Dots,
     Minimize,
     Close,
+    Trash,
 }
 
 /// Um ícone desenhado num quadrado de `size` px.
@@ -196,6 +197,22 @@ fn build(icon: Icon, stroke: f32, scale: f32, origin: Point<Pixels>) -> Option<P
             b.line_to(to(11.8, 11.8));
             b.move_to(to(11.8, 4.2));
             b.line_to(to(4.2, 11.8));
+        }
+        Icon::Trash => {
+            b.move_to(to(2.8, 4.4));
+            b.line_to(to(13.2, 4.4));
+            b.move_to(to(6.2, 4.4));
+            b.line_to(to(6.2, 2.8));
+            b.line_to(to(9.8, 2.8));
+            b.line_to(to(9.8, 4.4));
+            b.move_to(to(4.4, 4.4));
+            b.line_to(to(5.2, 13.2));
+            b.line_to(to(10.8, 13.2));
+            b.line_to(to(11.6, 4.4));
+            b.move_to(to(6.8, 6.8));
+            b.line_to(to(7.0, 10.8));
+            b.move_to(to(9.2, 6.8));
+            b.line_to(to(9.0, 10.8));
         }
     }
 
