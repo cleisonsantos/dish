@@ -1559,6 +1559,17 @@ impl Render for Workspace {
                 focus.focus(window, cx);
                 cx.notify();
             }));
+        // A decoração pertence à janela inteira, nunca ao layout da conversa.
+        // Assim o inspetor não altera a posição da barra nem dos controles.
+        if let Some(frame) = crate::ui::window_frame::layer(window) {
+            root = root
+                .child(frame)
+                .pl(px(crate::ui::window_frame::BORDER))
+                .pr(px(crate::ui::window_frame::BORDER))
+                .pt(px(crate::ui::window_frame::BORDER))
+                .pb(px(crate::ui::window_frame::BORDER))
+                .child(crate::ui::client_titlebar());
+        }
         let mut body = div().relative().flex_1().min_h(px(0.)).flex().flex_row();
         if self.visible {
             body = body.child(self.navigation(window, cx));

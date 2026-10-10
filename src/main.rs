@@ -272,6 +272,10 @@ fn main() {
                 appears_transparent: false,
                 traffic_light_position: None,
             }),
+            // No Linux a barra integrada é desenhada pelo Dish, como no Zed.
+            // Nas outras plataformas mantemos a decoração nativa por enquanto.
+            window_decorations: cfg!(target_os = "linux")
+                .then_some(WindowDecorations::Client),
             window_background: WindowBackgroundAppearance::Opaque,
             app_id: Some("dish".to_string()),
             ..Default::default()
