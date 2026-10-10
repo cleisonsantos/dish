@@ -1874,6 +1874,7 @@ impl AppState {
                 self.push_toast("Envie imagens com uma mensagem normal, sem comando / ou !.".into(), Tone::Warning, cx);
                 return;
             }
+            self.editor.update(cx, |editor, _| editor.push_history(&text));
             let images = std::mem::take(&mut self.pasted_images);
             let payload: Vec<Value> = images.iter().map(|(_, value)| value.clone()).collect();
             let behavior = self.streaming.then_some("steer");
@@ -1924,6 +1925,7 @@ impl AppState {
             return;
         }
         self.last_run = Some(std::time::SystemTime::now());
+        self.editor.update(cx, |editor, _| editor.push_history(&text));
 
         if let Some(command) = text.strip_prefix('!') {
             let command = command.trim().to_string();
@@ -2601,6 +2603,12 @@ impl AppState {
                 .update(cx, |editor, cx| editor.set_text(name, cx));
         }
         cx.notify();
+    }
+
+    /// Com um overlay aberto o foco não deve escapar; sem overlay, Tab e
+    /// Shift+Tab podem circular pela janela.
+    pub fn focus_can_move(&self) -> bool {
+        self.modal.is_none() && !self.model_menu && !self.help_open && !self.effort_menu
     }
 
     /// The editor that editing actions should act on.

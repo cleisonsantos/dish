@@ -205,6 +205,65 @@ impl LogicalLine {
     }
 }
 
+/// Prompts já enviados, no estilo da CLI do Pi: ↑ lembra o anterior, ↓ avança
+/// e devolve o rascunho quando chega ao fim. Sem persistência entre reinícios.
+#[derive(Default, Debug)]
+pub struct PromptHistory {
+    entries: Vec<String>,
+    /// `None` significa "mostrando o rascunho atual".
+    index: Option<usize>,
+    draft: String,
+}
+
+impl PromptHistory {
+    /// Registra um texto enviado; vazio não entra e repetição consecutiva não duplica.
+    pub fn push(&mut self, text: &str) {
+        self.index = None;
+        self.draft.clear();
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        if self.entries.last().map(String::as_str) != Some(text) {
+            self.entries.push(text.to_owned());
+        }
+    }
+
+    /// Texto anterior. `None` quando não há mais nada (o cursor deve subir).
+    pub fn previous(&mut self, current: &str) -> Option<String> {
+        if self.entries.is_empty() {
+            return None;
+        }
+        let next = match self.index {
+            None => {
+                self.draft = current.to_owned();
+                self.entries.len() - 1
+            }
+            Some(0) => return None,
+            Some(index) => index - 1,
+        };
+        self.index = Some(next);
+        Some(self.entries[next].clone())
+    }
+
+    /// Texto seguinte; ao passar do mais recente, restaura o rascunho guardado.
+    pub fn next(&mut self) -> Option<String> {
+        let index = self.index?;
+        if index + 1 < self.entries.len() {
+            self.index = Some(index + 1);
+            Some(self.entries[index + 1].clone())
+        } else {
+            self.index = None;
+            Some(std::mem::take(&mut self.draft))
+        }
+    }
+
+    #[cfg(test)]
+    fn entries(&self) -> &[String] {
+        &self.entries
+    }
+}
+
 pub struct Editor {
     pub value: Entity<String>,
     pub focus_handle: FocusHandle,
@@ -224,6 +283,7 @@ pub struct Editor {
     last_edit: Option<Edit>,
     /// UTF-8 range of the active input-method composition.
     marked_range: Option<Range<usize>>,
+    history: PromptHistory,
     _blink_task: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -277,6 +337,7 @@ impl Editor {
             redo_stack: Vec::new(),
             last_edit: None,
             marked_range: None,
+            history: PromptHistory::default(),
             _blink_task: Task::ready(()),
             _subscriptions: vec![focus_sub, blur_sub, value_sub],
         }
@@ -290,6 +351,11 @@ impl Editor {
 
     pub fn is_empty(&self, cx: &App) -> bool {
         self.value.read(cx).is_empty()
+    }
+
+    /// Guarda um prompt enviado para a navegação com ↑/↓.
+    pub fn push_history(&mut self, text: &str) {
+        self.history.push(text);
     }
 
     pub fn selected_text(&self, cx: &App) -> Option<String> {
@@ -576,10 +642,23 @@ impl Editor {
     }
 
     pub fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
+        if self.cursor_line(cx) == 0 {
+            let current = self.text(cx);
+            if let Some(text) = self.history.previous(&current) {
+                self.set_text(text, cx);
+                return;
+            }
+        }
         self.move_line(false, false, cx);
     }
 
     pub fn down(&mut self, _: &Down, _: &mut Window, cx: &mut Context<Self>) {
+        if self.cursor_line(cx) == self.text(cx).matches('\n').count() {
+            if let Some(text) = self.history.next() {
+                self.set_text(text, cx);
+                return;
+            }
+        }
         self.move_line(true, false, cx);
     }
 
@@ -1506,7 +1585,41 @@ pub fn standard_actions<E: InteractiveElement>(editor: Entity<Editor>) -> impl F
 
 #[cfg(test)]
 mod tests {
-    use super::Selection;
+    use super::{PromptHistory, Selection};
+
+    #[test]
+    fn history_ignores_blank_and_consecutive_duplicates() {
+        let mut history = PromptHistory::default();
+        history.push("   ");
+        history.push("primeiro");
+        history.push("primeiro");
+        history.push("segundo");
+        history.push("primeiro");
+        assert_eq!(history.entries(), ["primeiro", "segundo", "primeiro"]);
+    }
+
+    #[test]
+    fn history_walks_backwards_and_restores_the_draft() {
+        let mut history = PromptHistory::default();
+        history.push("um");
+        history.push("dois");
+        assert_eq!(history.previous("rascunho"), Some("dois".into()));
+        assert_eq!(history.previous("dois"), Some("um".into()));
+        assert_eq!(history.previous("um"), None, "no topo o cursor sobe");
+        assert_eq!(history.next(), Some("dois".into()));
+        assert_eq!(history.next(), Some("rascunho".into()));
+        assert_eq!(history.next(), None, "depois do rascunho o cursor desce");
+    }
+
+    #[test]
+    fn sending_after_recall_starts_a_new_draft_cycle() {
+        let mut history = PromptHistory::default();
+        history.push("um");
+        assert_eq!(history.previous("edição"), Some("um".into()));
+        history.push("um editado");
+        assert_eq!(history.entries(), ["um", "um editado"]);
+        assert_eq!(history.previous("vazio"), Some("um editado".into()));
+    }
 
     #[test]
     fn stale_selection_on_empty_buffer_can_be_replaced() {

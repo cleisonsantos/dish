@@ -25,7 +25,7 @@ pub mod window_frame;
 
 actions!(
     dish_ui,
-    [Dismiss, ModalSubmit, ToggleSidebar, NewSession, MenuUp, MenuDown, MenuAccept, CycleEffort, ToggleHelp, OpenModels, CloseWindow, ModelUp, ModelDown, ModelAccept, ModalUp, ModalDown]
+    [Dismiss, ModalSubmit, ToggleSidebar, NewSession, MenuUp, MenuDown, MenuAccept, PreviousFocus, CycleEffort, ToggleHelp, OpenModels, CloseWindow, ModelUp, ModelDown, ModelAccept, ModalUp, ModalDown]
 );
 
 impl Render for AppState {
@@ -158,8 +158,18 @@ impl Render for AppState {
             .on_action(
                 cx.listener(|state, _: &MenuDown, window, cx| state.menu_move(1, window, cx)),
             )
-            .on_action(cx.listener(|state, _: &MenuAccept, _window, cx| {
-                state.menu_accept(false, cx)
+            .on_action(cx.listener(|state, _: &MenuAccept, window, cx| {
+                // Com o menu `/` aberto, Tab completa; sem ele, anda com o foco.
+                if !state.slash_state(cx).0.is_empty() {
+                    state.menu_accept(false, cx);
+                } else if state.focus_can_move() {
+                    window.focus_next(cx);
+                }
+            }))
+            .on_action(cx.listener(|state, _: &PreviousFocus, window, cx| {
+                if state.focus_can_move() {
+                    window.focus_prev(cx);
+                }
             }))
             // O seletor de modelos responde às mesmas teclas, com estado próprio.
             .on_action(cx.listener(|state, _: &ModelUp, _, cx| state.model_move(-1, cx)))

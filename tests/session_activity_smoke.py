@@ -245,6 +245,22 @@ with tempfile.TemporaryDirectory(prefix="dish-activity-") as temporary:
         select_title("beta saved")
         wait_for(lambda: beta_path not in preferences().get("unread_sessions", {}), "Reopening saved unread response did not mark it read")
         cycle_filter(); cycle_filter()  # Unread -> Running -> All
+        # ↑ lembra o prompt anterior; Tab sai do campo e Shift+Tab volta.
+        before = len(commands("prompt"))
+        send("historico-um")
+        chord("Control_L", "l")
+        press("Up")
+        time.sleep(0.2)
+        press("Return")
+        wait_for(lambda: len(commands("prompt")) == before + 2, "Up did not resend the previous prompt")
+        assert commands("prompt")[-1]["command"]["message"] == "historico-um"
+        chord("Control_L", "l")
+        press("Tab")
+        chord("Shift_L", "Tab")
+        type_text("historico-dois")
+        press("Return")
+        wait_for(lambda: len(commands("prompt")) == before + 3, "Shift+Tab did not return focus to the prompt field")
+        assert commands("prompt")[-1]["command"]["message"] == "historico-dois"
         send("test-exit")
         wait_for(lambda: " erro " in f" {nav_text()} ", "Transport closure not displayed as error")
         cycle_filter(); cycle_filter(); cycle_filter()  # Running

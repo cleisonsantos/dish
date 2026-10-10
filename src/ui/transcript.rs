@@ -713,13 +713,22 @@ fn tool_row(
         .hoverable_tooltip(move |_, cx| {
             cx.new(|_| super::copy_button::TextTooltip(tooltip.clone())).into()
         })
-        .on_key_down(move |event, _, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+        .on_key_down(move |event, window, cx| match event.keystroke.key.as_str() {
+            "enter" | "space" => {
                 let _ = keyboard_weak.update(cx, |state, cx| {
                     state.toggle_tool(message_index, block_index, cx)
                 });
                 cx.stop_propagation();
             }
+            "tab" => {
+                if event.keystroke.modifiers.shift {
+                    window.focus_prev(cx);
+                } else {
+                    window.focus_next(cx);
+                }
+                cx.stop_propagation();
+            }
+            _ => {}
         })
         .hover(|style| style.bg(theme::hover()))
         .on_click(move |_event: &ClickEvent, _window: &mut Window, cx: &mut App| {
