@@ -19,7 +19,9 @@ pub fn composer(
 ) -> Div {
     let editor = state.editor.clone();
     let editor_for_click = editor.clone();
-    let focus_handle = editor.read(cx).focus_handle.clone();
+    // O handle precisa carregar o tab stop: com `track_focus` explícito, o
+    // `tab_index` do Div não é aplicado pelo GPUI.
+    let focus_handle = editor.read(cx).focus_handle.clone().tab_stop(true).tab_index(0);
     let focused = focus_handle.is_focused(window);
     let empty = (editor.read(cx).is_empty(cx) && state.pasted_images.is_empty()) || state.paste_loading;
     let streaming = state.streaming;

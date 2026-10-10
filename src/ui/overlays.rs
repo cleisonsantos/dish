@@ -518,12 +518,14 @@ pub fn submit_modal(state: &mut AppState, cx: &mut Context<AppState>) {
 }
 
 pub fn keyboard_shortcuts() -> Vec<(&'static str, &'static str)> {
-    let app_keys: [(&'static str, &'static str); 21] = [
+    let app_keys: [(&'static str, &'static str); 23] = [
         ("⏎", "send the prompt"),
         ("⇧⏎", "insert a newline"),
         ("esc", "dismiss a menu or notice, or stop the run"),
         ("↑ ↓", "choose in the slash menu"),
-        ("⇥", "complete the highlighted command"),
+        ("⇥", "complete the command or move focus"),
+        ("⇧⇥", "move focus to the previous control"),
+        ("↑ ↓", "recall sent prompts at the field edges"),
         ("↑ ↓ ⏎", "pick a model in the model picker"),
         ("↑ ↓ ⏎", "open a session from the session search"),
         ("← →", "collapse or expand that session's project"),

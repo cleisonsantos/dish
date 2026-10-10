@@ -111,7 +111,9 @@ impl RenderOnce for SelectionGroup {
             });
         selection.update(cx, |state, _| state.update_text(self.text));
         *self.handle.borrow_mut() = Some(selection.clone());
-        let focus = selection.read(cx).focus.clone();
+        // Com `track_focus` explícito o `tab_index` do Div não vale: o handle
+        // precisa carregar o tab stop.
+        let focus = selection.read(cx).focus.clone().tab_stop(true).tab_index(0);
         let select_all = selection.clone();
         let dismiss = selection.clone();
         div()
@@ -137,6 +139,16 @@ impl RenderOnce for SelectionGroup {
                     state.head = state.text.len();
                     cx.notify();
                 });
+            })
+            .on_key_down(move |event, window, cx| {
+                if event.keystroke.key == "tab" {
+                    if event.keystroke.modifiers.shift {
+                        window.focus_prev(cx);
+                    } else {
+                        window.focus_next(cx);
+                    }
+                    cx.stop_propagation();
+                }
             })
             .on_action(move |_: &super::Dismiss, _, cx| {
                 if dismiss.read(cx).range().is_empty() {

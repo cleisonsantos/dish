@@ -33,7 +33,7 @@ use crate::editor::{
 };
 use crate::ui::{
     CloseWindow, CycleEffort, Dismiss, MenuAccept, MenuDown, MenuUp, ModalSubmit, NewSession,
-    ToggleSidebar,
+    PreviousFocus, ToggleSidebar,
 };
 
 /// Everything a text field should answer to, bound for one key context.
@@ -240,6 +240,7 @@ fn main() {
             KeyBinding::new("enter", ModalSubmit, Some("DishModal")),
             KeyBinding::new("shift-enter", Newline, Some("DishModal")),
             KeyBinding::new("tab", MenuAccept, Some("DishInput")),
+            KeyBinding::new("shift-tab", PreviousFocus, Some("DishInput")),
             KeyBinding::new("escape", Dismiss, None),
             KeyBinding::new("ctrl-b", ToggleSidebar, None),
             KeyBinding::new("ctrl-n", NewSession, None),
