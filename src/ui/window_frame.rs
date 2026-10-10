@@ -3,8 +3,8 @@
 //! No GNOME/Wayland o Mutter não oferece decoração server-side, então a janela
 //! nasce sem bordas e sem alça de redimensionamento. Onde o compositor delega
 //! a moldura ao aplicativo, esta camada fica atrás do conteúdo e reserva as
-//! bordas laterais (via `BORDER`) para o redimensionamento; o arrasto fica no
-//! título, onde não há controles para atrapalhar.
+//! bordas (via `BORDER`) para o redimensionamento; o arrasto fica na região
+//! livre da barra de título, separada dos controles e do conteúdo.
 //!
 //! X11, macOS e Windows mantêm as decorações nativas (`Decorations::Server`);
 //! nestes a camada não é construída.

@@ -56,11 +56,7 @@ impl Render for AppState {
             .min_w(px(0.))
             .flex()
             .flex_col()
-            .child(conversation_header(
-                self,
-                cx,
-                window_frame::client_side(window),
-            ))
+            .child(conversation_header(self, cx))
             .child(transcript::transcript(self, cx));
 
         if let Some(banner) = self.banner.clone() {
@@ -93,7 +89,10 @@ impl Render for AppState {
             root = root
                 .child(frame)
                 .pl(px(window_frame::BORDER))
-                .pr(px(window_frame::BORDER));
+                .pr(px(window_frame::BORDER))
+                .pt(px(window_frame::BORDER))
+                .pb(px(window_frame::BORDER))
+                .child(client_titlebar());
         }
         root = root
             .on_action(cx.listener(|state, _: &SendPrompt, _window, cx| state.submit(cx)))
@@ -244,7 +243,7 @@ impl Render for AppState {
 
 /// Título, projeto e estado num único ponto. Modelo e esforço ficam no
 /// compositor; as métricas ficam no inspetor.
-fn conversation_header(state: &AppState, cx: &Context<AppState>, draggable: bool) -> Div {
+fn conversation_header(state: &AppState, cx: &Context<AppState>) -> Div {
     let (glyph, color, label) = conversation_state(state);
     let folder = state
         .title_override
@@ -269,12 +268,6 @@ fn conversation_header(state: &AppState, cx: &Context<AppState>, draggable: bool
                 .flex_col()
                 .gap(px(theme::S1))
                 .min_w(px(0.))
-                .when(draggable, |el| {
-                    el.cursor(CursorStyle::Arrow).on_mouse_down(
-                        MouseButton::Left,
-                        |_event, window, _cx| window.start_window_move(),
-                    )
-                })
                 .child(
                     div()
                         .truncate()
@@ -366,12 +359,35 @@ fn conversation_header(state: &AppState, cx: &Context<AppState>, draggable: bool
                                 .text_color(theme::dim())
                                 .child("Detalhes"),
                         ),
-                )
-                // Em compositores que deixam a moldura para o aplicativo
-                // (GNOME/Wayland) não existe botão do sistema: estes são os
-                // controles da janela.
-                .when(draggable, |el| el.child(window_controls())),
+                ),
         )
+}
+
+/// Barra de título separada do conteúdo, apenas onde não há moldura nativa.
+fn client_titlebar() -> Stateful<Div> {
+    div()
+        .id("window-titlebar")
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(theme::S2))
+        .px(px(theme::S3))
+        .py(px(theme::S1))
+        .border_b_1()
+        .border_color(theme::line_soft())
+        .child(
+            div()
+                .id("window-titlebar-drag")
+                .flex_1()
+                .text_size(px(theme::TEXT_SM))
+                .text_color(theme::dim())
+                .cursor(CursorStyle::Arrow)
+                .on_mouse_down(MouseButton::Left, |_event, window, _cx| {
+                    window.start_window_move();
+                })
+                .child("Dish"),
+        )
+        .child(window_controls())
 }
 
 /// Minimizar e fechar, desenhados pelo próprio app quando o compositor não
