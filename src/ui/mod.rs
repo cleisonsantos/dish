@@ -82,18 +82,6 @@ impl Render for AppState {
             .font_family(theme::FONT_UI)
             .text_size(px(theme::TEXT))
             .line_height(theme::body_line_height());
-        // Em compositores sem moldura (GNOME/Wayland) esta camada redimensiona
-        // a janela; as laterais ficam reservadas para as alças de resize e o
-        // arrasto vive no título. Onde há decoração nativa ela não existe.
-        if let Some(frame) = window_frame::layer(window) {
-            root = root
-                .child(frame)
-                .pl(px(window_frame::BORDER))
-                .pr(px(window_frame::BORDER))
-                .pt(px(window_frame::BORDER))
-                .pb(px(window_frame::BORDER))
-                .child(client_titlebar());
-        }
         root = root
             .on_action(cx.listener(|state, _: &SendPrompt, _window, cx| state.submit(cx)))
             .on_action(cx.listener(|state, _: &ToggleHelp, _, cx| {
@@ -374,7 +362,7 @@ fn conversation_header(state: &AppState, cx: &Context<AppState>) -> Div {
 }
 
 /// Barra de título separada do conteúdo, apenas onde não há moldura nativa.
-fn client_titlebar() -> Stateful<Div> {
+pub(crate) fn client_titlebar() -> Stateful<Div> {
     div()
         .id("window-titlebar")
         .flex()
@@ -389,13 +377,11 @@ fn client_titlebar() -> Stateful<Div> {
             div()
                 .id("window-titlebar-drag")
                 .flex_1()
-                .text_size(px(theme::TEXT_SM))
-                .text_color(theme::dim())
+                .h(px(theme::S5))
                 .cursor(CursorStyle::Arrow)
                 .on_mouse_down(MouseButton::Left, |_event, window, _cx| {
                     window.start_window_move();
-                })
-                .child("Dish"),
+                }),
         )
         .child(window_controls())
 }

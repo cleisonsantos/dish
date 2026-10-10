@@ -2,7 +2,9 @@
 import pathlib
 import unittest
 
-SOURCE = (pathlib.Path(__file__).resolve().parents[1] / "src/ui/mod.rs").read_text()
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+SOURCE = (ROOT / "src/ui/mod.rs").read_text()
+WORKSPACE = (ROOT / "src/workspace.rs").read_text()
 
 
 class WindowTitlebarTests(unittest.TestCase):
@@ -22,11 +24,22 @@ class WindowTitlebarTests(unittest.TestCase):
         self.assertIn(".child(window_controls())", titlebar)
 
     def test_titlebar_is_only_added_with_client_frame(self):
-        frame = SOURCE.split("if let Some(frame) = window_frame::layer(window) {", 1)[1].split(
-            "\n        }", 1
-        )[0]
-        self.assertIn(".child(client_titlebar())", frame)
-        self.assertEqual(SOURCE.count(".child(client_titlebar())"), 1)
+        frame = WORKSPACE.split(
+            "if let Some(frame) = crate::ui::window_frame::layer(window) {", 1
+        )[1].split("\n        }", 1)[0]
+        self.assertIn(".child(crate::ui::client_titlebar())", frame)
+        self.assertEqual(WORKSPACE.count(".child(crate::ui::client_titlebar())"), 1)
+        self.assertNotIn(".child(client_titlebar())", SOURCE)
+        self.assertNotIn("window_frame::layer(window)", SOURCE)
+
+    def test_titlebar_precedes_workspace_body_and_is_outside_inspector_layout(self):
+        self.assertLess(
+            WORKSPACE.index(".child(crate::ui::client_titlebar())"),
+            WORKSPACE.index("let mut body = div()"),
+        )
+        self.assertNotIn("client_titlebar", SOURCE.split("if self.sidebar {", 1)[1].split(
+            "// --------------------------------------------------------", 1
+        )[0])
 
     def test_close_keeps_confirmation_action(self):
         controls = SOURCE.split("fn window_controls()", 1)[1].split(
