@@ -5,6 +5,7 @@
 //! reimplemented: the same session, tools, models and extensions run here as in
 //! the terminal.
 
+mod demand;
 mod editor;
 mod settings;
 mod installation;

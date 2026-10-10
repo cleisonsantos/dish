@@ -11,6 +11,9 @@ pub struct Preferences {
     pub navigation_width: Option<f32>,
     /// Se o raciocínio começa expandido ou recolhido.
     pub show_thinking: Option<bool>,
+    /// Títulos de sessão gerados pelo modelo da sessão. Gasta tokens, então
+    /// começa desligado e é escolha explícita do usuário.
+    pub generated_titles: bool,
     pub collapsed_projects: BTreeSet<PathBuf>,
     pub last_project: Option<PathBuf>,
     pub last_session: Option<PathBuf>,
@@ -89,6 +92,7 @@ mod tests {
             details_open: Some(false), navigation_open: Some(true),
             navigation_width: Some(264.),
             show_thinking: Some(false),
+            generated_titles: true,
             collapsed_projects: [PathBuf::from("/tmp/projeto-á")].into(),
             last_project: Some("/tmp/projeto-á".into()), last_session: Some("/tmp/session.jsonl".into()),
             window_size: Some([1240., 860.]),
