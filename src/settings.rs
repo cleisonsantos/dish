@@ -19,6 +19,7 @@ pub struct Settings {
     details: bool,
     navigation: bool,
     thinking: bool,
+    titles: bool,
 }
 
 impl Settings {
@@ -28,15 +29,15 @@ impl Settings {
         Self {
             open: false, section: Section::App, focus: cx.focus_handle(),
             previous_focus: None, search,
-            details: true, navigation: true, thinking: true,
+            details: true, navigation: true, thinking: true, titles: false,
         }
     }
 
-    pub fn show(&mut self, section: Section, options: [bool; 3], window: &mut Window, cx: &mut Context<Self>) {
+    pub fn show(&mut self, section: Section, options: [bool; 4], window: &mut Window, cx: &mut Context<Self>) {
         if !self.open { self.previous_focus = window.focused(cx); }
         self.open = true;
         self.section = section;
-        [self.details, self.navigation, self.thinking] = options;
+        [self.details, self.navigation, self.thinking, self.titles] = options;
         self.focus.focus(window, cx);
         if section == Section::Keys { self.search.read(cx).focus_handle.clone().focus(window, cx); }
         cx.notify();
@@ -91,13 +92,20 @@ impl Render for Settings {
                     ("details", "Painel de detalhes", self.details),
                     ("navigation", "Navegação de sessões", self.navigation),
                     ("thinking", "Raciocínio expandido", self.thinking),
+                    ("generated_titles", "Títulos gerados por modelo", self.titles),
                 ] {
                     page = page.child(control(id, SharedString::from(format!("{label}: {}", if current { "ativado" } else { "desativado" })),
                         cx.listener(move |this, _, _, cx| {
-                            match id { "details" => this.details = !current, "navigation" => this.navigation = !current, _ => this.thinking = !current }
+                            match id {
+                                "details" => this.details = !current,
+                                "navigation" => this.navigation = !current,
+                                "thinking" => this.thinking = !current,
+                                _ => this.titles = !current,
+                            }
                             cx.emit(SettingsEvent::Preference(id, !current)); cx.notify();
                         })));
                 }
+                page = page.child(note("Títulos por modelo usam o modelo da sessão a cada rodada e gastam tokens. Desligado, o Dish mostra a última demanda por extenso."));
                 page.into_any_element()
             }
             Section::Keys => {

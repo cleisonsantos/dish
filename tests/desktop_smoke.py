@@ -351,7 +351,7 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         press("Return")
         wait_for(lambda: len(commands("prompt")) == 6, "Hidden dialog stole keyboard focus")
         assert commands("prompt")[-1]["pid"] == prompts[1]["pid"]
-        click_nav_label(window, "long-a")
+        click_nav_label(window, "dialog")
         type_text("answer")
         press("Return")
         wait_for(lambda: commands("extension_ui_response"), "Pending dialog could not be answered")

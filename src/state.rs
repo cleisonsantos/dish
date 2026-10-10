@@ -210,6 +210,29 @@ impl Message {
 
 }
 
+/// A última demanda do usuário que vale a pena mostrar como título.
+///
+/// Caminha de trás para frente: um follow-up curto ("sim", "continue") é
+/// pulado para o título continuar descrevendo a tarefa, mas se todas as
+/// mensagens forem curtas a mais recente ainda é usada. Sem mensagem do
+/// usuário não há título.
+pub fn demand_title(messages: &[Message], max_chars: usize) -> Option<String> {
+    let mut fallback = None;
+    for message in messages.iter().rev().filter(|m| m.role == Role::User) {
+        let text = message.text();
+        let Some(title) = crate::demand::clip(&text, max_chars) else {
+            continue;
+        };
+        if crate::demand::is_substantive(&text) {
+            return Some(title);
+        }
+        if fallback.is_none() {
+            fallback = Some(title);
+        }
+    }
+    fallback
+}
+
 #[derive(Clone, Default)]
 pub struct ModelInfo {
     pub id: String,
@@ -386,6 +409,15 @@ pub struct AppState {
     pub ext_widget: Vec<String>,
     pub title_override: Option<String>,
     pub show_thinking: bool,
+    /// Títulos de sessão gerados pelo modelo da sessão. Opt-in: gasta tokens.
+    pub generated_titles: bool,
+    /// Demanda que já produziu o título gerado atual, e o título em si.
+    generated_title: Option<(String, String)>,
+    /// Demanda de uma geração em andamento, para não repetir a chamada.
+    title_generation: Option<String>,
+    /// Demanda cuja geração falhou. Uma tentativa por demanda, sem retry em
+    /// loop a cada rodada.
+    title_failure: Option<String>,
 
     /// Escolha explícita do usuário sobre abrir o grupo de atividade de um turno.
     activity_override: HashMap<usize, bool>,
@@ -491,6 +523,10 @@ impl AppState {
             ext_widget: Vec::new(),
             title_override: None,
             show_thinking: true,
+            generated_titles: false,
+            generated_title: None,
+            title_generation: None,
+            title_failure: None,
             activity_override: HashMap::new(),
             toast_seq: 1,
             initial_prompt,
@@ -627,6 +663,7 @@ impl AppState {
                 self.streaming = false;
                 self.activity = None;
                 self.refresh_after_settle();
+                self.maybe_generate_title(cx);
                 None
             }
             "message_start" => self.apply_message_start(record),
@@ -2115,24 +2152,119 @@ impl AppState {
         cx.notify();
     }
 
-    /// Título da conversa: o nome da sessão, senão o primeiro pedido do usuário.
+    /// Título da conversa: o nome da sessão, senão o título gerado para a
+    /// demanda atual, senão a demanda por extenso.
     pub fn display_title(&self) -> String {
-        if let Some(name) = self.session.name.clone() {
+        self.title(72)
+    }
+
+    /// Como [`Self::display_title`], mas `None` quando ainda não há nada a
+    /// mostrar — a navegação usa isso para cair no título do catálogo.
+    pub fn title_or_none(&self, max_chars: usize) -> Option<String> {
+        if let Some(name) = &self.session.name {
             if !name.trim().is_empty() {
-                return name;
+                return Some(name.clone());
             }
         }
-        if let Some(message) = self.messages.iter().find(|m| m.role == Role::User) {
-            let text = message
-                .text()
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ");
-            if !text.is_empty() {
-                return text.chars().take(72).collect();
+        if self.generated_titles {
+            if let Some((fingerprint, title)) = &self.generated_title {
+                if self.latest_substantive_demand().as_deref() == Some(fingerprint.as_str()) {
+                    return Some(title.clone());
+                }
             }
         }
-        "Nova conversa".to_string()
+        self.demand_title(max_chars)
+    }
+
+    /// Título pronto para exibir, nunca vazio.
+    pub fn title(&self, max_chars: usize) -> String {
+        self.title_or_none(max_chars)
+            .unwrap_or_else(|| "Nova conversa".to_string())
+    }
+
+    /// A demanda mais recente com substância, normalizada. É a chave do cache
+    /// do título gerado: se ela não mudou, não vale chamar o modelo de novo.
+    fn latest_substantive_demand(&self) -> Option<String> {
+        self.messages
+            .iter()
+            .rev()
+            .filter(|message| message.role == Role::User)
+            .find_map(|message| {
+                let text = message.text();
+                crate::demand::is_substantive(&text).then(|| crate::demand::normalize(&text))
+            })
+    }
+
+    /// A última demanda do usuário que vale a pena mostrar como título. Ver
+    /// [`demand_title`].
+    pub fn demand_title(&self, max_chars: usize) -> Option<String> {
+        demand_title(&self.messages, max_chars)
+    }
+
+    /// Liga/desliga títulos por modelo. Descartar o cache garante que, ao
+    /// religar, a demanda atual seja regerada em vez de reusar um título antigo.
+    pub fn set_generated_titles(&mut self, enabled: bool) {
+        self.generated_titles = enabled;
+        self.generated_title = None;
+        self.title_generation = None;
+        self.title_failure = None;
+    }
+
+    /// Fim de rodada: se o usuário ligou os títulos por modelo e a demanda
+    /// mudou, gera um título em background. Nunca bloqueia a UI e nunca toca a
+    /// sessão do Pi — o resultado vive só no Dish.
+    fn maybe_generate_title(&mut self, cx: &mut Context<Self>) {
+        if !self.generated_titles || self.disconnected {
+            return;
+        }
+        let Some(demand) = self.latest_substantive_demand() else {
+            return;
+        };
+        if self
+            .generated_title
+            .as_ref()
+            .is_some_and(|(fingerprint, _)| fingerprint == &demand)
+        {
+            return;
+        }
+        if self.title_generation.as_deref() == Some(demand.as_str()) {
+            return;
+        }
+        if self.title_failure.as_deref() == Some(demand.as_str()) {
+            return;
+        }
+        let Some(model) = self.model.clone() else {
+            return;
+        };
+        let program = crate::installation::program();
+        let cwd = self.cwd.clone();
+        self.title_generation = Some(demand.clone());
+        cx.spawn(async move |this, cx| {
+            let request = demand.clone();
+            let generated = cx
+                .background_executor()
+                .spawn(async move {
+                    crate::demand::generate_title(&program, &cwd, &model, &request, 60)
+                })
+                .await;
+            let _ = this.update(cx, |state, cx| {
+                if state.title_generation.as_deref() == Some(demand.as_str()) {
+                    state.title_generation = None;
+                }
+                // Um resultado de demanda que o usuário já deixou para trás é
+                // descartado: nunca guarda um título que não é o de agora.
+                if state.latest_substantive_demand().as_deref() != Some(demand.as_str()) {
+                    return;
+                }
+                if let Some(title) = generated {
+                    state.generated_title = Some((demand, title));
+                    cx.notify();
+                } else {
+                    state.title_failure = Some(demand);
+                }
+            });
+        })
+        .detach();
     }
 
     /// Arquivos que o turno em curso tocou: leituras e edições, sem repetir,
@@ -3154,5 +3286,49 @@ mod turn_end_tests {
         let message = json!({"stopReason":"error", "errorMessage":"falhou"});
         assert!(turn_end_note(&message, true).is_none());
         assert!(turn_end_note(&message, false).is_some());
+    }
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::{demand_title, Block, Message, Role};
+
+    fn user(text: &str) -> Message {
+        let mut message = Message::new(Role::User);
+        message.blocks.push(Block::Text(text.to_string()));
+        message
+    }
+
+    #[test]
+    fn latest_substantive_demand_wins_over_the_first() {
+        let messages = vec![
+            user("arruma o bug do login"),
+            user("ok"),
+            user("agora exporta o relatório em PDF"),
+        ];
+        assert_eq!(
+            demand_title(&messages, 80).as_deref(),
+            Some("agora exporta o relatório em PDF")
+        );
+    }
+
+    #[test]
+    fn a_short_follow_up_keeps_the_previous_demand() {
+        let messages = vec![user("refatorar o parser de markdown"), user("continue")];
+        assert_eq!(
+            demand_title(&messages, 80).as_deref(),
+            Some("refatorar o parser de markdown")
+        );
+    }
+
+    #[test]
+    fn only_short_messages_fall_back_to_the_latest() {
+        let messages = vec![user("sim"), user("ok")];
+        assert_eq!(demand_title(&messages, 80).as_deref(), Some("ok"));
+    }
+
+    #[test]
+    fn an_empty_transcript_has_no_title() {
+        assert_eq!(demand_title(&[], 80), None);
     }
 }

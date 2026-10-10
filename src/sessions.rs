@@ -8,6 +8,9 @@ pub struct SessionInfo {
     pub path: PathBuf,
     pub cwd: PathBuf,
     pub title: String,
+    /// O título veio de um `session_info` explícito (`/name`, `--name`), e não
+    /// de uma demanda do usuário. Nome explícito nunca é substituído.
+    pub named: bool,
     pub modified: std::time::SystemTime,
 }
 
@@ -203,17 +206,15 @@ fn read_session(path: &Path) -> Option<SessionInfo> {
         return None;
     }
     let mut name = None;
-    let mut first = None;
+    let mut last = None;
+    let mut last_substantive = None;
     for line in lines.map_while(Result::ok) {
         let Ok(value) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
         if value["type"] == "session_info" {
             name = value["name"].as_str().map(str::to_owned);
-        } else if first.is_none()
-            && value["type"] == "message"
-            && value["message"]["role"] == "user"
-        {
+        } else if value["type"] == "message" && value["message"]["role"] == "user" {
             let content = &value["message"]["content"];
             let text = content.as_str().map(str::to_owned).unwrap_or_else(|| {
                 content
@@ -227,23 +228,25 @@ fn read_session(path: &Path) -> Option<SessionInfo> {
                     })
                     .unwrap_or_default()
             });
-            first = Some(
-                text.split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" ")
-                    .chars()
-                    .take(80)
-                    .collect::<String>(),
-            );
+            let Some(title) = crate::demand::clip(&text, 80) else {
+                continue;
+            };
+            if crate::demand::is_substantive(&text) {
+                last_substantive = Some(title.clone());
+            }
+            last = Some(title);
         }
     }
+    let named = name.as_deref().is_some_and(|name| !name.trim().is_empty());
     let title = name
         .filter(|name| !name.trim().is_empty())
-        .or(first.filter(|text| !text.is_empty()))
+        .or(last_substantive)
+        .or(last)
         .unwrap_or_else(|| "Untitled session".into());
     Some(SessionInfo {
         path: path.to_owned(),
         cwd,
+        named,
         title,
         modified,
     })
@@ -295,6 +298,7 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].cwd, PathBuf::from("/project/a"));
         assert_eq!(result[0].title, "Named thread");
+        assert!(result[0].named, "session_info names are explicit");
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -327,6 +331,7 @@ mod tests {
             path: path.clone(),
             cwd: PathBuf::from("/project/a"),
             title: "Named thread".into(),
+            named: true,
             modified: fs::metadata(&path).unwrap().modified().unwrap(),
         };
 
@@ -352,6 +357,7 @@ mod tests {
             path: path.clone(),
             cwd: root.clone(),
             title: "notes".into(),
+            named: false,
             modified: fs::metadata(&path).unwrap().modified().unwrap(),
         };
 
@@ -388,5 +394,46 @@ mod tests {
         );
         fs::remove_dir_all(root).unwrap();
         assert!(discover(&[PathBuf::from("/nonexistent/dish-test-sessions")]).is_empty());
+    }
+
+    #[test]
+    fn unnamed_session_title_follows_the_latest_demand() {
+        let root = std::env::temp_dir().join(format!("dish-demand-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("a.jsonl"),
+            concat!(
+                "{\"type\":\"session\",\"cwd\":\"/project/a\"}\n",
+                "{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"arruma o bug do login\"}}\n",
+                "{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"feito\"}]}}\n",
+                "{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"continue\"}}\n",
+                "{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"agora exporta o relatório em PDF\"}}\n",
+            ),
+        )
+        .unwrap();
+        let result = discover(std::slice::from_ref(&root));
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].title, "agora exporta o relatório em PDF");
+        assert!(!result[0].named, "a derived demand is not an explicit name");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_short_follow_up_does_not_rename_the_session() {
+        let root = std::env::temp_dir().join(format!("dish-demand-short-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("a.jsonl"),
+            concat!(
+                "{\"type\":\"session\",\"cwd\":\"/project/a\"}\n",
+                "{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"refatorar o parser de markdown\"}}\n",
+                "{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"continue\"}}\n",
+            ),
+        )
+        .unwrap();
+        let result = discover(std::slice::from_ref(&root));
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].title, "refatorar o parser de markdown");
+        fs::remove_dir_all(root).unwrap();
     }
 }
