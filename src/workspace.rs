@@ -159,6 +159,7 @@ impl Workspace {
         if let Some(show) = preferences.show_thinking {
             state.update(cx, |state, _| state.show_thinking = show);
         }
+        state.update(cx, |state, _| state.generated_titles = preferences.generated_titles);
         cx.observe(&query, |_, _, cx| cx.notify()).detach();
         let mut roots = sessions::roots(&state.read(cx).cwd, &flags);
         let cwd = state.read(cx).cwd.clone();
@@ -296,6 +297,7 @@ impl Workspace {
                                 match *name {
                                     "details" => { state.sidebar = *value; state.inspector_initialized = true; }
                                     "thinking" => state.show_thinking = *value,
+                                    "generated_titles" => state.set_generated_titles(*value),
                                     _ => {}
                                 }
                                 cx.notify();
@@ -309,7 +311,7 @@ impl Workspace {
             self.settings = Some(settings);
         }
         let state = self.conversations[self.active].state.read(cx);
-        let options = [state.sidebar, self.visible, state.show_thinking];
+        let options = [state.sidebar, self.visible, state.show_thinking, state.generated_titles];
         self.conversations[self.active].state.update(cx, |state, _| {
             state.visible = false;
             state.model_menu = false;
@@ -621,41 +623,29 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// Título de uma conversa aberta: nome da sessão, título salvo, ou o
-    /// primeiro pedido do usuário.
+    /// Título de uma conversa aberta: nome explícito da sessão, nome salvo no
+    /// catálogo, título gerado/demanda ao vivo, ou o título salvo enquanto o
+    /// histórico ainda não chegou.
     fn conversation_title(&self, index: usize, cx: &App) -> String {
         let Some(conversation) = self.conversations.get(index) else {
             return "Nova conversa".into();
         };
         let state = conversation.state.read(cx);
+        let catalog = conversation.path.as_ref().and_then(|path| {
+            self.catalog.iter().find(|info| &info.path == path)
+        });
         state
             .session
             .name
             .clone()
+            .filter(|name| !name.trim().is_empty())
             .or_else(|| {
-                conversation.path.as_ref().and_then(|path| {
-                    self.catalog
-                        .iter()
-                        .find(|info| &info.path == path)
-                        .map(|info| info.title.clone())
-                })
+                catalog
+                    .filter(|info| info.named)
+                    .map(|info| info.title.clone())
             })
-            .or_else(|| {
-                state
-                    .messages
-                    .iter()
-                    .find(|message| message.role == crate::state::Role::User)
-                    .map(|message| {
-                        message
-                            .text()
-                            .split_whitespace()
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                            .chars()
-                            .take(80)
-                            .collect()
-                    })
-            })
+            .or_else(|| state.title_or_none(80))
+            .or_else(|| catalog.map(|info| info.title.clone()))
             .unwrap_or_else(|| "Nova conversa".into())
     }
 
@@ -1409,6 +1399,7 @@ impl Render for Workspace {
                 if let Some(show) = self.preferences.show_thinking {
                     state.show_thinking = show;
                 }
+                state.generated_titles = self.preferences.generated_titles;
                 state.start(cx);
             });
             let subscription = cx.observe(&state, |_, _, cx| cx.notify());
@@ -1762,6 +1753,7 @@ impl Render for Workspace {
         preferences.navigation_open = Some(self.visible);
         preferences.navigation_width = Some(self.nav_width);
         preferences.show_thinking = Some(active.show_thinking);
+        preferences.generated_titles = active.generated_titles;
         preferences.collapsed_projects = self.collapsed.clone();
         preferences.last_project = Some(active.cwd.clone());
         preferences.last_session = active.session.file.as_ref().map(PathBuf::from);
@@ -2055,6 +2047,7 @@ mod tests {
             path: PathBuf::from(path),
             cwd: PathBuf::from("/project"),
             title: path.into(),
+            named: false,
             modified: std::time::UNIX_EPOCH + std::time::Duration::from_secs(modified),
         }
     }
