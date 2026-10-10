@@ -30,11 +30,11 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
 
     def capture():
         subprocess.run(["import", "-window", str(window), screenshot], check=True)
-        return subprocess.check_output(["tesseract", screenshot, "stdout"], stderr=subprocess.DEVNULL).decode()
+        return subprocess.check_output(["tesseract", screenshot, "stdout", "--psm", "6"], stderr=subprocess.DEVNULL).decode()
 
     def click_label(label):
         capture()
-        rows = subprocess.check_output(["tesseract", screenshot, "stdout", "tsv"], stderr=subprocess.DEVNULL).decode().splitlines()[1:]
+        rows = subprocess.check_output(["tesseract", screenshot, "stdout", "--psm", "6", "tsv"], stderr=subprocess.DEVNULL).decode().splitlines()[1:]
         lines = {}
         for row in rows:
             fields = row.split("\t")
@@ -43,7 +43,10 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
             lines.setdefault(tuple(fields[1:5]), []).append(fields)
         for words in lines.values():
             if label.lower() in " ".join(word[11] for word in words).lower():
-                first = words[0]
+                # PSM 6 can put the heading and close button on the same
+                # OCR line. Click the label's first word, not the line's.
+                first_word = label.lower().split()[0]
+                first = next((word for word in words if first_word in word[11].lower()), words[0])
                 click(window, int(first[6]) + 5, int(first[7]) + int(first[9]) // 2)
                 return
         raise AssertionError(f"Missing UI label: {label}")
@@ -87,7 +90,7 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
         wait_for(lambda: json.loads(preferences.read_text()).get("show_thinking") is False, "Thinking setting not persisted")
         # Closing button restores input focus and leaves no second help modal.
         click_label("Fechar")
-        assert "Configura" not in capture(), "Close button did not close"
+        wait_for(lambda: "Configura" not in capture(), "Close button did not close")
         type_text("draft")
         press("F1")
         time.sleep(0.4)
@@ -118,7 +121,7 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
         click_label("Aplicativo")
         assert "expandido" in capture().lower(), "Preferences unavailable in small window"
         click_label("Fechar")
-        assert "Configura" not in capture()
+        wait_for(lambda: "Configura" not in capture(), "Close button did not close at minimum size")
         print("Settings basic modal smoke passed", flush=True)
     except Exception:
         print(f"Settings failure screenshot: {screenshot}")
