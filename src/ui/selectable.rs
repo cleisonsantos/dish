@@ -62,9 +62,14 @@ pub fn plain(id: ElementId, text: &str) -> AnyElement {
 pub struct SelectionBuilder {
     text: String,
     handle: Handle,
+    search: Option<String>,
 }
 
 impl SelectionBuilder {
+    pub fn with_search(search: Option<&str>) -> Self {
+        Self { search: search.filter(|query| !query.is_empty()).map(str::to_lowercase), ..Self::default() }
+    }
+
     pub fn text(&mut self, text: String, runs: Option<Vec<TextRun>>) -> AnyElement {
         if !self.text.is_empty() {
             self.text.push('\n');
@@ -77,6 +82,7 @@ impl SelectionBuilder {
             offset,
             handle: self.handle.clone(),
             styled: None,
+            search: self.search.clone(),
         }
         .into_any_element()
     }
@@ -182,6 +188,7 @@ struct SelectedText {
     offset: usize,
     handle: Handle,
     styled: Option<StyledText>,
+    search: Option<String>,
 }
 
 impl IntoElement for SelectedText {
@@ -219,6 +226,31 @@ fn highlighted_runs(runs: Vec<TextRun>, range: Range<usize>, color: Hsla) -> Vec
     result
 }
 
+/// Apply sorted search spans in one pass rather than splitting every run once
+/// per match (which is quadratic on long, repetitive tool output).
+fn search_runs(runs: Vec<TextRun>, ranges: &[Range<usize>], color: Hsla) -> Vec<TextRun> {
+    let mut result = Vec::new();
+    let mut offset = 0;
+    let mut index = 0;
+    for run in runs {
+        let end = offset + run.len;
+        while offset < end {
+            while ranges.get(index).is_some_and(|range| range.end <= offset) { index += 1; }
+            let (next, highlighted) = match ranges.get(index) {
+                Some(range) if range.start <= offset => (range.end.min(end), true),
+                Some(range) => (range.start.min(end), false),
+                None => (end, false),
+            };
+            let mut part = run.clone();
+            part.len = next - offset;
+            if highlighted { part.background_color = Some(color); }
+            result.push(part);
+            offset = next;
+        }
+    }
+    result
+}
+
 impl Element for SelectedText {
     type RequestLayoutState = ();
     type PrepaintState = Hitbox;
@@ -247,6 +279,10 @@ impl Element for SelectedText {
             .runs
             .take()
             .unwrap_or_else(|| vec![window.text_style().to_run(self.text.len())]);
+        let mut runs = runs;
+        if let Some(query) = &self.search {
+            runs = search_runs(runs, &crate::content_search::match_ranges(&self.text, query), theme::wash(theme::accent(), 0.22));
+        }
         let runs = highlighted_runs(runs, local, theme::wash(theme::accent(), 0.35));
         let mut styled = StyledText::new(self.text.clone()).with_runs(runs);
         let layout = styled.request_layout(id, inspector, window, cx);
@@ -384,6 +420,16 @@ mod tests {
         assert_eq!(result[1].background_color, Some(theme::accent()));
         assert_eq!(result[0].background_color, None);
     }
+    #[test]
+    fn search_spans_preserve_markdown_runs_and_total_length() {
+        let runs = vec![TextRun { len: 6, color: theme::text(), ..Default::default() },
+            TextRun { len: 8, color: theme::dim(), ..Default::default() }];
+        let result = super::search_runs(runs, &[1..3, 5..10, 12..14], theme::accent());
+        assert_eq!(result.iter().map(|run| run.len).sum::<usize>(), 14);
+        assert_eq!(result.iter().filter(|run| run.background_color.is_some()).map(|run| run.len).sum::<usize>(), 9);
+        assert_eq!(result.last().unwrap().color, theme::dim());
+    }
+
     #[test]
     fn blocks_share_plain_text_offsets() {
         let mut builder = SelectionBuilder::default();

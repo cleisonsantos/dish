@@ -518,7 +518,7 @@ pub fn submit_modal(state: &mut AppState, cx: &mut Context<AppState>) {
 }
 
 pub fn keyboard_shortcuts() -> Vec<(&'static str, &'static str)> {
-    let app_keys: [(&'static str, &'static str); 23] = [
+    let app_keys: [(&'static str, &'static str); 27] = [
         ("⏎", "send the prompt"),
         ("⇧⏎", "insert a newline"),
         ("esc", "dismiss a menu or notice, or stop the run"),
@@ -535,6 +535,10 @@ pub fn keyboard_shortcuts() -> Vec<(&'static str, &'static str)> {
         ("ctrl-⇧tab", "previous open conversation"),
         ("ctrl-w", "close conversation (confirms if running)"),
         ("ctrl-k", "focus session search"),
+        ("ctrl-f", "search content in the current session"),
+        ("ctrl-⇧f", "search content in all sessions of the project"),
+        ("esc / ctrl-l", "leave session search or return to the prompt"),
+        ("⇥ / ⇧⇥", "next or previous result while searching sessions"),
         ("ctrl-alt-f", "cycle session attention filters"),
         ("ctrl-l", "return to prompt or active dialog"),
         ("ctrl-⇧m", "open model picker"),

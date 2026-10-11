@@ -154,7 +154,7 @@ fn message_element(state: &AppState, index: usize, weak: &WeakEntity<AppState>) 
     let Some(message) = state.messages.get(index) else {
         return div().into_any_element();
     };
-    match message.role {
+    let element = match message.role {
         Role::User => request(state, message, index, weak),
         Role::Assistant => assistant_turn(state, message, index, weak),
         Role::Bash => match message.blocks.first() {
@@ -176,6 +176,12 @@ fn message_element(state: &AppState, index: usize, weak: &WeakEntity<AppState>) 
             }
             column.into_any_element()
         }
+    };
+    if state.search_message == Some(index) {
+        div().border_l_2().border_color(theme::accent())
+            .bg(theme::wash(theme::accent(), 0.08)).child(element).into_any_element()
+    } else {
+        element
     }
 }
 
@@ -204,7 +210,7 @@ fn request(state: &AppState, message: &Message, index: usize, _weak: &WeakEntity
                 .border_color(theme::line_soft())
                 .px(px(theme::S4))
                 .py(px(theme::S2))
-                .children(markdown::blocks(&text, &style, &state.cwd, SharedString::from(format!("request-text-{index}")).into()))
+                .children(markdown::blocks(&text, &style, &state.cwd, SharedString::from(format!("request-text-{index}")).into(), state.search_query.as_deref()))
                 .child(
                     div()
                         .flex()
@@ -349,7 +355,7 @@ fn assistant_turn(
                         .flex()
                         .flex_col()
                         .gap(px(theme::S2))
-                        .children(markdown::blocks(text, &style, &state.cwd, SharedString::from(format!("reply-text-{index}-{block_index}")).into()))
+                        .children(markdown::blocks(text, &style, &state.cwd, SharedString::from(format!("reply-text-{index}-{block_index}")).into(), state.search_query.as_deref()))
                         .into_any_element(),
                 );
             }

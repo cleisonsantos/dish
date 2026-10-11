@@ -12,7 +12,9 @@ use crate::state::AppState;
 use crate::theme;
 use crate::session_activity::{SessionFilter, SessionSignals, epoch_millis, from_epoch_millis, relative_time};
 
-actions!(dish_workspace, [ToggleSessions, NextConversation, PreviousConversation, CloseConversation, SearchSessions, FocusPrompt, NavUp, NavDown, NavAccept, NavCollapse, NavExpand, CycleSessionFilter]);
+mod search;
+
+actions!(dish_workspace, [FindCurrent, FindProject, ExitSearch, NextMatch, PreviousMatch, AcceptMatch, ToggleSessions, NextConversation, PreviousConversation, CloseConversation, SearchSessions, FocusPrompt, NavUp, NavDown, NavAccept, NavCollapse, NavExpand, CycleSessionFilter]);
 
 struct Conversation {
     state: Entity<AppState>,
@@ -140,6 +142,7 @@ pub struct Workspace {
     hovered: Option<NavHover>,
     preferences: crate::preferences::Preferences,
     settings: Option<Entity<crate::settings::Settings>>,
+    content_search: search::SearchState,
 }
 
 impl Workspace {
@@ -245,6 +248,7 @@ impl Workspace {
             hovered: None,
             preferences,
             settings: None,
+            content_search: search::SearchState::default(),
         }
     }
 
@@ -335,8 +339,11 @@ impl Workspace {
                 .spawn(async move { sessions::discover_cached(&roots, &previous) })
                 .await;
             let _ = this.update(cx, |workspace, cx| {
+                let changed = workspace.catalog.len() != catalog.len()
+                    || workspace.catalog.iter().zip(&catalog).any(|(a, b)| a.path != b.path || a.modified != b.modified);
                 workspace.catalog = catalog;
                 workspace.refreshing = false;
+                if changed { workspace.invalidate_content_search(cx); }
                 cx.notify();
             });
         })
@@ -509,6 +516,7 @@ impl Workspace {
         }
         self.active = self.active.min(self.conversations.len() - 1);
         self.select(self.active, window, cx);
+        self.invalidate_content_search(cx);
     }
 
     /// Move uma sessão salva para a lixeira e oferece "Desfazer" por 10s.
@@ -1514,6 +1522,12 @@ impl Render for Workspace {
                     workspace.select(workspace.active, window, cx);
                 }
             }))
+            .on_action(cx.listener(|workspace, _: &FindCurrent, window, cx| workspace.open_content_search(false, window, cx)))
+            .on_action(cx.listener(|workspace, _: &FindProject, window, cx| workspace.open_content_search(true, window, cx)))
+            .on_action(cx.listener(|workspace, _: &ExitSearch, window, cx| workspace.exit_search(window, cx)))
+            .on_action(cx.listener(|workspace, _: &NextMatch, window, cx| workspace.step_match(1, window, cx)))
+            .on_action(cx.listener(|workspace, _: &PreviousMatch, window, cx| workspace.step_match(-1, window, cx)))
+            .on_action(cx.listener(|workspace, _: &AcceptMatch, window, cx| workspace.accept_match(window, cx)))
             .on_action(cx.listener(|workspace, _: &SearchSessions, window, cx| {
                 if workspace.confirm_close || workspace.settings.as_ref().is_some_and(|s| s.read(cx).open) { return; }
                 workspace.visible = true;
@@ -1775,6 +1789,11 @@ impl Render for Workspace {
             self.preferences = preferences;
         }
         root = root.child(body.child(div().flex_1().min_w(px(0.)).h_full().child(state)));
+        self.refresh_content_search_scope(cx);
+        self.resolve_search_jump(cx);
+        if let Some(panel) = self.content_search_panel(cx) {
+            root = root.child(panel);
+        }
         // Divisória do painel de sessões: arrastar redimensiona.
         if self.visible {
             root = root.child(
