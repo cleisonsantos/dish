@@ -328,7 +328,14 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         chord("Control_L", "a")
         type_text("tab-navigation-query")
         wait_for(lambda: find_word(window, "tab-navigation-query"), "Query field did not retain focus after Tab")
-        assert find_word(window, "tab-navigation-query")[1] < find_word(window, "sair")[1], "Tab moved focus to the prompt"
+        # The footer hint can be clipped or OCR can miss its final word at
+        # different font metrics. Locate the query relative to the panel title
+        # instead of depending on the word "sair" being recognized.
+        wait_for(lambda: find_word(window, "Fechar"), "Search panel title did not render")
+        query_box = find_word(window, "tab-navigation-query")
+        title_box = find_word(window, "Fechar")
+        assert query_box and title_box, "Search query/title disappeared during focus check"
+        assert title_box[1] <= query_box[1] < title_box[1] + 6 * max(query_box[3], title_box[3]), "Tab moved focus to the prompt"
         chord("Control_L", "a")
         type_text("long-a")
         chord("Shift_L", "Tab")
