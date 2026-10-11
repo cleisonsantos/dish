@@ -354,6 +354,23 @@ impl Workspace {
                             });
                         }
                     }
+                    SettingsEvent::ModelsVisibility(keys, visible) => {
+                        for key in keys {
+                            if *visible {
+                                this.preferences.hidden_models.remove(key);
+                            } else {
+                                this.preferences.hidden_models.insert(key.clone());
+                            }
+                        }
+                        crate::preferences::save(this.preferences.clone());
+                        let hidden = this.preferences.hidden_models.clone();
+                        for conversation in &this.conversations {
+                            conversation.state.update(cx, |state, cx| {
+                                state.hidden_models = hidden.clone();
+                                cx.notify();
+                            });
+                        }
+                    }
                     SettingsEvent::ShowAllModels => {
                         this.preferences.hidden_models.clear();
                         crate::preferences::save(this.preferences.clone());

@@ -10,6 +10,8 @@ pub enum SettingsEvent {
     Preference(&'static str, bool),
     /// Um modelo passou a visível (`true`) ou oculto (`false`) no seletor.
     ModelVisibility(String, bool),
+    /// Vários modelos de uma vez (toggle de provedor, ocultar todos).
+    ModelsVisibility(Vec<String>, bool),
     /// Limpar todos os modelos ocultos.
     ShowAllModels,
 }
@@ -107,9 +109,26 @@ fn grouped_models(models: &[(String, String)]) -> BTreeMap<&str, Vec<&str>> {
     providers
 }
 
+/// Estado de um grupo no seletor: tudo ligado, tudo desligado ou misto.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SwitchState { Off, Mixed, On }
+
+/// Estado do grupo a partir das chaves dos seus modelos.
+fn group_state(keys: &[String], hidden: &BTreeSet<String>) -> SwitchState {
+    let hidden_count = keys.iter().filter(|key| hidden.contains(*key)).count();
+    if hidden_count == 0 {
+        SwitchState::On
+    } else if hidden_count == keys.len() {
+        SwitchState::Off
+    } else {
+        SwitchState::Mixed
+    }
+}
+
 /// Chave de liga/desliga: trilho com o botão, na linguagem da interface
-/// (acento quando ligada, linha quando desligada).
-fn switch(id: impl Into<ElementId>, on: bool, click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Stateful<Div> {
+/// (acento quando ligada, linha quando desligada, botão centrado quando misto).
+fn switch(id: impl Into<ElementId>, state: SwitchState, click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Stateful<Div> {
+    let on = state == SwitchState::On;
     div()
         .id(id)
         .flex_none()
@@ -124,13 +143,18 @@ fn switch(id: impl Into<ElementId>, on: bool, click: impl Fn(&ClickEvent, &mut W
         .bg(if on { theme::accent() } else { theme::inset() })
         .border_1()
         .border_color(if on { theme::accent() } else { theme::line_strong() })
-        .when(on, |el| el.justify_end())
+        .when(state == SwitchState::On, |el| el.justify_end())
+        .when(state == SwitchState::Mixed, |el| el.justify_center())
         .child(
             div()
                 .flex_none()
                 .size(px(12.))
                 .rounded(px(6.))
-                .bg(if on { theme::bg() } else { theme::faint() }),
+                .bg(match state {
+                    SwitchState::On => theme::bg(),
+                    SwitchState::Mixed => theme::dim(),
+                    SwitchState::Off => theme::faint(),
+                }),
         )
         .on_click(click)
 }
@@ -192,8 +216,14 @@ impl Render for Settings {
                         "Nenhum modelo disponível ainda: abra uma conversa para o Pi informar a lista.",
                     ));
                 }
-                if !self.hidden.is_empty() {
-                    page = page.child(control("models-show-all", "Mostrar todos", cx.listener(
+                let hidden_count = self
+                    .models
+                    .iter()
+                    .filter(|(provider, id)| self.hidden.contains(&format!("{provider}/{id}")))
+                    .count();
+                let mut actions = div().flex().flex_row().gap(px(8.));
+                if hidden_count > 0 {
+                    actions = actions.child(control("models-show-all", "Mostrar todos", cx.listener(
                         |this, _, _, cx| {
                             this.hidden.clear();
                             cx.emit(SettingsEvent::ShowAllModels);
@@ -201,14 +231,60 @@ impl Render for Settings {
                         },
                     )));
                 }
+                if hidden_count < self.models.len() {
+                    let all: Vec<String> = self
+                        .models
+                        .iter()
+                        .map(|(provider, id)| format!("{provider}/{id}"))
+                        .collect();
+                    actions = actions.child(control("models-hide-all", "Ocultar todos", cx.listener(
+                        move |this, _, _, cx| {
+                            for key in &all {
+                                this.hidden.insert(key.clone());
+                            }
+                            cx.emit(SettingsEvent::ModelsVisibility(all.clone(), false));
+                            cx.notify();
+                        },
+                    )));
+                }
+                if hidden_count > 0 || hidden_count < self.models.len() {
+                    page = page.child(actions);
+                }
                 // Agrupado por provedor, em ordem alfabética dentro do grupo.
                 for (provider, ids) in grouped_models(&self.models) {
+                    let keys: Vec<String> = ids.iter().map(|id| format!("{provider}/{id}")).collect();
+                    let state = group_state(&keys, &self.hidden);
+                    let group_keys = keys.clone();
                     let mut group = column().gap(px(2.)).child(
                         div()
-                            .font_family(theme::FONT_MONO)
-                            .text_size(px(theme::TEXT_MICRO))
-                            .text_color(theme::faint())
-                            .child(SharedString::from(provider.to_string())),
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(12.))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .truncate()
+                                    .font_family(theme::FONT_MONO)
+                                    .text_size(px(theme::TEXT_MICRO))
+                                    .text_color(theme::faint())
+                                    .child(SharedString::from(provider.to_string())),
+                            )
+                            .child(switch(
+                                SharedString::from(format!("provider-visibility-{provider}")),
+                                state,
+                                cx.listener(move |this, _, _, cx| {
+                                    // Ligado esconde o grupo inteiro; qualquer outro
+                                    // estado devolve todos os modelos do provedor.
+                                    let hide = state == SwitchState::On;
+                                    for key in &group_keys {
+                                        if hide { this.hidden.insert(key.clone()); } else { this.hidden.remove(key); }
+                                    }
+                                    cx.emit(SettingsEvent::ModelsVisibility(group_keys.clone(), !hide));
+                                    cx.notify();
+                                }),
+                            )),
                     );
                     for id in ids {
                         let key = format!("{provider}/{id}");
@@ -231,12 +307,16 @@ impl Render for Settings {
                                         .text_color(if visible { theme::text() } else { theme::faint() })
                                         .child(SharedString::from(id.to_string())),
                                 )
-                                .child(switch(row_id, visible, cx.listener(move |this, _, _, cx| {
-                                    let visible = !this.hidden.contains(&toggled);
-                                    if visible { this.hidden.insert(toggled.clone()); } else { this.hidden.remove(&toggled); }
-                                    cx.emit(SettingsEvent::ModelVisibility(toggled.clone(), !visible));
-                                    cx.notify();
-                                }))),
+                                .child(switch(
+                                    row_id,
+                                    if visible { SwitchState::On } else { SwitchState::Off },
+                                    cx.listener(move |this, _, _, cx| {
+                                        let visible = !this.hidden.contains(&toggled);
+                                        if visible { this.hidden.insert(toggled.clone()); } else { this.hidden.remove(&toggled); }
+                                        cx.emit(SettingsEvent::ModelVisibility(toggled.clone(), !visible));
+                                        cx.notify();
+                                    }),
+                                )),
                         );
                     }
                     page = page.child(group);
@@ -321,10 +401,25 @@ impl Render for Settings {
 
 #[cfg(test)]
 mod model_grouping_tests {
-    use super::grouped_models;
+    use super::{group_state, grouped_models, SwitchState};
+    use std::collections::BTreeSet;
 
     fn models(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
         pairs.iter().map(|(provider, id)| (provider.to_string(), id.to_string())).collect()
+    }
+
+    fn keys(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn group_state_reports_on_off_and_mixed() {
+        let group = keys(&["a/1", "a/2"]);
+        assert_eq!(group_state(&group, &BTreeSet::new()), SwitchState::On);
+        assert_eq!(group_state(&group, &keys(&["a/1"]).into_iter().collect()), SwitchState::Mixed);
+        assert_eq!(group_state(&group, &keys(&["a/1", "a/2"]).into_iter().collect()), SwitchState::Off);
+        // Um grupo vazio aparece ligado, não misto.
+        assert_eq!(group_state(&[], &BTreeSet::new()), SwitchState::On);
     }
 
     #[test]
