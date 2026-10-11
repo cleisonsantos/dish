@@ -15,7 +15,6 @@ pub(super) struct SearchState {
     loading: bool,
     last_query: Option<String>,
     scope: Option<(PathBuf, Option<EntityId>)>,
-    fingerprint: Vec<(EntityId, usize, usize)>,
     results: Results,
     selected: Option<usize>,
     scroll: ScrollHandle,
@@ -23,6 +22,55 @@ pub(super) struct SearchState {
     generation: Arc<AtomicU64>,
     index: Arc<Mutex<Index>>,
     pending_jump: Option<(PathBuf, String)>,
+}
+
+impl SearchState {
+    /// Results are a snapshot of the query, not a live projection of streaming
+    /// messages. Only switching scope, editing or reopening search refreshes it.
+    fn set_scope(&mut self, scope: (PathBuf, Option<EntityId>)) -> bool {
+        if self.scope.as_ref() == Some(&scope) {
+            return false;
+        }
+        self.scope = Some(scope);
+        self.last_query = None;
+        self.clear_results();
+        true
+    }
+
+    fn clear_results(&mut self) {
+        self.results = Results::default();
+        self.selected = None;
+        self.anchors.clear();
+    }
+
+    fn begin_query(&mut self, query: &str) -> Option<u64> {
+        if self.last_query.as_deref() == Some(query) {
+            return None;
+        }
+        self.last_query = Some(query.to_owned());
+        self.loading = !query.trim().is_empty();
+        // Keep the last complete list while debouncing/reading the next query.
+        // Empty queries and scope changes intentionally clear it.
+        if !self.loading {
+            self.clear_results();
+        }
+        Some(self.generation.fetch_add(1, Ordering::Relaxed) + 1)
+    }
+
+    fn replace_results(&mut self, result: Results) {
+        self.selected = self
+            .selected
+            .and_then(|index| self.results.hits.get(index))
+            .and_then(|selected| {
+                result.hits.iter().position(|hit| {
+                    hit.path == selected.path
+                        && hit.live == selected.live
+                        && hit.message == selected.message
+                })
+            });
+        self.results = result;
+        self.loading = false;
+    }
 }
 
 fn message_text(message: &crate::state::Message) -> String {
@@ -111,6 +159,8 @@ impl Workspace {
         self.content_search.last_query = None;
         self.content_search.project = project;
         self.content_search.open = true;
+        let scope = self.current_search_scope(cx);
+        self.content_search.set_scope(scope);
         if let Some(editor) = &self.content_search.editor {
             editor.update(cx, |editor, cx| {
                 editor.select_all(&crate::editor::SelectAllText, window, cx)
@@ -152,60 +202,25 @@ impl Workspace {
         if !self.content_search.open {
             return;
         }
-        let conversation = &self.conversations[self.active];
-        let scope = (
-            conversation.state.read(cx).cwd.clone(),
-            (!self.content_search.project).then_some(conversation.state.entity_id()),
-        );
-        let fingerprint: Vec<_> = self
-            .conversations
-            .iter()
-            .enumerate()
-            .filter(|(i, conversation)| {
-                if self.content_search.project {
-                    conversation.state.read(cx).cwd == scope.0
-                } else {
-                    *i == self.active
-                }
-            })
-            .map(|(_, conversation)| {
-                let state = conversation.state.read(cx);
-                let tail_bytes = state
-                    .messages
-                    .last()
-                    .map(|message| {
-                        message
-                            .blocks
-                            .iter()
-                            .map(|block| match block {
-                                Block::Text(text)
-                                | Block::Thinking { text, .. }
-                                | Block::Note { text, .. } => text.len(),
-                                Block::Tool(tool) => tool.args_text.len() + tool.output.len(),
-                                Block::Bash(bash) => bash.command.len() + bash.output.len(),
-                            })
-                            .sum()
-                    })
-                    .unwrap_or(0);
-                (
-                    conversation.state.entity_id(),
-                    state.messages.len(),
-                    tail_bytes,
-                )
-            })
-            .collect();
-        if self.content_search.scope.as_ref() != Some(&scope)
-            || self.content_search.fingerprint != fingerprint
-        {
-            self.content_search.fingerprint = fingerprint;
-            self.content_search.scope = Some(scope);
-            self.content_search.last_query = None;
+        let scope = self.current_search_scope(cx);
+        if self.content_search.set_scope(scope) {
             self.run_content_search(cx);
         }
     }
 
+    fn current_search_scope(&self, cx: &App) -> (PathBuf, Option<EntityId>) {
+        let conversation = &self.conversations[self.active];
+        (
+            conversation.state.read(cx).cwd.clone(),
+            (!self.content_search.project).then_some(conversation.state.entity_id()),
+        )
+    }
+
     pub(super) fn invalidate_content_search(&mut self, cx: &mut Context<Self>) {
         self.content_search.last_query = None;
+        // Explicit structural changes (closing a conversation) invalidate live
+        // indices. Rendering, catalog polling and streaming never do this.
+        self.content_search.clear_results();
         if self.content_search.open {
             self.run_content_search(cx);
         }
@@ -218,18 +233,9 @@ impl Workspace {
             .as_ref()
             .map(|editor| editor.read(cx).text(cx))
             .unwrap_or_default();
-        if self.content_search.last_query.as_ref() == Some(&query) {
+        let Some(ticket) = self.content_search.begin_query(&query) else {
             return;
-        }
-        self.content_search.last_query = Some(query.clone());
-        let ticket = self
-            .content_search
-            .generation
-            .fetch_add(1, Ordering::Relaxed)
-            + 1;
-        self.content_search.results = Results::default();
-        self.content_search.selected = None;
-        self.content_search.loading = !query.trim().is_empty();
+        };
         cx.notify();
         if query.trim().is_empty() {
             for conversation in &self.conversations {
@@ -272,8 +278,7 @@ impl Workspace {
                     workspace.content_search.anchors = (0..result.hits.len())
                         .map(|_| ScrollAnchor::for_handle(workspace.content_search.scroll.clone()))
                         .collect();
-                    workspace.content_search.results = result;
-                    workspace.content_search.loading = false;
+                    workspace.content_search.replace_results(result);
                     cx.notify();
                 }
             });
@@ -337,7 +342,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.search_allowed(cx) {
+        if !self.search_allowed(cx) || self.content_search.loading {
             return;
         }
         let len = self.content_search.results.hits.len();
@@ -357,7 +362,10 @@ impl Workspace {
     }
 
     pub(super) fn accept_match(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.search_allowed(cx) || self.content_search.results.hits.is_empty() {
+        if !self.search_allowed(cx)
+            || self.content_search.loading
+            || self.content_search.results.hits.is_empty()
+        {
             return;
         }
         let selected = self.content_search.selected.unwrap_or(0);
@@ -611,5 +619,87 @@ impl Workspace {
             );
         }
         Some(panel.child(hits))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Hit, Results, SearchState};
+    use std::{path::PathBuf, sync::atomic::Ordering};
+
+    fn hit(message: usize) -> Hit {
+        Hit {
+            path: None,
+            live: Some(0),
+            title: "synthetic session".into(),
+            snippet: "needle".into(),
+            message,
+            occurrences: 1,
+        }
+    }
+
+    fn settled() -> SearchState {
+        let mut state = SearchState::default();
+        state.set_scope((PathBuf::from("/synthetic/project"), None));
+        state.begin_query("needle");
+        state.replace_results(Results {
+            hits: vec![hit(0), hit(1)],
+            ..Results::default()
+        });
+        state.selected = Some(1);
+        state
+    }
+
+    #[test]
+    fn repeated_renders_and_editor_notifications_keep_snapshot_and_selection() {
+        let mut state = settled();
+        let ticket = state.generation.load(Ordering::Relaxed);
+        for _ in 0..100 {
+            assert!(!state.set_scope((PathBuf::from("/synthetic/project"), None)));
+            assert_eq!(state.begin_query("needle"), None);
+            assert_eq!(state.selected, Some(1));
+            assert_eq!(state.results.hits.len(), 2);
+            assert!(!state.loading);
+        }
+        assert_eq!(state.generation.load(Ordering::Relaxed), ticket);
+    }
+
+    #[test]
+    fn editing_query_keeps_complete_list_until_replacement_is_ready() {
+        let mut state = settled();
+        let old = state.generation.load(Ordering::Relaxed);
+        let ticket = state.begin_query("needle extended").unwrap();
+        assert!(ticket > old);
+        assert!(state.loading);
+        assert_eq!(state.results.hits.len(), 2);
+        assert_eq!(state.selected, Some(1));
+        state.replace_results(Results {
+            hits: vec![hit(1), hit(0)],
+            ..Results::default()
+        });
+        assert_eq!(state.selected, Some(0));
+        assert!(!state.loading);
+    }
+
+    #[test]
+    fn changed_scope_clears_old_results_even_when_query_is_identical() {
+        let mut state = settled();
+        assert!(state.set_scope((PathBuf::from("/synthetic/other-project"), None)));
+        assert!(state.results.hits.is_empty());
+        assert_eq!(state.selected, None);
+        assert!(state.begin_query("needle").is_some());
+    }
+
+    #[test]
+    fn empty_query_clears_list_and_disappearing_selection_is_not_retargeted() {
+        let mut state = settled();
+        state.replace_results(Results {
+            hits: vec![hit(0)],
+            ..Results::default()
+        });
+        assert_eq!(state.selected, None);
+        assert!(state.begin_query(" ").is_some());
+        assert!(state.results.hits.is_empty());
+        assert!(!state.loading);
     }
 }

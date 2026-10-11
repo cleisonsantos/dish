@@ -71,6 +71,7 @@ jobs:
             fi
           }
           run_ui tests/desktop_smoke.py
+          run_ui tests/search_stability_smoke.py
           run_ui tests/startup_smoke.py
           run_ui tests/settings_smoke.py
           run_ui tests/session_activity_smoke.py
