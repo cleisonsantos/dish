@@ -719,10 +719,22 @@ with tempfile.TemporaryDirectory(prefix="dish-metadata-") as directory:
             group = find_word(window, "comando", last=True)
             click(window, group[0] + group[2] // 2, group[1] + group[3] // 2)
             wait_for(lambda: find_word(window, "fim", last=True), "Live completion timestamp missing")
-            end = find_word(window, "fim", last=True)
-            click(window, end[0] + end[2] // 2, end[1] + end[3] // 2)
-            park_mouse(window)
-            wait_for(lambda: find_word(window, "monot", last=True), "Observed duration details missing")
+
+            def open_observed_metadata():
+                # Expanding a virtualised tool group can remeasure/reposition
+                # its row between OCR and the click, especially in release CI.
+                # Re-locate the badge on each attempt and stop once details open
+                # rather than clicking twice and closing them again.
+                if find_word(window, "monot", last=True):
+                    return True
+                end = find_word(window, "fim", last=True)
+                if end is None:
+                    return False
+                click(window, end[0] + end[2] // 2, end[1] + end[3] // 2)
+                park_mouse(window)
+                return find_word(window, "monot", last=True)
+
+            wait_for(open_observed_metadata, "Observed duration details missing")
             duration_word = find_word(window, "monot", last=True)
             click(window, duration_word[0] + duration_word[2] // 2, duration_word[1] + duration_word[3] // 2)
             chord("Control_L", "a")
