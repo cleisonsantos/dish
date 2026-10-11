@@ -73,6 +73,15 @@ def run(message, images):
         dialog_answer.wait(10)
     for index in range(5):
         time.sleep(0.2 if message.startswith("long-activity") else 0.5 if message.startswith("long") else 0.2)
+        stream_gate = os.environ.get("DISH_FAKE_PI_STREAM_GATE_DIR")
+        if stream_gate and message == "long-search-stability":
+            # Let the regression test inspect search while advancing one delta
+            # at a time. Normal fixtures and real Pi are unaffected.
+            with open(os.path.join(stream_gate, f"ready-{index}"), "w") as ready:
+                ready.write("ready")
+            deadline = time.monotonic() + 30
+            while not os.path.exists(os.path.join(stream_gate, f"release-{index}")) and time.monotonic() < deadline:
+                time.sleep(0.01)
         delta = f"{message} / {os.path.basename(os.getcwd())} / {index}\n"
         if message == "table":
             delta = ("Tabela de teste\n\n| Arquivo | Avaliação |\n| --- | --- |\n"

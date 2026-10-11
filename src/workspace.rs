@@ -423,11 +423,10 @@ impl Workspace {
                 .spawn(async move { sessions::discover_cached(&roots, &previous) })
                 .await;
             let _ = this.update(cx, |workspace, cx| {
-                let changed = workspace.catalog.len() != catalog.len()
-                    || workspace.catalog.iter().zip(&catalog).any(|(a, b)| a.path != b.path || a.modified != b.modified);
                 workspace.catalog = catalog;
                 workspace.refreshing = false;
-                if changed { workspace.invalidate_content_search(cx); }
+                // Refresh navigation only. The open content search keeps its
+                // query snapshot until edited, reopened or moved to a new scope.
                 cx.notify();
             });
         })
