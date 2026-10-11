@@ -158,6 +158,7 @@ fn run(mut command: Command, timeout: Duration) -> Result<String> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    crate::platform::hide_console(&mut command);
     let deadline = Instant::now() + timeout;
     let mut child = retry_text_busy(|| command.spawn(), timeout)
         .context("Não foi possível executar o comando")?;
