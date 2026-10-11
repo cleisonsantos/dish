@@ -169,6 +169,8 @@ pub struct Workspace {
     hovered: Option<NavHover>,
     preferences: crate::preferences::Preferences,
     settings: Option<Entity<crate::settings::Settings>>,
+    /// Última lista de modelos enviada às configurações abertas.
+    settings_models: Vec<(String, String)>,
     content_search: search::SearchState,
 }
 
@@ -276,6 +278,7 @@ impl Workspace {
             hovered: None,
             preferences,
             settings: None,
+            settings_models: Vec::new(),
             content_search: search::SearchState::default(),
         }
     }
@@ -382,6 +385,11 @@ impl Workspace {
             state.effort_menu = false;
         });
         self.settings.as_ref().unwrap().update(cx, |settings, cx| settings.show(section, options, models, hidden, window, cx));
+        self.settings_models = self
+            .settings
+            .as_ref()
+            .map(|settings| settings.read(cx).visible_models())
+            .unwrap_or_default();
         cx.notify();
     }
 
@@ -2035,6 +2043,21 @@ impl Render for Workspace {
         if preferences != self.preferences {
             crate::preferences::save(preferences.clone());
             self.preferences = preferences;
+        }
+        // A lista de modelos chega do Pi de forma assíncrona: se as configurações
+        // já estiverem abertas, mantém a cópia delas atualizada.
+        if let Some(settings) = self.settings.clone() {
+            if settings.read(cx).open {
+                let models: Vec<(String, String)> = active
+                    .models
+                    .iter()
+                    .map(|model| (model.provider.clone(), model.id.clone()))
+                    .collect();
+                if models != self.settings_models {
+                    self.settings_models = models.clone();
+                    settings.update(cx, |settings, cx| settings.set_models(models, cx));
+                }
+            }
         }
         root = root.child(body.child(div().flex_1().min_w(px(0.)).h_full().child(state)));
         self.refresh_content_search_scope(cx);

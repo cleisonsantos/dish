@@ -361,14 +361,20 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         chord("Control_L", "f")
         type_text("Saved")
         wait_for(lambda: find_word(window, "resultados"), "Saved-message search did not render")
-        header = find_word(window, "Buscar")
-        click(window, header[0] + header[2] // 2, header[1] + header[3] // 2)
-        before_search_wheel = stable_transcript_pixels(window)
-        for _ in range(6):
-            xtst.XTestFakeButtonEvent(display, 4, True, 0)
-            xtst.XTestFakeButtonEvent(display, 4, False, 0)
-        x11.XFlush(display)
-        assert stable_transcript_pixels(window) == before_search_wheel, "Search wheel leaked to the underlying transcript"
+        # O OCR pode localizar o cabeçalho alguns pixels fora em fontes diferentes;
+        # repete a checagem antes de acusar vazamento do scroll.
+        for attempt in range(3):
+            header = find_word(window, "Buscar")
+            click(window, header[0] + header[2] // 2, header[1] + header[3] // 2)
+            before_search_wheel = stable_transcript_pixels(window)
+            for _ in range(6):
+                xtst.XTestFakeButtonEvent(display, 4, True, 0)
+                xtst.XTestFakeButtonEvent(display, 4, False, 0)
+            x11.XFlush(display)
+            if stable_transcript_pixels(window) == before_search_wheel:
+                break
+        else:
+            raise AssertionError("Search wheel leaked to the underlying transcript")
         press("Escape")
         click(window, 550, 780)
         type_text("long-b")

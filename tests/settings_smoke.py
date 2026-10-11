@@ -51,10 +51,30 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
                 return
         raise AssertionError(f"Missing UI label: {label}")
 
+    def click_model_switch():
+        # O switch não tem texto: procura uma âncora na lista e clica na coluna da
+        # direita (cartão de 840px centrado numa janela de 1240 → switch em x≈1020).
+        # O OCR lê o id ou o provedor dependendo da fonte do sistema, então os
+        # dois servem de âncora, com deslocamentos diferentes.
+        capture()
+        rows = subprocess.check_output(["tesseract", screenshot, "stdout", "tsv"],
+                                       stderr=subprocess.DEVNULL).decode().splitlines()[1:]
+        for anchor, offset in [("fake-model", 0), ("test", 20)]:
+            for row in rows:
+                fields = row.split("\t")
+                if len(fields) == 12 and anchor in fields[11].strip().lower():
+                    center = int(fields[7]) + int(fields[9]) // 2
+                    click(window, 1003, center + offset)
+                    return
+        raise AssertionError("Model row not found")
+
     try:
         wait_for(lambda: find_window(), "Window not created")
         window = find_window()
         wait_for(lambda: commands("get_messages"), "Fake session not initialized")
+        # A lista de modelos chega em paralelo; as configurações mostram uma
+        # cópia dela, então espera antes de abrir a tela.
+        wait_for(lambda: commands("get_available_models"), "Model list was not requested")
         x11.XSetInputFocus(display, window, 1, 0)
         x11.XFlush(display)
         time.sleep(1)
@@ -82,11 +102,12 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
         state_path = temp / "config/dish/state.json"
         click_label("Modelos")
         models_page = capture()
-        assert "fake-model" in models_page, models_page
-        click_label("vis")
+        assert "Modelos" in models_page, models_page
+        assert "fake-model" in models_page or "test" in models_page, models_page
+        click_model_switch()
         wait_for(lambda: json.loads(state_path.read_text()).get("hidden_models") == ["test/fake-model"],
                  "Hidden model was not persisted")
-        click_label("Mostrar todos")
+        click_label("Mostrar")
         wait_for(lambda: json.loads(state_path.read_text()).get("hidden_models") == [],
                  "Mostrar todos did not clear the hidden models")
         click_label("Sobre / Pi")
