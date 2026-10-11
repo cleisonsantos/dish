@@ -329,7 +329,7 @@ impl Workspace {
                                 match *name {
                                     "details" => { state.sidebar = *value; state.inspector_initialized = true; }
                                     "thinking" => state.show_thinking = *value,
-                                    "generated_titles" => state.set_generated_titles(*value),
+                                    "generated_titles" => state.set_generated_titles(*value, cx),
                                     _ => {}
                                 }
                                 cx.notify();
@@ -743,6 +743,14 @@ impl Workspace {
         let catalog = conversation.path.as_ref().and_then(|path| {
             self.catalog.iter().find(|info| &info.path == path)
         });
+        if state.generated_titles {
+            return crate::demand::summary_title(
+                state.title_or_none(80).as_deref(),
+                catalog.map(|info| info.title.as_str()),
+                None,
+                80,
+            ).unwrap_or_else(|| "Nova conversa".into());
+        }
         state
             .session
             .name

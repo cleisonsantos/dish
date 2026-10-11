@@ -2160,8 +2160,8 @@ impl AppState {
         cx.notify();
     }
 
-    /// Título da conversa: o nome da sessão, senão o título gerado para a
-    /// demanda atual, senão a demanda por extenso.
+    /// No modo por modelo, o resumo tem prioridade e o título anterior fica
+    /// visível enquanto a nova demanda é resumida. O nome do Pi não muda.
     pub fn display_title(&self) -> String {
         self.title(72)
     }
@@ -2169,19 +2169,18 @@ impl AppState {
     /// Como [`Self::display_title`], mas `None` quando ainda não há nada a
     /// mostrar — a navegação usa isso para cair no título do catálogo.
     pub fn title_or_none(&self, max_chars: usize) -> Option<String> {
-        if let Some(name) = &self.session.name {
-            if !name.trim().is_empty() {
-                return Some(name.clone());
-            }
-        }
+        let original = self.session.name.as_deref().filter(|name| !name.trim().is_empty());
         if self.generated_titles {
-            if let Some((fingerprint, title)) = &self.generated_title {
-                if self.latest_substantive_demand().as_deref() == Some(fingerprint.as_str()) {
-                    return Some(title.clone());
-                }
-            }
+            let first = self.messages.iter().find(|message| message.role == Role::User)
+                .and_then(|message| crate::demand::clip(&message.text(), max_chars));
+            return crate::demand::summary_title(
+                self.generated_title.as_ref().map(|(_, title)| title.as_str()),
+                original,
+                first.as_deref(),
+                max_chars,
+            );
         }
-        self.demand_title(max_chars)
+        original.map(str::to_owned).or_else(|| self.demand_title(max_chars))
     }
 
     /// Título pronto para exibir, nunca vazio.
@@ -2211,11 +2210,12 @@ impl AppState {
 
     /// Liga/desliga títulos por modelo. Descartar o cache garante que, ao
     /// religar, a demanda atual seja regerada em vez de reusar um título antigo.
-    pub fn set_generated_titles(&mut self, enabled: bool) {
+    pub fn set_generated_titles(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.generated_titles = enabled;
-        self.generated_title = None;
-        self.title_generation = None;
         self.title_failure = None;
+        if enabled && !self.streaming {
+            self.maybe_generate_title(cx);
+        }
     }
 
     /// Fim de rodada: se o usuário ligou os títulos por modelo e a demanda
@@ -2261,7 +2261,7 @@ impl AppState {
                 }
                 // Um resultado de demanda que o usuário já deixou para trás é
                 // descartado: nunca guarda um título que não é o de agora.
-                if state.latest_substantive_demand().as_deref() != Some(demand.as_str()) {
+                if !state.generated_titles || state.latest_substantive_demand().as_deref() != Some(demand.as_str()) {
                     return;
                 }
                 if let Some(title) = generated {
