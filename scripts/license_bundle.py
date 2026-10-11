@@ -37,10 +37,10 @@ def crate_archive(package, dest: Path, lock, root: Path) -> str:
 
 
 def collect_licenses(metadata, destination: Path, root: Path) -> int:
-    overrides = {(p["name"], p["version"]): p for p in json.loads((root / "licenses/overrides.json").read_text())}
-    lock = tomllib.loads((root / "Cargo.lock").read_text())
+    overrides = {(p["name"], p["version"]): p for p in json.loads((root / "licenses/overrides.json").read_text(encoding="utf-8"))}
+    lock = tomllib.loads((root / "Cargo.lock").read_text(encoding="utf-8"))
     native_path = root / "licenses/native.json"
-    native = {(p["name"], p["version"]): p for p in json.loads(native_path.read_text())} if native_path.exists() else {}
+    native = {(p["name"], p["version"]): p for p in json.loads(native_path.read_text(encoding="utf-8"))} if native_path.exists() else {}
     packages = []
     for p in sorted(metadata["packages"], key=lambda p: (p["name"], p["version"])):
         if p["id"] == metadata["resolve"]["root"]:
@@ -94,14 +94,14 @@ def collect_licenses(metadata, destination: Path, root: Path) -> int:
         if p["name"] == "option-ext" or (override and override.get("include_source")) or (native_entry and native_entry.get("include_source")):
             record["source_archive"] = crate_archive(p, destination / "sources", lock, root)
         packages.append(record)
-    (destination / "dependencies.json").write_text(json.dumps(packages, indent=2) + "\n")
+    (destination / "dependencies.json").write_text(json.dumps(packages, indent=2) + "\n", encoding="utf-8")
     return len(packages)
 
 
 def toolchain_licenses(destination: Path) -> None:
     """Rust toolchain and standard-library notices for the installed compiler."""
     def run(*args):
-        return subprocess.check_output(args, text=True)
+        return subprocess.check_output(args, text=True, encoding="utf-8")
 
     info = dict(line.split(": ", 1) for line in run("rustc", "-vV").splitlines() if ": " in line)
     commit = info.get("commit-hash", "")
@@ -126,7 +126,7 @@ def toolchain_licenses(destination: Path) -> None:
     shutil.copytree(bundled_licenses, folder / "licenses", dirs_exist_ok=True)
     sources.append({"file": "COPYRIGHT-library.html", "source": "installed Rust toolchain standard-library notices",
                     "sha256": sha256(folder / "COPYRIGHT-library.html")})
-    (folder / "provenance.json").write_text(json.dumps({"rustc": info["release"], "files": sources}, indent=2) + "\n")
+    (folder / "provenance.json").write_text(json.dumps({"rustc": info["release"], "files": sources}, indent=2) + "\n", encoding="utf-8")
 
 
 def build(metadata, destination: Path, root: Path) -> int:

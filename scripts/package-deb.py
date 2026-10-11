@@ -51,7 +51,7 @@ def run(*args, **kwargs):
     env["LC_ALL"] = "C"
     for key in ["LANGUAGE", "LANG"]:
         env.pop(key, None)
-    return subprocess.check_output(args, cwd=ROOT, text=True, stderr=subprocess.DEVNULL, env=env, **kwargs)
+    return subprocess.check_output(args, cwd=ROOT, text=True, encoding="utf-8", stderr=subprocess.DEVNULL, env=env, **kwargs)
 
 
 PACKAGE_NAME = re.compile(r"^[a-z0-9][a-z0-9+.-]*$")
@@ -174,7 +174,7 @@ def stage_tree(package: Path, staging: Path, version: str, glibc: str, dependenc
     shutil.copyfile(package / "bin/dish", staging / "usr/bin/dish")
     (staging / "usr/bin/dish").chmod(0o755)
     (staging / "usr/share/applications").mkdir(parents=True)
-    (staging / "usr/share/applications/dish.desktop").write_text(desktop_entry())
+    (staging / "usr/share/applications/dish.desktop").write_text(desktop_entry(), encoding="utf-8")
     icon_dir = staging / "usr/share/icons/hicolor/512x512/apps"
     icon_dir.mkdir(parents=True)
     shutil.copyfile(package / "share/icons/dish.png", icon_dir / "dish.png")
@@ -191,15 +191,15 @@ def stage_tree(package: Path, staging: Path, version: str, glibc: str, dependenc
         else:
             shutil.copyfile(entry, destination)
     shutil.copyfile(package / "README.md", docs / "README.md")
-    (docs / "copyright").write_text(copyright_text())
+    (docs / "copyright").write_text(copyright_text(), encoding="utf-8")
     changelog = (
         f"dish ({version}) unstable; urgency=medium\n\n"
         "  * Linux preview release.\n\n"
         f" -- {MAINTAINER}  {email.utils.formatdate(localtime=False)}\n"
     )
-    (docs / "changelog").write_text(changelog)
+    (docs / "changelog").write_text(changelog, encoding="utf-8")
     installed_kb = sum(f.stat().st_size for f in staging.rglob("*") if f.is_file()) // 1024
-    (staging / "DEBIAN/control").write_text(control_text(version, glibc, dependencies, installed_kb))
+    (staging / "DEBIAN/control").write_text(control_text(version, glibc, dependencies, installed_kb), encoding="utf-8")
 
 
 def build(archive: Path, output_dir: Path) -> Path:
@@ -207,7 +207,7 @@ def build(archive: Path, output_dir: Path) -> Path:
         raise RuntimeError("dpkg-deb and dpkg-query are required to build a Debian package")
     checksum = Path(str(archive) + ".sha256")
     if checksum.is_file():
-        expected = checksum.read_text().split()[0]
+        expected = checksum.read_text(encoding="utf-8").split()[0]
         if sha256(archive) != expected:
             raise RuntimeError(f"Checksum mismatch for {archive}; rebuild the candidate first")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -219,7 +219,7 @@ def build(archive: Path, output_dir: Path) -> Path:
         if len(entries) != 1:
             raise RuntimeError("The candidate archive must contain a single top-level directory")
         package = entries[0]
-        build_json = json.loads((package / "BUILD.json").read_text())
+        build_json = json.loads((package / "BUILD.json").read_text(encoding="utf-8"))
         if build_json.get("target") != TARGET:
             raise RuntimeError(f'Unexpected build target: {build_json.get("target")}')
         glibc = str(build_json["minimum_glibc"])
@@ -238,7 +238,7 @@ def build(archive: Path, output_dir: Path) -> Path:
     for expected in ["Package: dish", f"Version: {version}", f"Architecture: {DEB_ARCH}"]:
         if expected not in info:
             raise RuntimeError(f"Built package is missing {expected!r}")
-    Path(str(output) + ".sha256").write_text(f"{sha256(output)}  {output.name}\n")
+    Path(str(output) + ".sha256").write_text(f"{sha256(output)}  {output.name}\n", encoding="utf-8")
     return output
 
 
@@ -248,7 +248,7 @@ def main() -> None:
     parser.add_argument("--input", help="Candidate tar.gz (defaults to dist/dish-<version>-linux-x86_64.tar.gz)")
     parser.add_argument("--output", default=str(ROOT / "dist"), help="Directory for the .deb and its checksum")
     args = parser.parse_args()
-    base = tomllib.loads((ROOT / "Cargo.toml").read_text())["package"]["version"]
+    base = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["package"]["version"]
     version = args.version or base
     if not re.fullmatch(re.escape(base) + r"(?:-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?", version):
         parser.error("Version must match Cargo.toml, optionally with a prerelease suffix")

@@ -22,7 +22,7 @@ import license_bundle  # noqa: E402  (precisa do sys.path acima)
 
 
 def run(*args, **kwargs):
-    return subprocess.check_output(args, cwd=ROOT, text=True, **kwargs)
+    return subprocess.check_output(args, cwd=ROOT, text=True, encoding="utf-8", **kwargs)
 
 
 def sha256(path):
@@ -81,7 +81,7 @@ def main():
     args = parser.parse_args()
     if platform.system() != "Linux" or platform.machine() != "x86_64":
         parser.error("Run on Linux x86_64")
-    base = tomllib.loads((ROOT / "Cargo.toml").read_text())["package"]["version"]
+    base = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["package"]["version"]
     version = args.version or base
     if not re.fullmatch(re.escape(base) + r"(?:-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?", version):
         parser.error("Archive version must match Cargo.toml, optionally with a prerelease suffix")
@@ -116,7 +116,7 @@ def main():
         archive = dist / f"{name}.tar.gz"
         with tarfile.open(archive, "w:gz") as tar:
             tar.add(package, arcname=name)
-        (dist / f"{archive.name}.sha256").write_text(f"{sha256(archive)}  {archive.name}\n")
+        (dist / f"{archive.name}.sha256").write_text(f"{sha256(archive)}  {archive.name}\n", encoding="utf-8")
     print(f"Candidate package: {archive.relative_to(ROOT)} ({count} dependency license entries)")
     print(f"Required glibc: {glibc}. No upload performed; review the archive before publication.")
 

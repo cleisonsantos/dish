@@ -25,7 +25,7 @@ LABEL = re.compile(r"--version ([0-9][^\s'\"]*)")
 
 
 def run(*args, **kwargs):
-    return subprocess.check_output(args, cwd=ROOT, text=True, **kwargs)
+    return subprocess.check_output(args, cwd=ROOT, text=True, encoding="utf-8", **kwargs)
 
 
 def release_version(explicit: str | None) -> str:
@@ -34,10 +34,10 @@ def release_version(explicit: str | None) -> str:
         return explicit
     ci = ROOT / ".github/workflows/ci.yml"
     if ci.is_file():
-        match = LABEL.search(ci.read_text())
+        match = LABEL.search(ci.read_text(encoding="utf-8"))
         if match:
             return match.group(1)
-    return tomllib.loads((ROOT / "Cargo.toml").read_text())["package"]["version"]
+    return tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["package"]["version"]
 
 
 def numeric_version(label: str) -> str:
@@ -68,7 +68,7 @@ def stage_payload(version: str, target: str, require_binary: bool = True) -> int
         "version": version, "target": target, "dependency_packages": count,
         "rustc": run("rustc", "--version").strip(),
         "cargo_lock_sha256": license_bundle.sha256(ROOT / "Cargo.lock"),
-    }, indent=2) + "\n")
+    }, indent=2) + "\n", encoding="utf-8")
     return count
 
 
@@ -110,7 +110,7 @@ def main() -> None:
     if not installer.is_file() or installer.stat().st_size < 1_000_000:
         raise RuntimeError(f"Installer missing or suspiciously small: {installer}")
     (installer.parent / (installer.name + ".sha256")).write_text(
-        f"{license_bundle.sha256(installer)}  {installer.name}\n")
+        f"{license_bundle.sha256(installer)}  {installer.name}\n", encoding="utf-8")
     print(f"Installer: {installer.relative_to(ROOT)} "
           f"({installer.stat().st_size / 1_048_576:.1f} MB)")
     print("No upload performed; publish only through the release steps.")
