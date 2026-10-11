@@ -70,6 +70,9 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
         wait_for(lambda: find_window(), "Window not created")
         window = find_window()
         wait_for(lambda: commands("get_messages"), "Fake session not initialized")
+        # A lista de modelos chega em paralelo; as configurações mostram uma
+        # cópia dela, então espera antes de abrir a tela.
+        wait_for(lambda: commands("get_available_models"), "Model list was not requested")
         x11.XSetInputFocus(display, window, 1, 0)
         x11.XFlush(display)
         time.sleep(1)

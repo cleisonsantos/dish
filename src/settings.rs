@@ -70,6 +70,20 @@ impl Settings {
         cx.notify();
     }
 
+    /// Mantém a lista de modelos atualizada enquanto a tela está aberta.
+    pub fn set_models(&mut self, models: Vec<(String, String)>, cx: &mut Context<Self>) {
+        if self.models == models {
+            return;
+        }
+        self.models = models;
+        cx.notify();
+    }
+
+    /// Cópia da lista em exibição, usada para evitar atualizações repetidas.
+    pub fn visible_models(&self) -> Vec<(String, String)> {
+        self.models.clone()
+    }
+
     pub fn suspend(&mut self, cx: &mut Context<Self>) {
         self.open = false;
         self.previous_focus = None;
