@@ -29,8 +29,19 @@ jobs:
           key: windows-v1-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
           restore-keys: |
             windows-v1-${{ hashFiles('Cargo.lock') }}-
+      - name: Check all targets
+        run: cargo check --locked --all-targets
       - name: Build release
         run: cargo build --release --locked
+      - name: Verify the GUI subsystem
+        shell: pwsh
+        run: |
+          # Um binário de console tem subsystem 3; GUI tem 2 (sem janela de console).
+          $bytes = [IO.File]::ReadAllBytes('target/release/dish.exe')
+          $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+          $subsystem = [BitConverter]::ToUInt16($bytes, $pe + 0x5C)
+          if ($subsystem -ne 2) { throw "dish.exe uses subsystem $subsystem, expected GUI (2)" }
+          Write-Host 'dish.exe is a GUI-subsystem binary (no console window)'
       - name: Save Windows executable
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

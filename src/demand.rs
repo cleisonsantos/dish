@@ -148,15 +148,16 @@ pub fn generate_title(
     demand: &str,
     max_chars: usize,
 ) -> Option<String> {
-    let mut child = Command::new(program)
+    let mut command = Command::new(program);
+    command
         .args(arguments(model, demand))
         .current_dir(cwd)
         .env("PI_SKIP_VERSION_CHECK", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+        .stderr(Stdio::null());
+    crate::platform::hide_console(&mut command);
+    let mut child = command.spawn().ok()?;
     let mut stdout = child.stdout.take()?;
     // Read on a worker so a hung Pi can be killed instead of blocking forever.
     let (sender, receiver) = std::sync::mpsc::channel();

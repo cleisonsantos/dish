@@ -4,8 +4,15 @@
 //! and renders the conversation with GPUI. Nothing about Pi's behaviour is
 //! reimplemented: the same session, tools, models and extensions run here as in
 //! the terminal.
+//!
+//! No Windows, o release usa o subsistema GUI: sem isso o `dish.exe` abre um
+//! console junto com a janela (issue #14). Os filhos escondem o próprio console
+//! via `platform::hide_console`, e `logging::warn` escreve em stderr sem pânico.
+#![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
 
 mod demand;
+mod logging;
+mod platform;
 mod editor;
 mod settings;
 mod installation;

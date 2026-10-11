@@ -99,6 +99,7 @@ impl PiClient {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        crate::platform::hide_console(&mut command);
 
         let mut child = command
             .spawn()
@@ -155,12 +156,12 @@ impl PiClient {
                                     }
                                 }
                                 Err(error) => {
-                                    eprintln!("dish: unparsable record: {error}: {line}");
+                                    crate::logging::warn(format_args!("dish: unparsable record: {error}: {line}"));
                                 }
                             }
                         }
                         Err(error) => {
-                            eprintln!("dish: pi stdout closed: {error}");
+                            crate::logging::warn(format_args!("dish: pi stdout closed: {error}"));
                             break;
                         }
                     }
@@ -196,7 +197,7 @@ impl PiClient {
         }
         let encoded = command.to_string();
         if self.tx.send_blocking(encoded).is_err() {
-            eprintln!("dish: pi stdin is closed; dropping command");
+            crate::logging::warn(format_args!("dish: pi stdin is closed; dropping command"));
         }
         id
     }

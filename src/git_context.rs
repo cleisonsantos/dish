@@ -146,11 +146,7 @@ fn run(program: &Path, cwd: &Path, args: &[&str], timeout: Duration) -> io::Resu
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000); // CREATE_NO_WINDOW, including debug builds.
-    }
+    crate::platform::hide_console(&mut command);
     let mut child = command.spawn()?;
     let stdout = child
         .stdout

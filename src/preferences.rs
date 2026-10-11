@@ -50,7 +50,7 @@ pub fn save(preferences: Preferences) {
                 while let Ok(newer) = receiver.try_recv() { preferences = newer; }
                 let Some(path) = path() else { continue; };
                 if let Err(error) = write(&path, &preferences) {
-                    eprintln!("Dish: cannot save UI preferences: {error}");
+                    crate::logging::warn(format_args!("Dish: cannot save UI preferences: {error}"));
                 }
             }
         });

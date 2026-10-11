@@ -603,7 +603,7 @@ impl AppState {
                 if line.trim().is_empty() {
                     continue;
                 }
-                eprintln!("pi: {line}");
+                crate::logging::warn(format_args!("pi: {line}"));
                 let alive = this.update(cx, |state, cx| {
                     if line.contains("Error") || line.contains("error") {
                         state.push_toast(line.clone(), Tone::Warning, cx);
