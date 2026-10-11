@@ -45,10 +45,43 @@ jobs:
       - name: Install NSIS
         shell: pwsh
         run: |
-          choco install nsis --no-progress -y
-          # O chocolatey não atualiza o PATH desta sessão.
-          $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
-                      [Environment]::GetEnvironmentVariable('Path', 'User')
+          function Refresh-Path {
+            $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
+                        [Environment]::GetEnvironmentVariable('Path', 'User')
+          }
+          function Find-Makensis {
+            $command = Get-Command makensis -ErrorAction SilentlyContinue
+            if ($command) { return $command.Source }
+            $candidates = @(
+              "$env:ProgramData\chocolatey\bin\makensis.exe",
+              "${env:ProgramFiles(x86)}\NSIS\makensis.exe",
+              "$env:ProgramFiles\NSIS\makensis.exe"
+            )
+            foreach ($candidate in $candidates) {
+              if (Test-Path $candidate) { return $candidate }
+            }
+            return $null
+          }
+          Refresh-Path
+          $makensis = Find-Makensis
+          # O feed do Chocolatey já respondeu 504 em execução anterior: tenta
+          # algumas vezes antes de desistir, e confere se o binário existe.
+          for ($attempt = 1; $attempt -le 3 -and -not $makensis; $attempt++) {
+            Write-Host "tentativa $attempt de instalar o NSIS"
+            choco install nsis --no-progress -y
+            Refresh-Path
+            $makensis = Find-Makensis
+            if (-not $makensis) { Start-Sleep -Seconds 10 }
+          }
+          if (-not $makensis) {
+            Write-Host 'Chocolatey não resolveu; tentando winget'
+            winget install --id NSIS.NSIS --silent --accept-package-agreements --accept-source-agreements
+            Refresh-Path
+            $makensis = Find-Makensis
+          }
+          if (-not $makensis) { throw 'NSIS não pôde ser instalado (choco e winget falharam)' }
+          Write-Host "makensis: $makensis"
+          "MAKENSIS=$makensis" >> $env:GITHUB_ENV
       - name: Build the installer
         shell: pwsh
         run: |
@@ -63,14 +96,8 @@ jobs:
           $versionNum = ($numeric[0..3] -join '.')
           Write-Host "Dish $label ($versionNum)"
           New-Item -ItemType Directory -Force dist | Out-Null
-          $makensis = (Get-Command makensis -ErrorAction SilentlyContinue).Source
-          if (-not $makensis) {
-            $makensis = @(
-              "$env:ProgramData\chocolatey\bin\makensis.exe",
-              "${env:ProgramFiles(x86)}\NSIS\makensis.exe",
-              "$env:ProgramFiles\NSIS\makensis.exe"
-            ) | Where-Object { Test-Path $_ } | Select-Object -First 1
-          }
+          $makensis = if ($env:MAKENSIS -and (Test-Path $env:MAKENSIS)) { $env:MAKENSIS }
+                      else { (Get-Command makensis -ErrorAction SilentlyContinue).Source }
           if (-not $makensis) { throw 'makensis não encontrado' }
           Write-Host "makensis: $makensis"
           & $makensis /V2 "/DVERSION=$label" "/DVERSIONNUM=$versionNum" "/DSRCDIR=$PWD" scripts/windows-installer.nsi
