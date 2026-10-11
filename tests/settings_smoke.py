@@ -78,6 +78,17 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
         time.sleep(1)
         page = capture()
         assert "Aplicativo" in page and "Contas e provedores" not in page, page
+        # Modelos: ocultar/reexibir é preferência do Dish e precisa persistir.
+        state_path = temp / "config/dish/state.json"
+        click_label("Modelos")
+        models_page = capture()
+        assert "fake-model" in models_page, models_page
+        click_label("vis")
+        wait_for(lambda: json.loads(state_path.read_text()).get("hidden_models") == ["test/fake-model"],
+                 "Hidden model was not persisted")
+        click_label("Mostrar todos")
+        wait_for(lambda: json.loads(state_path.read_text()).get("hidden_models") == [],
+                 "Mostrar todos did not clear the hidden models")
         click_label("Sobre / Pi")
         about = capture()
         compact_about = "".join(about.lower().split())

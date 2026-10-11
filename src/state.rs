@@ -1,7 +1,7 @@
 //! Application state: the conversation model, the Pi session, and every
 //! interaction the UI can trigger.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -379,6 +379,8 @@ pub struct AppState {
     pub session: SessionState,
     pub model: Option<ModelInfo>,
     pub models: Vec<ModelInfo>,
+    /// Modelos ocultos apenas no seletor do Dish (`provider/id`).
+    pub hidden_models: BTreeSet<String>,
     pub thinking_level: Option<String>,
     pub thinking_levels: Vec<String>,
     pub stats: Option<Value>,
@@ -503,6 +505,7 @@ impl AppState {
             },
             model: None,
             models: Vec::new(),
+            hidden_models: BTreeSet::new(),
             thinking_level: None,
             thinking_levels: Vec::new(),
             stats: None,
@@ -2496,20 +2499,17 @@ impl AppState {
 
     /// Modelos visíveis para a busca atual, na ordem exibida (o atual primeiro).
     pub fn filtered_models(&self, query: &str) -> Vec<usize> {
-        let mut indices: Vec<usize> = self
-            .models
-            .iter()
-            .enumerate()
-            .filter(|(_, model)| model_matches(model, query))
-            .map(|(index, _)| index)
-            .collect();
-        if let Some(current) = &self.model {
-            indices.sort_by_key(|index| {
-                let model = &self.models[*index];
-                !(model.id == current.id && model.provider == current.provider)
-            });
-        }
-        indices
+        visible_model_indices(&self.models, &self.hidden_models, query, self.model.as_ref())
+    }
+
+    /// Verdadeiro quando todos os modelos estão ocultos: o filtro é ignorado
+    /// para o seletor nunca ficar vazio (a interface avisa o usuário).
+    pub fn hidden_models_fallback(&self) -> bool {
+        !self.models.is_empty()
+            && self
+                .models
+                .iter()
+                .all(|model| self.hidden_models.contains(&model_key(model)))
     }
 
     /// A posição destacada no seletor para a busca informada.
@@ -3195,6 +3195,37 @@ pub fn model_matches(model: &ModelInfo, query: &str) -> bool {
     query
         .split_whitespace()
         .all(|term| searchable.contains(&term.to_lowercase()))
+}
+
+/// Chave estável de um modelo nas preferências: `provider/id`.
+pub fn model_key(model: &ModelInfo) -> String {
+    format!("{}/{}", model.provider, model.id)
+}
+
+/// Índices visíveis no seletor: aplica a busca, esconde os modelos ocultos e
+/// mantém o modelo atual sempre visível. Se todos estiverem ocultos, devolve
+/// todos os que casam com a busca, para o seletor não ficar inutilizável.
+pub fn visible_model_indices(
+    models: &[ModelInfo],
+    hidden: &BTreeSet<String>,
+    query: &str,
+    current: Option<&ModelInfo>,
+) -> Vec<usize> {
+    let fallback = !models.is_empty() && models.iter().all(|model| hidden.contains(&model_key(model)));
+    let is_current = |model: &ModelInfo| {
+        current.is_some_and(|current| current.id == model.id && current.provider == model.provider)
+    };
+    let mut indices: Vec<usize> = models
+        .iter()
+        .enumerate()
+        .filter(|(_, model)| model_matches(model, query))
+        .filter(|(_, model)| fallback || !hidden.contains(&model_key(model)) || is_current(model))
+        .map(|(index, _)| index)
+        .collect();
+    if current.is_some() {
+        indices.sort_by_key(|index| !is_current(&models[*index]));
+    }
+    indices
 }
 
 #[cfg(test)]

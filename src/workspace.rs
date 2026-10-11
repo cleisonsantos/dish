@@ -163,6 +163,7 @@ impl Workspace {
             state.update(cx, |state, _| state.show_thinking = show);
         }
         state.update(cx, |state, _| state.generated_titles = preferences.generated_titles);
+        state.update(cx, |state, _| state.hidden_models = preferences.hidden_models.clone());
         cx.observe(&query, |_, _, cx| cx.notify()).detach();
         let mut roots = sessions::roots(&state.read(cx).cwd, &flags);
         let cwd = state.read(cx).cwd.clone();
@@ -308,6 +309,31 @@ impl Workspace {
                             });
                         }
                     }
+                    SettingsEvent::ModelVisibility(key, visible) => {
+                        if *visible {
+                            this.preferences.hidden_models.remove(key);
+                        } else {
+                            this.preferences.hidden_models.insert(key.clone());
+                        }
+                        crate::preferences::save(this.preferences.clone());
+                        let hidden = this.preferences.hidden_models.clone();
+                        for conversation in &this.conversations {
+                            conversation.state.update(cx, |state, cx| {
+                                state.hidden_models = hidden.clone();
+                                cx.notify();
+                            });
+                        }
+                    }
+                    SettingsEvent::ShowAllModels => {
+                        this.preferences.hidden_models.clear();
+                        crate::preferences::save(this.preferences.clone());
+                        for conversation in &this.conversations {
+                            conversation.state.update(cx, |state, cx| {
+                                state.hidden_models.clear();
+                                cx.notify();
+                            });
+                        }
+                    }
                     SettingsEvent::Closed => {}
                 }
                 cx.notify();
@@ -316,13 +342,19 @@ impl Workspace {
         }
         let state = self.conversations[self.active].state.read(cx);
         let options = [state.sidebar, self.visible, state.show_thinking, state.generated_titles];
+        let models: Vec<(String, String)> = state
+            .models
+            .iter()
+            .map(|model| (model.provider.clone(), model.id.clone()))
+            .collect();
+        let hidden = self.preferences.hidden_models.clone();
         self.conversations[self.active].state.update(cx, |state, _| {
             state.visible = false;
             state.model_menu = false;
             state.model_search_focus_pending = false;
             state.effort_menu = false;
         });
-        self.settings.as_ref().unwrap().update(cx, |settings, cx| settings.show(section, options, window, cx));
+        self.settings.as_ref().unwrap().update(cx, |settings, cx| settings.show(section, options, models, hidden, window, cx));
         cx.notify();
     }
 
@@ -1408,6 +1440,7 @@ impl Render for Workspace {
                     state.show_thinking = show;
                 }
                 state.generated_titles = self.preferences.generated_titles;
+                state.hidden_models = self.preferences.hidden_models.clone();
                 state.start(cx);
             });
             let subscription = cx.observe(&state, |_, _, cx| cx.notify());

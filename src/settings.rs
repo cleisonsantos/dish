@@ -1,12 +1,17 @@
 use crate::{editor::{self, Editor}, theme};
 use gpui::{prelude::*, *};
+use std::collections::BTreeSet;
 
 #[derive(Clone, Copy, PartialEq)]
-pub enum Section { App, Keys, About }
+pub enum Section { App, Models, Keys, About }
 
 pub enum SettingsEvent {
     Closed,
     Preference(&'static str, bool),
+    /// Um modelo passou a visível (`true`) ou oculto (`false`) no seletor.
+    ModelVisibility(String, bool),
+    /// Limpar todos os modelos ocultos.
+    ShowAllModels,
 }
 impl EventEmitter<SettingsEvent> for Settings {}
 
@@ -20,6 +25,9 @@ pub struct Settings {
     navigation: bool,
     thinking: bool,
     titles: bool,
+    /// `(provider, id)` de cada modelo que o Pi reportou.
+    models: Vec<(String, String)>,
+    hidden: BTreeSet<String>,
 }
 
 impl Settings {
@@ -30,14 +38,25 @@ impl Settings {
             open: false, section: Section::App, focus: cx.focus_handle(),
             previous_focus: None, search,
             details: true, navigation: true, thinking: true, titles: false,
+            models: Vec::new(), hidden: BTreeSet::new(),
         }
     }
 
-    pub fn show(&mut self, section: Section, options: [bool; 4], window: &mut Window, cx: &mut Context<Self>) {
+    pub fn show(
+        &mut self,
+        section: Section,
+        options: [bool; 4],
+        models: Vec<(String, String)>,
+        hidden: BTreeSet<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.open { self.previous_focus = window.focused(cx); }
         self.open = true;
         self.section = section;
         [self.details, self.navigation, self.thinking, self.titles] = options;
+        self.models = models;
+        self.hidden = hidden;
         self.focus.focus(window, cx);
         if section == Section::Keys { self.search.read(cx).focus_handle.clone().focus(window, cx); }
         cx.notify();
@@ -75,6 +94,7 @@ impl Render for Settings {
         let mut menu = column().w(px(184.)).flex_none();
         for (section, label, id) in [
             (Section::App, "Aplicativo", "settings-app"),
+            (Section::Models, "Modelos", "settings-models"),
             (Section::Keys, "Atalhos de teclado", "settings-keys"),
             (Section::About, "Sobre / Pi", "settings-about"),
         ] {
@@ -106,6 +126,68 @@ impl Render for Settings {
                         })));
                 }
                 page = page.child(note("Títulos por modelo usam o modelo da sessão a cada rodada e gastam tokens. Desligado, o Dish mostra a última demanda por extenso."));
+                page.into_any_element()
+            }
+            Section::Models => {
+                let mut page = column().child("Modelos").child(note(
+                    "Oculta modelos apenas no seletor do Dish. O Pi continua com a lista completa; nada é alterado na configuração dele.",
+                ));
+                if self.models.is_empty() {
+                    page = page.child(note(
+                        "Nenhum modelo disponível ainda: abra uma conversa para o Pi informar a lista.",
+                    ));
+                }
+                if !self.hidden.is_empty() {
+                    page = page.child(control("models-show-all", "Mostrar todos", cx.listener(
+                        |this, _, _, cx| {
+                            this.hidden.clear();
+                            cx.emit(SettingsEvent::ShowAllModels);
+                            cx.notify();
+                        },
+                    )));
+                }
+                for (provider, id) in &self.models {
+                    let key = format!("{provider}/{id}");
+                    let row_id = SharedString::from(format!("model-visibility-{key}"));
+                    let label = if self.hidden.contains(&key) { "oculto" } else { "visível" };
+                    let toggled = key.clone();
+                    page = page.child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(12.))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(1.))
+                                    .child(
+                                        div()
+                                            .truncate()
+                                            .font_family(theme::FONT_MONO)
+                                            .text_size(px(theme::TEXT_SM))
+                                            .text_color(theme::text())
+                                            .child(SharedString::from(id.clone())),
+                                    )
+                                    .child(
+                                        div()
+                                            .font_family(theme::FONT_MONO)
+                                            .text_size(px(theme::TEXT_MICRO))
+                                            .text_color(theme::faint())
+                                            .child(SharedString::from(provider.clone())),
+                                    ),
+                            )
+                            .child(control(row_id, label, cx.listener(move |this, _, _, cx| {
+                                let visible = !this.hidden.contains(&toggled);
+                                if visible { this.hidden.insert(toggled.clone()); } else { this.hidden.remove(&toggled); }
+                                cx.emit(SettingsEvent::ModelVisibility(toggled.clone(), !visible));
+                                cx.notify();
+                            }))),
+                    );
+                }
                 page.into_any_element()
             }
             Section::Keys => {
