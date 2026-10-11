@@ -180,7 +180,7 @@ impl Render for Settings {
                             cx.emit(SettingsEvent::Preference(id, !current)); cx.notify();
                         })));
                 }
-                page = page.child(note("Títulos por modelo usam o modelo da sessão a cada rodada e gastam tokens. Desligado, o Dish mostra a última demanda por extenso."));
+                page = page.child(note("Resume a intenção do último pedido com o modelo da sessão (gasta tokens). O resumo aparece só no Dish, sem renomear a sessão do Pi. Durante a geração, mantém o título anterior."));
                 page.into_any_element()
             }
             Section::Models => {
