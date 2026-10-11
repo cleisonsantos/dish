@@ -255,7 +255,9 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         project.mkdir()
         session = agent / "sessions" / "test" / f"{project.name}.jsonl"
         session.write_text(json.dumps({"type": "session", "cwd": str(project), "id": project.name}) +
-                           "\n" + json.dumps({"type": "session_info", "name": f"{project.name} saved"}) + "\n")
+                           "\n" + json.dumps({"type": "session_info", "name": f"{project.name} saved"}) + "\n" +
+                           json.dumps({"type": "message", "message": {"role": "assistant", "content": [
+                               {"type": "text", "text": f"ARCHIVESEARCH {project.name} CONTENTONLY"}]}}) + "\n")
     wrapper = temp / "fake-pi"
     wrapper.write_text(f'#!/bin/sh\nexec python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@"\n')
     wrapper.chmod(0o700)
@@ -288,10 +290,63 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         wait_for(lambda: find_word(window, "anything"), "Composer did not render")
         placeholder = find_word(window, "anything")
         click(window, placeholder[0] + placeholder[2] // 2, placeholder[1] + placeholder[3] // 2)
-        chord("Control_L", "l")
+        # Content search reaches archived message bodies, not just titles,
+        # and stays scoped to the current project's sessions.
+        type_text("draft-")
+        chord("Control_L", "Shift_L", "f")
+        type_text("ARCHIVESEARCH")
+        wait_for(lambda: find_word(window, "CONTENTONLY"), "Archived content search did not render")
+        assert find_word(window, "alpha"), "Active project search result missing"
+        search_screenshot = f"/tmp/dish-search-{next(tempfile._get_candidate_names())}.png"
+        subprocess.run(["import", "-window", str(window), search_screenshot], check=True)
+        press("Escape")
+        wait_for(lambda: not find_word(window, "CONTENTONLY"), "Escape did not close content search")
+        chord("Control_L", "k")
+        type_text("saved")
+        press("Escape")
+        type_text("returned")
+        # Esc must focus the prompt, not leave text in the sidebar filter.
+        wait_for(lambda: find_word(window, "draft-returned"), "Sidebar Escape did not focus prompt")
+        chord("Control_L", "a")
+        chord("Control_L", "c")
+        assert clipboard_text() == "draft-returned", "Search lost the prompt draft or did not restore focus"
+        assert not commands("prompt"), "Search shortcuts accidentally submitted a prompt"
+        press("BackSpace")
+        chord("Control_L", "k")
+        chord("Control_L", "a")
+        press("BackSpace")
+        press("Tab")
+        chord("Shift_L", "Tab")
+        press("Escape")
         type_text("long-a")
         press("Return")
         wait_for(lambda: commands("prompt"), "First prompt not sent")
+        chord("Control_L", "f")
+        type_text("long-a")
+        wait_for(lambda: find_word(window, "resultado"), "Current-session content search did not render")
+        press("Tab")
+        chord("Control_L", "a")
+        type_text("tab-navigation-query")
+        wait_for(lambda: find_word(window, "tab-navigation-query"), "Query field did not retain focus after Tab")
+        # The footer hint can be clipped or OCR can miss its final word at
+        # different font metrics. Locate the query relative to the panel title
+        # instead of depending on the word "sair" being recognized.
+        wait_for(lambda: find_word(window, "Fechar"), "Search panel title did not render")
+        query_box = find_word(window, "tab-navigation-query")
+        title_box = find_word(window, "Fechar")
+        assert query_box and title_box, "Search query/title disappeared during focus check"
+        assert title_box[1] <= query_box[1] < title_box[1] + 6 * max(query_box[3], title_box[3]), "Tab moved focus to the prompt"
+        chord("Control_L", "a")
+        type_text("long-a")
+        chord("Shift_L", "Tab")
+        press("Down")
+        press("Up")
+        assert find_word(window, "Fechar"), "Navigating results closed the search"
+        wait_for(lambda: find_word(window, "resultado"), "Search results did not settle")
+        press("Return")
+        wait_for(lambda: not find_word(window, "Fechar"), "Enter did not open the selected result and close search")
+        assert len(commands("prompt")) == 1, "Navigating matches submitted another prompt"
+        assert not commands("abort"), "Leaving search canceled the running agent"
         # Exercise the cleared composer while the first session is still running.
         click(window, 550, 780)
         # Open beta's saved session from its project group while alpha runs.
@@ -301,6 +356,20 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         wait_for(lambda: len(commands("get_messages")) == 2 or
                  (click_beta_session(window) or len(commands("get_messages")) == 2),
                  "Saved session did not open")
+        # Wheel events over the search header must not scroll the transcript
+        # behind it, even though the header itself has no scrollable content.
+        chord("Control_L", "f")
+        type_text("Saved")
+        wait_for(lambda: find_word(window, "resultados"), "Saved-message search did not render")
+        header = find_word(window, "Buscar")
+        click(window, header[0] + header[2] // 2, header[1] + header[3] // 2)
+        before_search_wheel = stable_transcript_pixels(window)
+        for _ in range(6):
+            xtst.XTestFakeButtonEvent(display, 4, True, 0)
+            xtst.XTestFakeButtonEvent(display, 4, False, 0)
+        x11.XFlush(display)
+        assert stable_transcript_pixels(window) == before_search_wheel, "Search wheel leaked to the underlying transcript"
+        press("Escape")
         click(window, 550, 780)
         type_text("long-b")
         press("Return")

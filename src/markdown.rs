@@ -358,8 +358,8 @@ fn image_block(alt: &str, target: &str, cwd: &std::path::Path, index: usize, sty
 }
 
 /// Render Markdown into a list of block elements.
-pub fn blocks(text: &str, style: &MarkdownStyle, cwd: &std::path::Path, id: gpui::ElementId) -> Vec<AnyElement> {
-    let mut selection = crate::ui::selectable::SelectionBuilder::default();
+pub fn blocks(text: &str, style: &MarkdownStyle, cwd: &std::path::Path, id: gpui::ElementId, search: Option<&str>) -> Vec<AnyElement> {
+    let mut selection = crate::ui::selectable::SelectionBuilder::with_search(search);
     let lines: Vec<&str> = text.split('\n').collect();
     let mut elements: Vec<AnyElement> = Vec::new();
     let mut index = 0usize;

@@ -347,6 +347,9 @@ pub struct AppState {
     pending_image_prompts: HashMap<String, (String, Vec<(String, Value)>)>,
 
     pub messages: Vec<Message>,
+    /// Mensagem apontada pela busca; apenas apresentação, nunca persistida.
+    pub search_message: Option<usize>,
+    pub search_query: Option<String>,
     pub list_state: ListState,
     list_count: usize,
     /// toolCallId -> (message index, block index)
@@ -475,6 +478,8 @@ impl AppState {
             paste_loading: false,
             pending_image_prompts: HashMap::new(),
             messages: Vec::new(),
+            search_message: None,
+            search_query: None,
             list_state,
             list_count: 0,
             tool_slots: HashMap::new(),

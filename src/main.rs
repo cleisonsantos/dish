@@ -16,6 +16,7 @@ mod metadata;
 mod rpc;
 mod state;
 mod sessions;
+mod content_search;
 mod session_activity;
 mod workspace;
 mod theme;
@@ -217,6 +218,7 @@ fn main() {
         keys.extend(editor_bindings("DishModal"));
         keys.extend(editor_bindings("DishModelSearch"));
         keys.extend(editor_bindings("DishNavSearch"));
+        keys.extend(editor_bindings("DishContentSearch"));
         keys.extend(editor_bindings("DishHelpSearch"));
         keys.extend([
             // The composer owns up/down so the slash menu can take them over;
@@ -252,6 +254,18 @@ fn main() {
             KeyBinding::new("ctrl-shift-tab", workspace::PreviousConversation, None),
             KeyBinding::new("ctrl-w", workspace::CloseConversation, None),
             KeyBinding::new("ctrl-k", workspace::SearchSessions, None),
+            KeyBinding::new("ctrl-f", workspace::FindCurrent, None),
+            KeyBinding::new("ctrl-shift-f", workspace::FindProject, None),
+            KeyBinding::new("escape", workspace::ExitSearch, Some("DishNavSearch")),
+            KeyBinding::new("tab", workspace::NavDown, Some("DishNavSearch")),
+            KeyBinding::new("shift-tab", workspace::NavUp, Some("DishNavSearch")),
+            KeyBinding::new("escape", workspace::ExitSearch, Some("DishContentSearch")),
+            KeyBinding::new("tab", workspace::NextMatch, Some("DishContentSearch")),
+            KeyBinding::new("shift-tab", workspace::PreviousMatch, Some("DishContentSearch")),
+            KeyBinding::new("down", workspace::NextMatch, Some("DishContentSearch")),
+            KeyBinding::new("up", workspace::PreviousMatch, Some("DishContentSearch")),
+            KeyBinding::new("enter", workspace::AcceptMatch, Some("DishContentSearch")),
+            KeyBinding::new("shift-enter", workspace::AcceptMatch, Some("DishContentSearch")),
             KeyBinding::new("ctrl-l", workspace::FocusPrompt, None),
             KeyBinding::new("ctrl-shift-m", ui::OpenModels, None),
             KeyBinding::new("ctrl-q", ui::CloseWindow, None),
