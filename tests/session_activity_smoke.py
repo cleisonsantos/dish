@@ -78,14 +78,26 @@ with tempfile.TemporaryDirectory(prefix="dish-activity-") as temporary:
         transcript tem só uma barra fina e não altera a média da faixa."""
         capture = temp / "window.png"
         subprocess.run(["import", "-window", str(window), str(capture)], check=True)
-        height = int(subprocess.check_output(["identify", "-format", "%h", str(capture)]).decode())
+        # Anchor the color probe to the synthetic error text rather than the
+        # window bottom: read-only footers can change the composer's position.
+        label = find_word(window, "failure", last=True)
+        if label is None:
+            return False
+        band_top = max(0, label[1] - 4)
+        band_height = max(22, label[3] + 8)
         mean = float(subprocess.check_output([
-            "convert", str(capture), "-crop", f"520x22+320+{height - 162}",
+            "convert", str(capture), "-crop", f"520x{band_height}+320+{band_top}",
             "-format", "%[fx:mean.r-mean.b]", "info:"]).decode())
         return mean > -0.015
 
     def nav_text():
-        subprocess.run(["import", "-window", str(window), "-crop", "264x860+0+0", str(screenshot)], check=True)
+        collapsed = preferences().get("navigation_open") is False
+        # Once collapsed, a wide crop includes the transcript, which swamps
+        # the tiny aggregate badges in OCR. Isolate and enlarge the actual rail.
+        width = 44 if collapsed else int(preferences().get("navigation_width", 264))
+        subprocess.run(["import", "-window", str(window), "-crop", f"{width}x860+0+0", str(screenshot)], check=True)
+        if collapsed:
+            subprocess.run(["convert", str(screenshot), "-resize", "300%", str(screenshot)], check=True)
         return normalized(subprocess.check_output(["tesseract", str(screenshot), "stdout", "--psm", "6"],
                                                   stderr=subprocess.DEVNULL).decode())
 
