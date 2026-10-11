@@ -83,6 +83,17 @@ fn sort_session_rows(items: &mut [SessionRow], previous: &[String], interacting:
     }
 }
 
+/// Abrir uma sessão troca sua representação (salva -> processo vivo), não
+/// sua posição. Migra a identidade usada pelo congelamento da navegação.
+fn promote_session_row(previous: &mut [String], path: &std::path::Path, index: usize) -> (String, String) {
+    let saved = entry_key(&NavEntry::Saved(path.to_owned()));
+    let live = entry_key(&NavEntry::Open(index));
+    for key in previous {
+        if *key == saved { *key = live.clone(); }
+    }
+    (saved, live)
+}
+
 fn entry_key(entry: &NavEntry) -> String {
     match entry {
         NavEntry::Open(index) => format!("live-{index}"),
@@ -1672,6 +1683,12 @@ impl Render for Workspace {
                 state.start(cx);
             });
             let subscription = cx.observe(&state, |_, _, cx| cx.notify());
+            if let Some(path) = &path {
+                let (saved, live) = promote_session_row(&mut self.row_order, path, self.conversations.len());
+                if let Some(anchor) = self.nav_anchors.remove(&saved) {
+                    self.nav_anchors.insert(live, anchor);
+                }
+            }
             self.conversations.push(Conversation {
                 state,
                 path,
@@ -2381,6 +2398,28 @@ mod tests {
             named: false,
             modified: std::time::UNIX_EPOCH + std::time::Duration::from_secs(modified),
         }
+    }
+
+    #[test]
+    fn opening_saved_session_preserves_its_position_during_interaction() {
+        let saved = info("/middle.jsonl", 2);
+        let mut rows = vec![
+            ("first".into(), None, Some(0), std::time::UNIX_EPOCH),
+            (saved.title.clone(), Some(saved.clone()), None, saved.modified),
+            ("last".into(), None, Some(1), std::time::UNIX_EPOCH),
+        ];
+        let mut previous = rows.iter().map(row_key).collect::<Vec<_>>();
+        let (old, new) = super::promote_session_row(&mut previous, &saved.path, 2);
+        assert_eq!(old, "saved-/middle.jsonl");
+        assert_eq!(new, "live-2");
+        rows[1].1 = None;
+        rows[1].2 = Some(2);
+        // Freeze applies while the mouse remains over the row just clicked.
+        sort_session_rows(&mut rows, &previous, true);
+        assert_eq!(rows.iter().map(row_key).collect::<Vec<_>>(), ["live-0", "live-2", "live-1"]);
+        // Once interaction ends, normal activity ordering still applies.
+        sort_session_rows(&mut rows, &previous, false);
+        assert_eq!(row_key(&rows[0]), "live-2");
     }
 
     #[test]
