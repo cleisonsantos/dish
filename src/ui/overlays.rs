@@ -170,6 +170,9 @@ pub fn model_picker(state: &AppState, cx: &Context<AppState>) -> Stateful<Div> {
                         .items_center()
                         .gap(px(theme::S2))
                         .child(micro(format!("{count} / {} available", state.models.len())))
+                        .when(state.hidden_models_fallback(), |el| {
+                            el.child(micro("all hidden — showing all"))
+                        })
                         .child(
                             div()
                                 .id("model-picker-close")
@@ -568,7 +571,20 @@ pub fn keyboard_shortcuts() -> Vec<(&'static str, &'static str)> {
 
 #[cfg(test)]
 mod model_search_tests {
-    use crate::state::model_matches;
+    use crate::state::{model_key, model_matches, visible_model_indices, ModelInfo};
+    use std::collections::BTreeSet;
+
+    fn model(provider: &str, id: &str) -> ModelInfo {
+        ModelInfo {
+            id: id.into(),
+            provider: provider.into(),
+            ..Default::default()
+        }
+    }
+
+    fn hidden(keys: &[&str]) -> BTreeSet<String> {
+        keys.iter().map(|key| key.to_string()).collect()
+    }
 
     #[test]
     fn matches_model_and_provider_case_insensitively() {
@@ -583,5 +599,34 @@ mod model_search_tests {
         for query in ["claude", "openai missing"] {
             assert!(!model_matches(&model, query), "{query}");
         }
+    }
+
+    #[test]
+    fn hidden_models_leave_the_picker_but_never_the_active_one() {
+        let models = [model("anthropic", "a"), model("openai", "b")];
+        assert_eq!(visible_model_indices(&models, &hidden(&["anthropic/a"]), "", None), vec![1]);
+        assert_eq!(visible_model_indices(&models, &BTreeSet::new(), "", None), vec![0, 1]);
+        // Ocultar o modelo em uso não pode fazê-lo sumir em silêncio.
+        let current = models[0].clone();
+        assert_eq!(
+            visible_model_indices(&models, &hidden(&["anthropic/a"]), "", Some(&current)),
+            vec![0, 1]
+        );
+    }
+
+    #[test]
+    fn hiding_everything_falls_back_to_showing_all() {
+        let models = [model("anthropic", "a"), model("openai", "b")];
+        let all = hidden(&["anthropic/a", "openai/b"]);
+        assert_eq!(visible_model_indices(&models, &all, "", None), vec![0, 1]);
+        assert!(visible_model_indices(&[], &all, "", None).is_empty());
+        assert_eq!(model_key(&models[0]), "anthropic/a");
+    }
+
+    #[test]
+    fn search_and_visibility_compose() {
+        let models = [model("anthropic", "claude"), model("openai", "gpt"), model("local", "llama")];
+        assert_eq!(visible_model_indices(&models, &hidden(&["openai/gpt"]), "claude", None), vec![0]);
+        assert_eq!(visible_model_indices(&models, &hidden(&["openai/gpt"]), "o", None), vec![0, 2]);
     }
 }

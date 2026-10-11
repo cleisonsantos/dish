@@ -14,6 +14,9 @@ pub struct Preferences {
     /// Títulos de sessão gerados pelo modelo da sessão. Gasta tokens, então
     /// começa desligado e é escolha explícita do usuário.
     pub generated_titles: bool,
+    /// Modelos ocultos no seletor do Dish, como `provider/id`.
+    /// O Dish nunca altera a lista de modelos do Pi: isto é só apresentação.
+    pub hidden_models: BTreeSet<String>,
     pub collapsed_projects: BTreeSet<PathBuf>,
     pub last_project: Option<PathBuf>,
     pub last_session: Option<PathBuf>,
@@ -93,6 +96,7 @@ mod tests {
             navigation_width: Some(264.),
             show_thinking: Some(false),
             generated_titles: true,
+            hidden_models: ["anthropic/claude-sonnet-4".to_string()].into(),
             collapsed_projects: [PathBuf::from("/tmp/projeto-á")].into(),
             last_project: Some("/tmp/projeto-á".into()), last_session: Some("/tmp/session.jsonl".into()),
             window_size: Some([1240., 860.]),
