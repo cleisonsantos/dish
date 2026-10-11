@@ -17,6 +17,7 @@ mod rpc;
 mod state;
 mod sessions;
 mod content_search;
+mod git_context;
 mod session_activity;
 mod workspace;
 mod theme;

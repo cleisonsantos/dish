@@ -456,6 +456,7 @@ impl Workspace {
                 state.editor.read(cx).focus_handle.clone()
             }
         };
+        state.update(cx, |state, cx| state.refresh_git(cx));
         focus.focus(window, cx);
         if let Some(position) = nav_position(&self.nav_entries, &NavEntry::Open(index)) {
             self.nav_index = position;
@@ -1695,7 +1696,11 @@ impl Render for Workspace {
                     if conversation.state.read(cx).cwd != info.cwd {
                         conversation
                             .state
-                            .update(cx, |state, _| state.cwd = info.cwd.clone());
+                            .update(cx, |state, cx| {
+                                state.cwd = info.cwd.clone();
+                                state.git_context = crate::git_context::GitContext::Loading;
+                                state.refresh_git(cx);
+                            });
                     }
                 }
                 if let Some(parent) = conversation.path.as_ref().and_then(|p| p.parent()) {

@@ -44,6 +44,7 @@ pub fn inspector(state: &AppState, cx: &Context<AppState>) -> Stateful<Div> {
                 .gap(px(theme::S5))
                 .pt(px(theme::S4))
                 .child(session_section(state))
+                .children(git_section(state))
                 .child(files_section(state))
                 .child(context_section(state))
                 .child(timeline_section(state))
@@ -90,6 +91,7 @@ pub fn overlay(state: &AppState, cx: &Context<AppState>) -> Stateful<Div> {
                         .gap(px(theme::S5))
                         .pt(px(theme::S4))
                         .child(session_section(state))
+                        .children(git_section(state))
                         .child(files_section(state))
                         .child(context_section(state))
                         .child(timeline_section(state))
@@ -168,6 +170,17 @@ fn pair(label: &str, value: String, mono: bool) -> AnyElement {
 }
 
 // ------------------------------------------------------------------- sessão
+
+fn git_section(state: &AppState) -> Option<Div> {
+    let crate::git_context::GitContext::Repository(repo) = &state.git_context else { return None; };
+    Some(div().flex().flex_col().gap(px(theme::S2))
+        .child(heading("Git"))
+        .child(pair("Branch", repo.branch.clone(), true))
+        .child(pair("Raiz", repo.root.to_string_lossy().into_owned(), true))
+        .child(pair("Checkout", repo.worktree.clone().map(|name| format!("worktree {name}")).unwrap_or_else(|| "principal".into()), true))
+        .child(pair("Estado", state.git_context.summary(), true))
+        .when_some(repo.diff_error.as_ref(), |el, error| el.child(pair("Diff", error.clone(), false))))
+}
 
 fn session_section(state: &AppState) -> Div {
     let name = state.display_title();

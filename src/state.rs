@@ -328,6 +328,9 @@ pub struct AppState {
     pub last_run: Option<std::time::SystemTime>,
     pub client: PiClient,
     pub cwd: PathBuf,
+    pub git_context: crate::git_context::GitContext,
+    git_refreshing: bool,
+    git_refresh_again: bool,
     pub editor: Entity<Editor>,
     /// A second editor used by extension dialogs.
     pub modal_editor: Entity<Editor>,
@@ -466,6 +469,9 @@ impl AppState {
             last_run: None,
             client,
             cwd,
+            git_context: crate::git_context::GitContext::Loading,
+            git_refreshing: false,
+            git_refresh_again: false,
             editor,
             modal_editor,
             model_search,
@@ -541,8 +547,35 @@ impl AppState {
         }
     }
 
+    /// Consultas concorrentes são agrupadas. Se houver mudança durante uma
+    /// leitura, uma única consulta extra captura o estado mais recente.
+    pub fn refresh_git(&mut self, cx: &mut Context<Self>) {
+        if self.git_refreshing {
+            self.git_refresh_again = true;
+            return;
+        }
+        self.git_refreshing = true;
+        let cwd = self.cwd.clone();
+        cx.spawn(async move |this, cx| {
+            // Agrupa abertura/seleção e rajadas de eventos, sem polling contínuo.
+            cx.background_executor().timer(std::time::Duration::from_millis(150)).await;
+            let result = cx.background_executor().spawn({
+                let cwd = cwd.clone();
+                async move { crate::git_context::discover(&cwd) }
+            }).await;
+            let _ = this.update(cx, |state, cx| {
+                if state.cwd == cwd { state.git_context = result; }
+                state.git_refreshing = false;
+                let again = std::mem::take(&mut state.git_refresh_again) || state.cwd != cwd;
+                if again { state.refresh_git(cx); }
+                cx.notify();
+            });
+        }).detach();
+    }
+
     /// Subscribe to the Pi process and pull the initial session state.
     pub fn start(&mut self, cx: &mut Context<Self>) {
+        self.refresh_git(cx);
         let records = self.client.records.clone();
         cx.spawn(async move |this, cx| {
             while let Ok(record) = records.recv().await {
@@ -643,6 +676,7 @@ impl AppState {
                 None
             }
             "agent_start" => {
+                self.refresh_git(cx);
                 self.agent_active = true;
                 self.activity_error = false;
                 self.activity_interrupted = false;
@@ -660,6 +694,7 @@ impl AppState {
                 None
             }
             "agent_end" => {
+                self.refresh_git(cx);
                 self.agent_active = false;
                 self.completed_runs = self.completed_runs.saturating_add(1);
                 self.streaming = false;

@@ -146,6 +146,14 @@ pub fn danger() -> Hsla {
     failure()
 }
 
+/// Diff Git: cores semânticas próprias, sem alterar o acento do esforço.
+pub fn git_added() -> Hsla {
+    c(0x81b88bff)
+}
+pub fn git_removed() -> Hsla {
+    c(0xd98282ff)
+}
+
 pub fn wash(color: Hsla, alpha: f32) -> Hsla {
     Hsla {
         color: color.color,
@@ -352,6 +360,14 @@ mod tests {
     /// Estas três *são* o sinal: se a cor se confundir com um nível de esforço,
     /// o estado deixa de se ler. O app antes desta mudança reprovava aqui — a
     /// cor de erro antiga (#e2655f) ficava a ΔE 16,9 do coral do `max`.
+    #[test]
+    fn git_diff_colors_are_readable_and_distinguishable() {
+        for color in [git_added(), git_removed()] {
+            assert!(contrast(color, bg()) >= 4.5);
+        }
+        assert!(delta_e(git_added(), git_removed()) >= 20.);
+    }
+
     #[test]
     fn status_colors_are_distinct_from_the_effort_ramp() {
         let levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];

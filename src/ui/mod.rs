@@ -22,6 +22,7 @@ pub mod transcript;
 pub mod selectable;
 pub mod copy_button;
 pub mod window_frame;
+mod git_context_view;
 
 actions!(
     dish_ui,
@@ -62,13 +63,9 @@ impl Render for AppState {
         if let Some(banner) = self.banner.clone() {
             main_column = main_column.child(banner_element(&banner, cx));
         }
-        main_column = main_column.child(composer::composer(
-            self,
-            &slash,
-            slash_index,
-            window,
-            cx,
-        ));
+        main_column = main_column
+            .child(composer::composer(self, &slash, slash_index, window, cx))
+            .child(git_context_view::footer(&self.git_context));
 
         let mut root = div()
             .id("dish-root")

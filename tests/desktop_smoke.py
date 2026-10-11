@@ -258,6 +258,13 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
                            "\n" + json.dumps({"type": "session_info", "name": f"{project.name} saved"}) + "\n" +
                            json.dumps({"type": "message", "message": {"role": "assistant", "content": [
                                {"type": "text", "text": f"ARCHIVESEARCH {project.name} CONTENTONLY"}]}}) + "\n")
+    subprocess.run(["git", "-C", str(projects[0]), "init", "-b", "gitcontext-main"],
+                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    (projects[0] / "tracked.txt").write_text("one\ntwo\nthree\n")
+    subprocess.run(["git", "-C", str(projects[0]), "add", "tracked.txt"], check=True)
+    subprocess.run(["git", "-C", str(projects[0]), "-c", "user.name=Synthetic", "-c", "user.email=synthetic@example.invalid",
+                    "-c", "commit.gpgsign=false", "commit", "-m", "fixture"],
+                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     wrapper = temp / "fake-pi"
     wrapper.write_text(f'#!/bin/sh\nexec python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@"\n')
     wrapper.chmod(0o700)
@@ -288,6 +295,7 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         # Wait for rendered placeholder text, then click its actual glyphs.
         # A native title/get_messages can exist before focus/layout is ready.
         wait_for(lambda: find_word(window, "anything"), "Composer did not render")
+        wait_for(lambda: find_word(window, "gitcontext-main"), "Git branch footer did not render")
         placeholder = find_word(window, "anything")
         click(window, placeholder[0] + placeholder[2] // 2, placeholder[1] + placeholder[3] // 2)
         # Content search reaches archived message bodies, not just titles,
@@ -318,9 +326,15 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         press("Tab")
         chord("Shift_L", "Tab")
         press("Escape")
+        (projects[0] / "tracked.txt").write_text("one\nreplacement\n")
+        (projects[0] / "synthetic-change.txt").write_text("temporary Git fixture\n")
         type_text("long-a")
         press("Return")
         wait_for(lambda: commands("prompt"), "First prompt not sent")
+        wait_for(lambda: find_word(window, "altera"), "Git footer did not refresh after the turn started")
+        git_screenshot = f"/tmp/dish-git-context-{next(tempfile._get_candidate_names())}.png"
+        subprocess.run(["import", "-window", str(window), git_screenshot], check=True)
+        print("Git context screenshot:", git_screenshot)
         chord("Control_L", "f")
         type_text("long-a")
         wait_for(lambda: find_word(window, "resultado"), "Current-session content search did not render")
@@ -356,6 +370,7 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         wait_for(lambda: len(commands("get_messages")) == 2 or
                  (click_beta_session(window) or len(commands("get_messages")) == 2),
                  "Saved session did not open")
+        wait_for(lambda: find_word(window, "reposit"), "Switching sessions retained the previous Git context")
         # Wheel events over the search header must not scroll the transcript
         # behind it, even though the header itself has no scrollable content.
         chord("Control_L", "f")
@@ -710,10 +725,22 @@ with tempfile.TemporaryDirectory(prefix="dish-metadata-") as directory:
             group = find_word(window, "comando", last=True)
             click(window, group[0] + group[2] // 2, group[1] + group[3] // 2)
             wait_for(lambda: find_word(window, "fim", last=True), "Live completion timestamp missing")
-            end = find_word(window, "fim", last=True)
-            click(window, end[0] + end[2] // 2, end[1] + end[3] // 2)
-            park_mouse(window)
-            wait_for(lambda: find_word(window, "monot", last=True), "Observed duration details missing")
+
+            def open_observed_metadata():
+                # Expanding a virtualised tool group can remeasure/reposition
+                # its row between OCR and the click, especially in release CI.
+                # Re-locate the badge on each attempt and stop once details open
+                # rather than clicking twice and closing them again.
+                if find_word(window, "monot", last=True):
+                    return True
+                end = find_word(window, "fim", last=True)
+                if end is None:
+                    return False
+                click(window, end[0] + end[2] // 2, end[1] + end[3] // 2)
+                park_mouse(window)
+                return find_word(window, "monot", last=True)
+
+            wait_for(open_observed_metadata, "Observed duration details missing")
             duration_word = find_word(window, "monot", last=True)
             click(window, duration_word[0] + duration_word[2] // 2, duration_word[1] + duration_word[3] // 2)
             chord("Control_L", "a")
