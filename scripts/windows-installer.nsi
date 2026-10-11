@@ -1,4 +1,4 @@
-; Instalador do Dish para Windows (NSIS).
+﻿; Instalador do Dish para Windows (NSIS).
 ;
 ; Escolha por um EXE/NSIS em vez de MSI: o fluxo pedido na issue #13 é um
 ; assistente (avançar/avançar/concluir) com detecção do Pi, e o NSIS faz isso

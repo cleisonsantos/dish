@@ -236,6 +236,12 @@ class WindowsPackagingTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Missing license texts"):
                 license_bundle.collect_licenses(metadata, root / "out", root)
 
+    def test_installer_script_keeps_the_utf8_bom(self):
+        # Sem BOM o NSIS interpreta o script como ANSI e os acentos das telas
+        # saem corrompidos ("Ã¡rea de trabalho").
+        data = (ROOT / "scripts/windows-installer.nsi").read_bytes()
+        self.assertTrue(data.startswith(b"\xef\xbb\xbf"), "windows-installer.nsi precisa do BOM UTF-8")
+
     def test_shared_bundle_module_is_used_by_both_packagers(self):
         for script in ["package-linux.py", "package-windows.py"]:
             text = (ROOT / "scripts" / script).read_text()
