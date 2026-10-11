@@ -51,20 +51,22 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
                 return
         raise AssertionError(f"Missing UI label: {label}")
 
-    def click_model_switch(provider):
-        # O switch não tem texto: usa o cabeçalho do provedor como âncora e clica
-        # na coluna da direita, uma linha abaixo (o cartão tem 840px centrados
-        # numa janela de 1240, então o switch termina em x≈1020).
+    def click_model_switch():
+        # O switch não tem texto: procura uma âncora na lista e clica na coluna da
+        # direita (cartão de 840px centrado numa janela de 1240 → switch em x≈1020).
+        # O OCR lê o id ou o provedor dependendo da fonte do sistema, então os
+        # dois servem de âncora, com deslocamentos diferentes.
         capture()
         rows = subprocess.check_output(["tesseract", screenshot, "stdout", "tsv"],
                                        stderr=subprocess.DEVNULL).decode().splitlines()[1:]
-        for row in rows:
-            fields = row.split("\t")
-            if len(fields) == 12 and fields[11].strip().lower() == provider.lower():
-                center = int(fields[7]) + int(fields[9]) // 2
-                click(window, 1003, center + 20)
-                return
-        raise AssertionError(f"Model provider not found: {provider}")
+        for anchor, offset in [("fake-model", 0), ("test", 20)]:
+            for row in rows:
+                fields = row.split("\t")
+                if len(fields) == 12 and anchor in fields[11].strip().lower():
+                    center = int(fields[7]) + int(fields[9]) // 2
+                    click(window, 1003, center + offset)
+                    return
+        raise AssertionError("Model row not found")
 
     try:
         wait_for(lambda: find_window(), "Window not created")
@@ -100,11 +102,12 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
         state_path = temp / "config/dish/state.json"
         click_label("Modelos")
         models_page = capture()
-        assert "Modelos" in models_page and "test" in models_page, models_page
-        click_model_switch("test")
+        assert "Modelos" in models_page, models_page
+        assert "fake-model" in models_page or "test" in models_page, models_page
+        click_model_switch()
         wait_for(lambda: json.loads(state_path.read_text()).get("hidden_models") == ["test/fake-model"],
                  "Hidden model was not persisted")
-        click_label("Mostrar todos")
+        click_label("Mostrar")
         wait_for(lambda: json.loads(state_path.read_text()).get("hidden_models") == [],
                  "Mostrar todos did not clear the hidden models")
         click_label("Sobre / Pi")
