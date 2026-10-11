@@ -20,6 +20,11 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[target.'cfg(windows)'.build-dependencies]
+# Embutir ícone e metadados no dish.exe: sem isso o atalho e a barra de
+# tarefas mostram o ícone genérico do Windows.
+winresource = "0.1"
+
 [profile.dev]
 opt-level = 1
 

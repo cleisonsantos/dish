@@ -57,6 +57,8 @@ pub struct Startup {
     message: String,
     step: Step,
     probe: Option<Probe>,
+    /// A verificação foi pedida pelo usuário ("já instalei"), não automática.
+    explicit_check: bool,
     /// Versão do Node, ou a razão pela qual ele não serve para o caminho npm.
     /// Verificado só quando o passo de instalação é aberto: quem já tem Pi não
     /// precisa que o Dish rode `node`/`npm` no caminho de abertura.
@@ -82,6 +84,7 @@ impl Startup {
             message: String::new(),
             step: Step::Welcome,
             probe: None,
+            explicit_check: false,
             node: None,
             ready: None,
             focus: cx.focus_handle(),
@@ -152,6 +155,10 @@ impl Startup {
                     return;
                 }
                 this.step = if found { Step::Done } else { Step::Welcome };
+                if !found && this.explicit_check {
+                    this.message = "Pi ainda não encontrado. Se você acabou de instalar, feche e abra o Dish (o PATH só é lido na abertura) ou use \"Escolher executável existente\".".into();
+                }
+                this.explicit_check = false;
                 cx.notify();
                 let _ = this.window.update(cx, |_, window, _| window.refresh());
             });
@@ -181,6 +188,13 @@ impl Startup {
             });
         })
         .detach();
+    }
+
+    /// Verificação pedida pelo usuário: além de procurar de novo, explica o que
+    /// fazer quando o Pi recém-instalado não aparece.
+    fn recheck(&mut self, cx: &mut Context<Self>) {
+        self.explicit_check = true;
+        self.probe(None, cx);
     }
 
     fn install_npm(&mut self, cx: &mut Context<Self>) {
@@ -401,7 +415,7 @@ impl Render for Startup {
                                     .flex_row()
                                     .gap(px(8.))
                                     .child(button("setup-choose", "Usar outro executável", cx.listener(|this, _: &ClickEvent, _, cx| this.choose(cx))))
-                                    .child(button("setup-retry", "Verificar novamente", cx.listener(|this, _: &ClickEvent, _, cx| this.probe(None, cx)))),
+                                    .child(button("setup-retry", "Verificar novamente", cx.listener(|this, _: &ClickEvent, _, cx| this.recheck(cx)))),
                             );
                     }
                     Some(_) => {
@@ -416,7 +430,7 @@ impl Render for Startup {
                                     .flex()
                                     .flex_row()
                                     .gap(px(8.))
-                                    .child(button("setup-retry", "Já instalei, verificar", cx.listener(|this, _: &ClickEvent, _, cx| this.probe(None, cx))))
+                                    .child(button("setup-retry", "Já instalei, verificar", cx.listener(|this, _: &ClickEvent, _, cx| this.recheck(cx))))
                                     .child(button("setup-choose", "Escolher executável existente", cx.listener(|this, _: &ClickEvent, _, cx| this.choose(cx)))),
                             );
                     }
@@ -440,7 +454,7 @@ impl Render for Startup {
                             .flex()
                             .flex_row()
                             .gap(px(8.))
-                            .child(button("setup-retry", "Já instalei, verificar", cx.listener(|this, _: &ClickEvent, _, cx| this.probe(None, cx))))
+                            .child(button("setup-retry", "Já instalei, verificar", cx.listener(|this, _: &ClickEvent, _, cx| this.recheck(cx))))
                             .child(button("setup-back", "Voltar", cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.step = Step::Welcome;
                                 cx.notify();
