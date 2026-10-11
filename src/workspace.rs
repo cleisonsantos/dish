@@ -56,6 +56,7 @@ impl SessionSignals {
             queued: state.steering_queue.len() + state.follow_up_queue.len(),
             error: state.activity_error || state.disconnected,
             interrupted: state.activity_interrupted,
+            completed: state.completed_content_runs > 0 && !state.is_executing(),
             saved: false,
         }
     }
@@ -92,6 +93,32 @@ fn entry_key(entry: &NavEntry) -> String {
 fn row_key(row: &SessionRow) -> String {
     row.2.map(|index| format!("live-{index}"))
         .unwrap_or_else(|| format!("saved-{}", row.1.as_ref().map(|info| info.path.to_string_lossy()).unwrap_or_default()))
+}
+
+/// Posição de uma entrada navegável na lista atual.
+fn nav_position(entries: &[NavEntry], target: &NavEntry) -> Option<usize> {
+    entries.iter().position(|entry| entry == target)
+}
+
+/// `[todas, precisa de você, novas, executando]`.
+fn filter_counts(signals: &[SessionSignals]) -> [usize; 4] {
+    let mut counts = [signals.len(), 0, 0, 0];
+    for signal in signals {
+        counts[1] += usize::from(signal.needs_input);
+        counts[2] += usize::from(signal.unread);
+        counts[3] += usize::from(signal.running);
+    }
+    counts
+}
+
+/// Rótulo de filtro com contagem. Zero só aparece em "Todas": números
+/// vazios nos outros filtros viram ruído.
+fn filter_label(label: &str, count: usize, always: bool) -> String {
+    if always || count > 0 {
+        format!("{label} · {count}")
+    } else {
+        label.to_owned()
+    }
 }
 
 fn select_item<'a, T>(items: &'a mut [T], active: &mut usize, index: usize) -> Option<&'a mut T> {
@@ -405,7 +432,49 @@ impl Workspace {
             }
         };
         focus.focus(window, cx);
+        if let Some(position) = nav_position(&self.nav_entries, &NavEntry::Open(index)) {
+            self.nav_index = position;
+        }
         cx.notify();
+    }
+
+    /// Mantém o destaque de teclado na linha que o mouse acabou de abrir.
+    fn focus_nav(&mut self, live: Option<usize>, path: Option<PathBuf>) {
+        let entry = match (live, path) {
+            (Some(index), _) => NavEntry::Open(index),
+            (None, Some(path)) => NavEntry::Saved(path),
+            (None, None) => return,
+        };
+        if let Some(position) = nav_position(&self.nav_entries, &entry) {
+            self.nav_index = position;
+        }
+    }
+
+    /// Contagens por filtro sobre todas as sessões (abertas e salvas), não só
+    /// as visíveis no filtro atual.
+    fn session_counts(&self, cx: &App) -> [usize; 4] {
+        let mut signals = Vec::new();
+        for conversation in &self.conversations {
+            signals.push(SessionSignals::from_state(
+                conversation.state.read(cx),
+                conversation.unread_completion,
+            ));
+        }
+        for info in &self.catalog {
+            if self
+                .conversations
+                .iter()
+                .any(|c| c.path.as_ref() == Some(&info.path))
+            {
+                continue;
+            }
+            signals.push(SessionSignals {
+                saved: true,
+                unread: self.preferences.unread_sessions.contains_key(&info.path),
+                ..Default::default()
+            });
+        }
+        filter_counts(&signals)
     }
 
     fn open(&mut self, info: SessionInfo, window: &mut Window, cx: &mut Context<Self>) {
@@ -806,6 +875,7 @@ impl Workspace {
             .iter()
             .filter(|c| c.state.read(cx).is_executing())
             .count();
+        let counts = self.session_counts(cx);
         let focus = self.query.read(cx).focus_handle.clone();
         let query_editor = self.query.clone();
         let focus_for_click = focus.clone();
@@ -938,7 +1008,7 @@ impl Workspace {
                             .gap(px(theme::S1))
                             .child(nav_filter_chip(
                                 "nav-filter-all",
-                                "Todas",
+                                filter_label("Todas", counts[0], true),
                                 self.filter == SessionFilter::All,
                                 cx,
                                 |workspace, cx| {
@@ -946,15 +1016,15 @@ impl Workspace {
                                     cx.notify();
                                 },
                             ))
-                            .child(nav_filter_chip("nav-filter-input", "Precisa de você", self.filter == SessionFilter::NeedsInput, cx, |workspace, cx| {
+                            .child(nav_filter_chip("nav-filter-input", filter_label("Precisa de você", counts[1], false), self.filter == SessionFilter::NeedsInput, cx, |workspace, cx| {
                                 workspace.filter = SessionFilter::NeedsInput; cx.notify();
                             }))
-                            .child(nav_filter_chip("nav-filter-unread", "Não lidas", self.filter == SessionFilter::Unread, cx, |workspace, cx| {
+                            .child(nav_filter_chip("nav-filter-unread", filter_label("Não lidas", counts[2], false), self.filter == SessionFilter::Unread, cx, |workspace, cx| {
                                 workspace.filter = SessionFilter::Unread; cx.notify();
                             }))
                             .child(nav_filter_chip(
                                 "nav-filter-running",
-                                "Executando",
+                                filter_label("Executando", counts[3], false),
                                 self.filter == SessionFilter::Running,
                                 cx,
                                 |workspace, cx| {
@@ -993,7 +1063,12 @@ impl Workspace {
             let label = if !query.is_empty() {
                 format!("Nada corresponde a “{query}”")
             } else {
-                "Nenhuma sessão neste filtro".to_string()
+                match filter {
+                    SessionFilter::All => "Nenhuma sessão ainda".to_string(),
+                    SessionFilter::NeedsInput => "Nenhuma sessão precisa de você".to_string(),
+                    SessionFilter::Unread => "Nenhuma resposta nova".to_string(),
+                    SessionFilter::Running => "Nenhuma sessão em execução".to_string(),
+                }
             };
             list = list.child(
                 div()
@@ -1037,6 +1112,11 @@ impl Workspace {
                 .count();
             let needs_input = items.iter().filter(|(_, _, live, _)| live.is_some_and(|i| self.conversations[i].state.read(cx).modal.is_some())).count();
             let unread_count = items.iter().filter(|(_, info, live, _)| live.map(|i| self.conversations[i].unread_completion).unwrap_or_else(|| info.as_ref().is_some_and(|info| self.preferences.unread_sessions.contains_key(&info.path)))).count();
+            let project_tooltip = {
+                let path = cwd.display().to_string();
+                let attention = attention_summary(needs_input, unread_count);
+                if attention.is_empty() { path } else { format!("{path}\n{attention}") }
+            };
             if !collapsed {
                 for item in &items {
                     self.nav_anchors.entry(row_key(item)).or_insert_with(|| ScrollAnchor::for_handle(self.nav_scroll.clone()));
@@ -1052,6 +1132,9 @@ impl Workspace {
                     .child(
                         div()
                             .id(SharedString::from(format!("project-{cwd:?}")))
+                            .tooltip(move |_, cx| {
+                                cx.new(|_| crate::ui::copy_button::TextTooltip(project_tooltip.clone())).into()
+                            })
                             .flex()
                             .flex_row()
                             .items_center()
@@ -1090,9 +1173,13 @@ impl Workspace {
                                     .text_color(theme::dim())
                                     .child(SharedString::from(folder_of(&cwd))),
                             )
-                            .when(needs_input > 0 || unread_count > 0, |el| {
-                                el.child(div().text_size(px(theme::TEXT_XS)).text_color(theme::running())
-                                    .child(SharedString::from(attention_summary(needs_input, unread_count))))
+                            .when(needs_input > 0, |el| {
+                                el.child(div().text_size(px(theme::TEXT_XS)).text_color(theme::warn())
+                                    .child(SharedString::from(format!("{needs_input} pend."))))
+                            })
+                            .when(unread_count > 0, |el| {
+                                el.child(div().text_size(px(theme::TEXT_XS)).text_color(theme::attention())
+                                    .child(SharedString::from(format!("{unread_count} {}", if unread_count == 1 { "nova" } else { "novas" }))))
                             })
                             .when(running > 0, |el| {
                                 el.child(crate::ui::icons::icon(
@@ -1133,6 +1220,7 @@ impl Workspace {
                                 let running = signals.running;
                                 let active = live == Some(self.active);
                                 let unread = signals.unread;
+                                let needs_input = signals.needs_input;
                                 let weak = cx.entity().downgrade();
                                 let info = info.clone();
                                 let delete_info = info.clone();
@@ -1141,6 +1229,13 @@ impl Workspace {
                                     .as_ref()
                                     .is_some_and(|info| self.pending_delete.as_ref() == Some(&info.path));
                                 let anchor = self.nav_anchors.get(&key).cloned();
+                                let tooltip = format!(
+                                    "{}\n{} · {}",
+                                    title,
+                                    signals.labels(),
+                                    relative_time(activity_time, std::time::SystemTime::now())
+                                );
+                                let pulse_id = format!("nav-pulse-{key}");
                                 div()
                                     .id(SharedString::from(key))
                                     .anchor_scroll(anchor)
@@ -1152,17 +1247,37 @@ impl Workspace {
                                     .pr(px(theme::S2))
                                     .py(px(theme::S1 + 2.))
                                     .rounded(theme::r_control())
+                                    // Foco de teclado é um anel por fora, para não
+                                    // competir com as cores de estado da linha. O
+                                    // fundo opaco evita que a sombra vire um bloco.
+                                    .when(keyboard_selected, |el| {
+                                        el.bg(theme::hover()).shadow(theme::focus_ring())
+                                    })
                                     .when(active, |el| {
                                         el.bg(theme::surface_2())
-                                            .border_1()
-                                            .border_color(theme::line())
+                                            .border_l_2()
+                                            .border_color(theme::accent())
                                     })
-                                    .when(!active && unread, |el| el.bg(theme::wash(theme::ok(), 0.10)))
-                                    .when(keyboard_selected, |el| el.bg(theme::hover()).border_1().border_color(theme::running()))
-                                    .when(!active, |el| el.hover(|s| s.bg(theme::hover())))
+                                    .when(!active && unread, |el| {
+                                        el.bg(theme::wash(theme::attention(), 0.12))
+                                            .border_l_2()
+                                            .border_color(theme::attention())
+                                    })
+                                    // Bloqueada esperando você é mais urgente que
+                                    // conteúdo novo: o âmbar vence o verde. Sem
+                                    // wash: sob o modal, o título precisa ficar
+                                    // legível.
+                                    .when(!active && needs_input, |el| {
+                                        el.border_l_2().border_color(theme::warn())
+                                    })
+                                    .when(!active && !keyboard_selected, |el| el.hover(|s| s.bg(theme::hover())))
                                     .cursor_pointer()
+                                    .tooltip(move |_, cx| {
+                                        cx.new(|_| crate::ui::copy_button::TextTooltip(tooltip.clone())).into()
+                                    })
                                     .on_click(move |_event: &ClickEvent, window, cx: &mut App| {
                                         weak.update(cx, |workspace, cx| {
+                                            workspace.focus_nav(live_index, info.as_ref().map(|info| info.path.clone()));
                                             match live_index {
                                                 Some(index) => {
                                                     workspace.select(index, window, cx)
@@ -1176,11 +1291,20 @@ impl Workspace {
                                         })
                                         .ok();
                                     })
-                                    // Aberta (viva) ou apenas salva: forma, não só texto.
-                                    .child(if live.is_some() {
-                                        crate::ui::dot(if unread { theme::ok() } else { theme::dim() }, 6.)
+                                    // O marcador repete o estado: forma e cor,
+                                    // nunca só cor.
+                                    .child(if needs_input {
+                                        crate::ui::icons::icon(crate::ui::icons::Icon::Alert, 12., theme::warn()).into_any_element()
+                                    } else if signals.error {
+                                        crate::ui::icons::icon(crate::ui::icons::Icon::Alert, 12., theme::failure()).into_any_element()
+                                    } else if running {
+                                        crate::ui::pulse(pulse_id, 7., theme::running()).into_any_element()
+                                    } else if unread {
+                                        crate::ui::icons::icon(crate::ui::icons::Icon::File, 12., theme::attention()).into_any_element()
+                                    } else if live.is_some() {
+                                        crate::ui::dot(if active { theme::text() } else { theme::dim() }, 6.).into_any_element()
                                     } else {
-                                        crate::ui::ring(theme::faint(), 6.)
+                                        crate::ui::ring(theme::faint(), 6.).into_any_element()
                                     })
                                     .child(
                                         div()
@@ -1193,10 +1317,13 @@ impl Workspace {
                                                 div()
                                                     .truncate()
                                                     .text_size(px(theme::TEXT_SM))
-                                                    .text_color(if active {
+                                                    .text_color(if active || unread {
                                                         theme::text()
                                                     } else {
                                                         theme::dim()
+                                                    })
+                                                    .when(unread && !active, |el| {
+                                                        el.font_weight(FontWeight::MEDIUM)
                                                     })
                                                     .child(SharedString::from(title)),
                                             )
@@ -1222,13 +1349,13 @@ impl Workspace {
                                                     })
                                                     .when(unread, |el| {
                                                         el.child(crate::ui::icons::icon(
-                                                            crate::ui::icons::Icon::File, 11., theme::ok(),
+                                                            crate::ui::icons::Icon::File, 11., theme::attention(),
                                                         )).child(div().text_size(px(theme::TEXT_XS))
-                                                            .text_color(theme::ok()).child("resposta nova"))
+                                                            .text_color(theme::attention()).child("resposta nova"))
                                                     })
                                                     .when(signals.needs_input, |el| {
-                                                        el.child(crate::ui::icons::icon(crate::ui::icons::Icon::Alert, 11., theme::running())).child(div().text_size(px(theme::TEXT_XS))
-                                                            .text_color(theme::running()).child("precisa de você"))
+                                                        el.child(crate::ui::icons::icon(crate::ui::icons::Icon::Alert, 11., theme::warn())).child(div().text_size(px(theme::TEXT_XS))
+                                                            .text_color(theme::warn()).child("precisa de você"))
                                                     })
                                                     .when(signals.queued > 0, |el| {
                                                         el.child(div().text_size(px(theme::TEXT_XS))
@@ -1241,9 +1368,14 @@ impl Workspace {
                                                     .when(signals.interrupted, |el| {
                                                         el.child(crate::ui::icons::icon(crate::ui::icons::Icon::Stop, 11., theme::dim())).child(div().text_size(px(theme::TEXT_XS)).text_color(theme::dim()).child("interrompida"))
                                                     })
-                                                    .when(!running && !signals.needs_input && !signals.error, |el| {
-                                                        el.child(div().text_size(px(theme::TEXT_XS))
-                                                            .text_color(theme::faint()).child(if live.is_some() { "inativa" } else { "salva" }))
+                                                    .when(!running && !needs_input && !signals.error && !signals.interrupted && !unread, |el| {
+                                                        if signals.completed {
+                                                            el.child(crate::ui::icons::icon(crate::ui::icons::Icon::Check, 11., theme::ok()))
+                                                                .child(div().text_size(px(theme::TEXT_XS)).text_color(theme::ok()).child("concluída"))
+                                                        } else {
+                                                            el.child(div().text_size(px(theme::TEXT_XS))
+                                                                .text_color(theme::faint()).child(if live.is_some() { "inativa" } else { "salva" }))
+                                                        }
                                                     })
                                                     .child(div().text_size(px(theme::TEXT_XS)).text_color(theme::faint())
                                                         .child(SharedString::from(relative_time(activity_time, std::time::SystemTime::now())))),
@@ -1310,21 +1442,83 @@ impl Workspace {
                 .border_color(theme::line_soft())
                 .flex()
                 .flex_row()
+                .flex_wrap()
                 .items_center()
                 .gap(px(theme::S2))
-                .child(crate::ui::icons::icon(
-                    crate::ui::icons::Icon::Activity,
-                    13.,
-                    theme::running(),
-                ))
                 .child(
                     div()
                         .text_size(px(theme::TEXT_XS))
                         .text_color(theme::faint())
-                        .child(SharedString::from(format!(
-                            "{open_count} abertas · {running_count} executando"
-                        ))),
-                ),
+                        .child(SharedString::from(format!("{open_count} abertas"))),
+                )
+                .when(running_count > 0, |el| {
+                    el.child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(theme::S1))
+                            .child(crate::ui::icons::icon(
+                                crate::ui::icons::Icon::Activity,
+                                12.,
+                                theme::running(),
+                            ))
+                            .child(
+                                div()
+                                    .text_size(px(theme::TEXT_XS))
+                                    .text_color(theme::running())
+                                    .child(SharedString::from(format!("{running_count} executando"))),
+                            ),
+                    )
+                })
+                .when(counts[2] > 0, |el| {
+                    el.child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(theme::S1))
+                            .child(crate::ui::icons::icon(
+                                crate::ui::icons::Icon::File,
+                                12.,
+                                theme::attention(),
+                            ))
+                            .child(
+                                div()
+                                    .text_size(px(theme::TEXT_XS))
+                                    .text_color(theme::attention())
+                                    .child(SharedString::from(format!(
+                                        "{} {}",
+                                        counts[2],
+                                        if counts[2] == 1 { "nova" } else { "novas" }
+                                    ))),
+                            ),
+                    )
+                })
+                .when(counts[1] > 0, |el| {
+                    el.child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(theme::S1))
+                            .child(crate::ui::icons::icon(
+                                crate::ui::icons::Icon::Alert,
+                                12.,
+                                theme::warn(),
+                            ))
+                            .child(
+                                div()
+                                    .text_size(px(theme::TEXT_XS))
+                                    .text_color(theme::warn())
+                                    .child(SharedString::from(format!(
+                                        "{} {}",
+                                        counts[1],
+                                        if counts[1] == 1 { "pendente" } else { "pendentes" }
+                                    ))),
+                            ),
+                    )
+                }),
         )
     }
 }
@@ -1355,7 +1549,7 @@ fn nav_icon_button(
 /// Filtro segmentado da navegação.
 fn nav_filter_chip(
     id: &'static str,
-    label: &'static str,
+    label: impl Into<SharedString>,
     active: bool,
     cx: &mut Context<Workspace>,
     run: impl Fn(&mut Workspace, &mut Context<Workspace>) + 'static,
@@ -1376,7 +1570,7 @@ fn nav_filter_chip(
         .on_click(cx.listener(move |workspace, _: &ClickEvent, _window, cx| {
             run(workspace, cx);
         }))
-        .child(SharedString::from(label))
+        .child(label.into())
         .into_any_element()
 }
 
@@ -1731,22 +1925,26 @@ impl Render for Workspace {
                             )),
                     );
                 if pending_count > 0 || new_count > 0 {
-                    group = group.child(div().text_size(px(theme::TEXT_XS)).text_color(theme::running())
-                        .child(SharedString::from(format!("{pending_count}P {new_count}N"))));
+                    group = group.child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(2.))
+                            .when(pending_count > 0, |el| {
+                                el.child(div().text_size(px(theme::TEXT_SM)).font_weight(FontWeight::MEDIUM).text_color(theme::warn())
+                                    .child(SharedString::from(format!("{pending_count}P"))))
+                            })
+                            .when(new_count > 0, |el| {
+                                el.child(div().text_size(px(theme::TEXT_SM)).font_weight(FontWeight::MEDIUM).text_color(theme::attention())
+                                    .child(SharedString::from(format!("{new_count}N"))))
+                            }),
+                    );
                 }
                 for index in open_indices {
                     let signals = SessionSignals::from_state(self.conversations[index].state.read(cx), self.conversations[index].unread_completion);
-                    let busy = signals.running;
-                    let unread = self.conversations[index].unread_completion;
-                    let color = if index == self.active {
-                        theme::text()
-                    } else if busy {
-                        theme::running()
-                    } else if unread {
-                        theme::ok()
-                    } else {
-                        theme::faint()
-                    };
+                    let active = index == self.active;
+                    let pulse_id = format!("nav-pulse-{index}");
                     group = group.child(
                         div()
                             .id(SharedString::from(format!("nav-dot-{index}")))
@@ -1757,6 +1955,11 @@ impl Render for Workspace {
                             .justify_center()
                             .cursor_pointer()
                             .hover(|style| style.bg(theme::hover()))
+                            .when(active, |el| {
+                                el.bg(theme::surface_2())
+                                    .border_1()
+                                    .border_color(theme::accent_edge())
+                            })
                             .on_hover(cx.listener(move |workspace, hovered: &bool, _, cx| {
                                 workspace.hovered =
                                     hovered.then_some(NavHover::Conversation(index));
@@ -1766,15 +1969,23 @@ impl Render for Workspace {
                                 workspace.select(index, window, cx);
                             }))
                             .child(if signals.needs_input {
-                                crate::ui::icons::icon(crate::ui::icons::Icon::Alert, 12., theme::running()).into_any_element()
+                                crate::ui::icons::icon(crate::ui::icons::Icon::Alert, 12., theme::warn()).into_any_element()
                             } else if signals.error {
                                 crate::ui::icons::icon(crate::ui::icons::Icon::Alert, 12., theme::failure()).into_any_element()
-                            } else if unread {
-                                crate::ui::icons::icon(crate::ui::icons::Icon::File, 12., theme::ok()).into_any_element()
-                            } else { crate::ui::dot(color, 8.).into_any_element() }),
+                            } else if signals.running {
+                                crate::ui::pulse(pulse_id, 8., theme::running()).into_any_element()
+                            } else if signals.unread {
+                                crate::ui::icons::icon(crate::ui::icons::Icon::File, 12., theme::attention()).into_any_element()
+                            } else {
+                                crate::ui::dot(if active { theme::text() } else { theme::faint() }, 8.).into_any_element()
+                            }),
                     );
                 }
                 for info_index in saved_indices {
+                    let unread = self
+                        .catalog
+                        .get(info_index)
+                        .is_some_and(|info| self.preferences.unread_sessions.contains_key(&info.path));
                     group = group.child(
                         div()
                             .id(SharedString::from(format!("nav-saved-{info_index}")))
@@ -1795,7 +2006,11 @@ impl Render for Workspace {
                                     workspace.open(info, window, cx);
                                 }
                             }))
-                            .child(crate::ui::ring(theme::faint(), 7.)),
+                            .child(if unread {
+                                crate::ui::icons::icon(crate::ui::icons::Icon::File, 12., theme::attention()).into_any_element()
+                            } else {
+                                crate::ui::ring(theme::faint(), 7.).into_any_element()
+                            }),
                     );
                 }
                 dots = dots.child(group);
@@ -2101,7 +2316,7 @@ fn folder_of(cwd: &std::path::Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{add_to_catalog, drop_from_catalog, select_item, sort_session_rows, row_key, attention_summary, SessionSignals, SessionFilter};
+    use super::{add_to_catalog, drop_from_catalog, select_item, sort_session_rows, row_key, attention_summary, filter_counts, filter_label, nav_position, NavEntry, SessionSignals, SessionFilter};
     use crate::sessions::SessionInfo;
     use std::path::PathBuf;
 
@@ -2153,6 +2368,42 @@ mod tests {
         assert!(!signals.matches(SessionFilter::Running));
         assert!(signals.needs_input && signals.unread);
         assert_eq!(signals.queued, 2);
+    }
+
+    #[test]
+    fn nav_highlight_follows_the_selected_entry() {
+        let entries = [
+            NavEntry::Open(0),
+            NavEntry::Saved(PathBuf::from("/a.jsonl")),
+            NavEntry::Open(1),
+        ];
+        assert_eq!(nav_position(&entries, &NavEntry::Open(1)), Some(2));
+        assert_eq!(
+            nav_position(&entries, &NavEntry::Saved(PathBuf::from("/a.jsonl"))),
+            Some(1)
+        );
+        assert_eq!(
+            nav_position(&entries, &NavEntry::Saved(PathBuf::from("/b.jsonl"))),
+            None
+        );
+    }
+
+    #[test]
+    fn filter_counts_include_attention_without_implying_running() {
+        let signals = [
+            SessionSignals { needs_input: true, ..Default::default() },
+            SessionSignals { unread: true, ..Default::default() },
+            SessionSignals { running: true, ..Default::default() },
+            SessionSignals { saved: true, ..Default::default() },
+        ];
+        assert_eq!(filter_counts(&signals), [4, 1, 1, 1]);
+    }
+
+    #[test]
+    fn filter_labels_hide_empty_counts_except_for_all() {
+        assert_eq!(filter_label("Todas", 0, true), "Todas · 0");
+        assert_eq!(filter_label("Não lidas", 2, false), "Não lidas · 2");
+        assert_eq!(filter_label("Não lidas", 0, false), "Não lidas");
     }
 
     #[test]

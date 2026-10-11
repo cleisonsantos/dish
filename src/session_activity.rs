@@ -19,6 +19,7 @@ pub struct SessionSignals {
     pub queued: usize,
     pub error: bool,
     pub interrupted: bool,
+    pub completed: bool,
     pub saved: bool,
 }
 
@@ -51,6 +52,9 @@ impl SessionSignals {
         }
         if self.queued > 0 {
             labels.push(format!("{} em fila", self.queued));
+        }
+        if self.completed {
+            labels.push("concluída".to_owned());
         }
         if labels.is_empty() {
             labels.push(if self.saved { "salva" } else { "inativa" }.to_owned());
@@ -224,6 +228,17 @@ mod tests {
             simultaneous.labels(),
             "precisa de você · resposta nova · executando · 2 em fila"
         );
+    }
+
+    #[test]
+    fn completed_reads_as_done_instead_of_idle() {
+        let signals = SessionSignals {
+            completed: true,
+            ..Default::default()
+        };
+        assert_eq!(signals.labels(), "concluída");
+        assert!(!signals.matches(SessionFilter::Running));
+        assert!(signals.matches(SessionFilter::All));
     }
 
     #[test]

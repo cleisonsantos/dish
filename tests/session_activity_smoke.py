@@ -89,6 +89,11 @@ with tempfile.TemporaryDirectory(prefix="dish-activity-") as temporary:
         return normalized(subprocess.check_output(["tesseract", str(screenshot), "stdout", "--psm", "6"],
                                                   stderr=subprocess.DEVNULL).decode())
 
+    def rail_text():
+        subprocess.run(["import", "-window", str(window), "-crop", "44x860+0+0", str(screenshot)], check=True)
+        return normalized(subprocess.check_output(["tesseract", str(screenshot), "stdout", "--psm", "6"],
+                                                  stderr=subprocess.DEVNULL).decode())
+
     def start():
         global process, window
         before = len(commands("get_messages"))
@@ -161,7 +166,7 @@ with tempfile.TemporaryDirectory(prefix="dish-activity-") as temporary:
         # Two queued beta runs: the first response remains unread while the next runs.
         beta_pid = send("long-activity-b")
         send("long-activity-queued")
-        wait_for(lambda: "em fila" in nav_text(), "Queued prompt has no separate indicator")
+        wait_for(lambda: "emfila" in nav_text().replace(" ", ""), "Queued prompt has no separate indicator")
         chord("Control_L", "Tab")  # alpha
         wait_for(lambda: alpha_path not in preferences().get("unread_sessions", {}), "Viewing alpha did not mark it read")
         release_run("long-activity-b")
@@ -225,7 +230,7 @@ with tempfile.TemporaryDirectory(prefix="dish-activity-") as temporary:
         click_nav_label(window, "beta")
         wait_for(lambda: "nova" in nav_text(), "Folded project lacks unread aggregate")
         chord("Control_L", "Shift_L", "b")
-        wait_for(lambda: "1n" in nav_text().replace(" ", ""), "Collapsed rail lacks aggregate count")
+        wait_for(lambda: "1n" in rail_text().replace(" ", ""), "Collapsed rail lacks aggregate count")
         chord("Control_L", "Shift_L", "b")
         process.terminate()
         process.wait(timeout=5)

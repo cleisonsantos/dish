@@ -136,6 +136,11 @@ pub fn warn() -> Hsla {
 pub fn ok() -> Hsla {
     c(0xa6aeb8ff)
 }
+/// Conteúdo novo: a resposta terminou e ainda não foi lida. Verde vivo,
+/// longe do teal de execução e do âmbar de aviso.
+pub fn attention() -> Hsla {
+    c(0x2ecc71ff)
+}
 /// Mantido para os pontos que ainda pedem a cor de perigo antiga.
 pub fn danger() -> Hsla {
     failure()
@@ -235,6 +240,18 @@ fn effort_ramp(level: &str, _available: &[String]) -> (f32, f32, f32) {
         color.saturation,
         color.lightness,
     )
+}
+
+/// Anel de foco do teclado. Fica fora da caixa, para não competir com as
+/// bordas e cores de estado das linhas.
+pub fn focus_ring() -> Vec<BoxShadow> {
+    vec![BoxShadow {
+        color: wash(faint(), 0.9),
+        offset: point(px(0.), px(0.)),
+        blur_radius: px(0.),
+        spread_radius: px(1.),
+        inset: false,
+    }]
 }
 
 /// The only shadow in the app: things that float above it.
@@ -342,6 +359,7 @@ mod tests {
             ("running", running()),
             ("failure", failure()),
             ("warn", warn()),
+            ("attention", attention()),
         ] {
             for level in levels {
                 let effort = effort_color(level, &[]);
@@ -362,6 +380,25 @@ mod tests {
         for level in ["off", "minimal"] {
             let distance = delta_e(ok(), effort_color(level, &[]));
             assert!(distance > 15.0, "ok vs effort {level}: ΔE {distance:.1}");
+        }
+    }
+
+    /// A cor de resposta nova é a mais saliente da lista: precisa ficar longe
+    /// dos outros estados e legível sobre as superfícies em que aparece.
+    #[test]
+    fn attention_reads_as_new_content_not_as_running_or_warning() {
+        for (name, color) in [
+            ("running", running()),
+            ("failure", failure()),
+            ("warn", warn()),
+            ("ok", ok()),
+        ] {
+            let distance = delta_e(attention(), color);
+            assert!(distance > 25.0, "attention vs {name}: ΔE {distance:.1}");
+        }
+        for surface in [bg(), surface(), surface_2(), hover()] {
+            let ratio = contrast(attention(), surface);
+            assert!(ratio >= 4.5, "attention: {ratio:.2}:1");
         }
     }
 
