@@ -51,22 +51,21 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
                 return
         raise AssertionError(f"Missing UI label: {label}")
 
-    def click_model_switch():
-        # O switch não tem texto: procura uma âncora na lista e clica na coluna da
-        # direita (cartão de 840px centrado numa janela de 1240 → switch em x≈1020).
-        # O OCR lê o id ou o provedor dependendo da fonte do sistema, então os
-        # dois servem de âncora, com deslocamentos diferentes.
+    def find_model_rows():
+        # Devolve as posições verticais dos switches do provedor e do primeiro
+        # modelo. O OCR lê o id do modelo ou o nome do provedor conforme a fonte
+        # do sistema, então qualquer um serve de âncora.
         capture()
         rows = subprocess.check_output(["tesseract", screenshot, "stdout", "tsv"],
                                        stderr=subprocess.DEVNULL).decode().splitlines()[1:]
-        for anchor, offset in [("fake-model", 0), ("test", 20)]:
+        for anchor, is_model_row in [("fake-model", True), ("test", False)]:
             for row in rows:
                 fields = row.split("\t")
                 if len(fields) == 12 and anchor in fields[11].strip().lower():
                     center = int(fields[7]) + int(fields[9]) // 2
-                    click(window, 1003, center + offset)
-                    return
-        raise AssertionError("Model row not found")
+                    # Cartão de 840px centrado numa janela de 1240: switch em x≈1020.
+                    return (center - 20, center) if is_model_row else (center, center + 20)
+        raise AssertionError("Model list row not found")
 
     try:
         wait_for(lambda: find_window(), "Window not created")
@@ -104,7 +103,18 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
         models_page = capture()
         assert "Modelos" in models_page, models_page
         assert "fake-model" in models_page or "test" in models_page, models_page
-        click_model_switch()
+        # Switch do provedor: desliga o grupo inteiro e volta a ligar.
+        provider_y, _ = find_model_rows()
+        click(window, 1003, provider_y)
+        wait_for(lambda: json.loads(state_path.read_text()).get("hidden_models") == ["test/fake-model"],
+                 "Provider switch did not hide its models")
+        provider_y, _ = find_model_rows()
+        click(window, 1003, provider_y)
+        wait_for(lambda: json.loads(state_path.read_text()).get("hidden_models") == [],
+                 "Provider switch did not restore its models")
+        # Switch do modelo: continua funcionando isoladamente.
+        _, model_y = find_model_rows()
+        click(window, 1003, model_y)
         wait_for(lambda: json.loads(state_path.read_text()).get("hidden_models") == ["test/fake-model"],
                  "Hidden model was not persisted")
         click_label("Mostrar")
