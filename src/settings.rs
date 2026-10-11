@@ -1,6 +1,6 @@
 use crate::{editor::{self, Editor}, theme};
 use gpui::{prelude::*, *};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Section { App, Models, Keys, About }
@@ -79,6 +79,47 @@ impl Settings {
 }
 
 fn column() -> Div { div().flex().flex_col().gap(px(12.)).min_w(px(0.)) }
+
+/// Agrupa os modelos por provedor, com os nomes em ordem alfabética dentro de
+/// cada grupo. O `BTreeMap` mantém os provedores em ordem alfabética também.
+fn grouped_models(models: &[(String, String)]) -> BTreeMap<&str, Vec<&str>> {
+    let mut providers: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (provider, id) in models {
+        providers.entry(provider.as_str()).or_default().push(id.as_str());
+    }
+    for ids in providers.values_mut() {
+        ids.sort_unstable();
+    }
+    providers
+}
+
+/// Chave de liga/desliga: trilho com o botão, na linguagem da interface
+/// (acento quando ligada, linha quando desligada).
+fn switch(id: impl Into<ElementId>, on: bool, click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex_none()
+        .flex()
+        .flex_row()
+        .items_center()
+        .w(px(34.))
+        .h(px(18.))
+        .px(px(2.))
+        .rounded(px(9.))
+        .cursor_pointer()
+        .bg(if on { theme::accent() } else { theme::inset() })
+        .border_1()
+        .border_color(if on { theme::accent() } else { theme::line_strong() })
+        .when(on, |el| el.justify_end())
+        .child(
+            div()
+                .flex_none()
+                .size(px(12.))
+                .rounded(px(6.))
+                .bg(if on { theme::bg() } else { theme::faint() }),
+        )
+        .on_click(click)
+}
 fn note(value: &str) -> Div { div().text_size(px(theme::TEXT_SM)).text_color(theme::dim()).child(SharedString::from(value.to_owned())) }
 fn control(id: impl Into<ElementId>, label: impl Into<SharedString>, click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Stateful<Div> {
     div().id(id).px(px(12.)).py(px(8.)).rounded(theme::r_control())
@@ -146,47 +187,45 @@ impl Render for Settings {
                         },
                     )));
                 }
-                for (provider, id) in &self.models {
-                    let key = format!("{provider}/{id}");
-                    let row_id = SharedString::from(format!("model-visibility-{key}"));
-                    let label = if self.hidden.contains(&key) { "oculto" } else { "visível" };
-                    let toggled = key.clone();
-                    page = page.child(
+                // Agrupado por provedor, em ordem alfabética dentro do grupo.
+                for (provider, ids) in grouped_models(&self.models) {
+                    let mut group = column().gap(px(2.)).child(
                         div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(12.))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(1.))
-                                    .child(
-                                        div()
-                                            .truncate()
-                                            .font_family(theme::FONT_MONO)
-                                            .text_size(px(theme::TEXT_SM))
-                                            .text_color(theme::text())
-                                            .child(SharedString::from(id.clone())),
-                                    )
-                                    .child(
-                                        div()
-                                            .font_family(theme::FONT_MONO)
-                                            .text_size(px(theme::TEXT_MICRO))
-                                            .text_color(theme::faint())
-                                            .child(SharedString::from(provider.clone())),
-                                    ),
-                            )
-                            .child(control(row_id, label, cx.listener(move |this, _, _, cx| {
-                                let visible = !this.hidden.contains(&toggled);
-                                if visible { this.hidden.insert(toggled.clone()); } else { this.hidden.remove(&toggled); }
-                                cx.emit(SettingsEvent::ModelVisibility(toggled.clone(), !visible));
-                                cx.notify();
-                            }))),
+                            .font_family(theme::FONT_MONO)
+                            .text_size(px(theme::TEXT_MICRO))
+                            .text_color(theme::faint())
+                            .child(SharedString::from(provider.to_string())),
                     );
+                    for id in ids {
+                        let key = format!("{provider}/{id}");
+                        let row_id = SharedString::from(format!("model-visibility-{key}"));
+                        let visible = !self.hidden.contains(&key);
+                        let toggled = key.clone();
+                        group = group.child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(12.))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.))
+                                        .truncate()
+                                        .font_family(theme::FONT_MONO)
+                                        .text_size(px(theme::TEXT_SM))
+                                        .text_color(if visible { theme::text() } else { theme::faint() })
+                                        .child(SharedString::from(id.to_string())),
+                                )
+                                .child(switch(row_id, visible, cx.listener(move |this, _, _, cx| {
+                                    let visible = !this.hidden.contains(&toggled);
+                                    if visible { this.hidden.insert(toggled.clone()); } else { this.hidden.remove(&toggled); }
+                                    cx.emit(SettingsEvent::ModelVisibility(toggled.clone(), !visible));
+                                    cx.notify();
+                                }))),
+                        );
+                    }
+                    page = page.child(group);
                 }
                 page.into_any_element()
             }
@@ -263,5 +302,30 @@ impl Render for Settings {
                 }
             })
             .child(card).into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod model_grouping_tests {
+    use super::grouped_models;
+
+    fn models(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs.iter().map(|(provider, id)| (provider.to_string(), id.to_string())).collect()
+    }
+
+    #[test]
+    fn groups_by_provider_and_sorts_models_alphabetically() {
+        let models = models(&[
+            ("openai", "gpt-4"),
+            ("anthropic", "sonnet"),
+            ("openai", "gpt-3"),
+            ("anthropic", "haiku"),
+        ]);
+        let grouped = grouped_models(&models);
+        let providers: Vec<&str> = grouped.keys().copied().collect();
+        assert_eq!(providers, ["anthropic", "openai"]);
+        assert_eq!(grouped["anthropic"], ["haiku", "sonnet"]);
+        assert_eq!(grouped["openai"], ["gpt-3", "gpt-4"]);
+        assert!(grouped_models(&[]).is_empty());
     }
 }
