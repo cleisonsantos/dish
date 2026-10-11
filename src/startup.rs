@@ -40,8 +40,6 @@ struct Probe {
     program: Option<String>,
     version: Option<String>,
     error: Option<String>,
-    /// Versão do Node, ou a razão pela qual ele não serve para o caminho npm.
-    node: Option<String>,
 }
 
 impl Probe {
@@ -49,9 +47,6 @@ impl Probe {
         self.program.is_some()
     }
 
-    fn node_ready(&self) -> bool {
-        self.node.as_ref().is_some_and(|node| node.starts_with('v'))
-    }
 }
 
 pub struct Startup {
@@ -62,6 +57,10 @@ pub struct Startup {
     message: String,
     step: Step,
     probe: Option<Probe>,
+    /// Versão do Node, ou a razão pela qual ele não serve para o caminho npm.
+    /// Verificado só quando o passo de instalação é aberto: quem já tem Pi não
+    /// precisa que o Dish rode `node`/`npm` no caminho de abertura.
+    node: Option<String>,
     ready: Option<Entity<Workspace>>,
     focus: FocusHandle,
     window: AnyWindowHandle,
@@ -83,6 +82,7 @@ impl Startup {
             message: String::new(),
             step: Step::Welcome,
             probe: None,
+            node: None,
             ready: None,
             focus: cx.focus_handle(),
             window: window.window_handle(),
@@ -120,23 +120,17 @@ impl Startup {
             let probe = cx
                 .background_executor()
                 .spawn(async move {
-                    let npm = if cfg!(windows) { "npm.cmd" } else { "npm" };
-                    let node = installation::prerequisites("node", npm)
-                        .map(|_| node_version())
-                        .unwrap_or_else(|error| error.to_string());
                     let program = chosen.unwrap_or_else(installation::program);
                     match installation::validate(&program) {
                         Ok(version) => Probe {
                             program: Some(program),
                             version: Some(version),
                             error: None,
-                            node: Some(node),
                         },
                         Err(error) => Probe {
                             program: None,
                             version: None,
                             error: Some(format!("{error:#}")),
-                            node: Some(node),
                         },
                     }
                 })
@@ -160,6 +154,30 @@ impl Startup {
                 this.step = if found { Step::Done } else { Step::Welcome };
                 cx.notify();
                 let _ = this.window.update(cx, |_, window, _| window.refresh());
+            });
+        })
+        .detach();
+    }
+
+    /// Roda `node --version`/`npm --version` em segundo plano, só quando o
+    /// passo de instalação precisa saber se o caminho npm está disponível.
+    fn check_node(&mut self, cx: &mut Context<Self>) {
+        if self.node.is_some() {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            let node = cx
+                .background_executor()
+                .spawn(async move {
+                    let npm = if cfg!(windows) { "npm.cmd" } else { "npm" };
+                    installation::prerequisites("node", npm)
+                        .map(|_| node_version())
+                        .unwrap_or_else(|error| error.to_string())
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.node = Some(node);
+                cx.notify();
             });
         })
         .detach();
@@ -390,6 +408,7 @@ impl Render for Startup {
                         step = step
                             .child(button("setup-install-step", "Instalar o Pi", cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.step = Step::Install;
+                                this.check_node(cx);
                                 cx.notify();
                             })))
                             .child(
@@ -409,8 +428,8 @@ impl Render for Startup {
                 let destination = installation::prefix()
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|| "(pasta do usuário indisponível)".into());
-                let node = self.probe.as_ref().and_then(|probe| probe.node.clone());
-                let node_ready = self.probe.as_ref().is_some_and(Probe::node_ready);
+                let node = self.node.clone();
+                let node_ready = self.node.as_ref().is_some_and(|node| node.starts_with('v'));
                 let mut step = view
                     .child(div().max_w(px(680.)).text_center().text_color(theme::dim()).child(
                         "O instalador oficial abre em um terminal, baixa o Pi, escolhe o destino e pode instalar dependências (o Node, quando falta). O comando fica visível lá.",
