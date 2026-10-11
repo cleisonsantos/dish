@@ -128,9 +128,13 @@ FunctionEnd
 Section "Dish" SEC_MAIN
   SectionIn RO
   SetOutPath "$INSTDIR"
-  File "${SRCDIR}\target\release\${APP_EXE}"
-  File "${SRCDIR}\LICENSE"
-  File "${SRCDIR}\THIRD_PARTY_NOTICES.md"
+  File "${SRCDIR}\dist\windows-payload\${APP_EXE}"
+  File "${SRCDIR}\dist\windows-payload\LICENSE"
+  File "${SRCDIR}\dist\windows-payload\THIRD_PARTY_NOTICES.md"
+  ; O pacote completo de licenças (dependências, nativas e do Rust), igual ao
+  ; que o .tar.gz/.deb do Linux carrega — issue #63.
+  File /r "${SRCDIR}\dist\windows-payload\licenses"
+  File "${SRCDIR}\dist\windows-payload\BUILD.json"
 
   WriteUninstaller "$INSTDIR\uninstall.exe"
   WriteRegStr HKCU "Software\Dish" "InstallDir" "$INSTDIR"
@@ -159,7 +163,7 @@ Section /o "Atalho na área de trabalho" SEC_DESKTOP
 SectionEnd
 
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
-  !insertmacro MUI_DESCRIPTION_TEXT ${SEC_MAIN} "O aplicativo, a licença e o aviso de terceiros."
+  !insertmacro MUI_DESCRIPTION_TEXT ${SEC_MAIN} "O aplicativo, a licença, o aviso de terceiros e o pacote de licenças das dependências."
   !insertmacro MUI_DESCRIPTION_TEXT ${SEC_STARTMENU} "Atalhos no menu Iniciar, incluindo o desinstalador."
   !insertmacro MUI_DESCRIPTION_TEXT ${SEC_DESKTOP} "Um atalho na área de trabalho."
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
@@ -168,7 +172,9 @@ Section "Uninstall"
   Delete "$INSTDIR\${APP_EXE}"
   Delete "$INSTDIR\LICENSE"
   Delete "$INSTDIR\THIRD_PARTY_NOTICES.md"
+  Delete "$INSTDIR\BUILD.json"
   Delete "$INSTDIR\uninstall.exe"
+  RMDir /r "$INSTDIR\licenses"
   RMDir "$INSTDIR"
 
   Delete "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk"

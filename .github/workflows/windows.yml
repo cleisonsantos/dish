@@ -17,6 +17,7 @@ jobs:
         run: |
           rustup update stable --no-self-update
           rustup default stable
+          rustup component add rust-docs
           rustc --version
           cargo --version
       - name: Restore Rust build cache
@@ -82,29 +83,8 @@ jobs:
           if (-not $makensis) { throw 'NSIS não pôde ser instalado (choco e winget falharam)' }
           Write-Host "makensis: $makensis"
           "MAKENSIS=$makensis" >> $env:GITHUB_ENV
-      - name: Build the installer
-        shell: pwsh
-        run: |
-          # O rótulo da versão vive no ci.yml; o Cargo.toml é o fallback.
-          $label = (Select-String -Path .github/workflows/ci.yml -Pattern '--version ([0-9][^\s'']*)' |
-                    Select-Object -First 1).Matches[0].Groups[1].Value
-          if (-not $label) {
-            $label = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"').Matches[0].Groups[1].Value
-          }
-          $numeric = ($label -replace '-alpha\.', '.' -replace '[^0-9.]', '').Split('.')
-          while ($numeric.Count -lt 4) { $numeric += '0' }
-          $versionNum = ($numeric[0..3] -join '.')
-          Write-Host "Dish $label ($versionNum)"
-          New-Item -ItemType Directory -Force dist | Out-Null
-          $makensis = if ($env:MAKENSIS -and (Test-Path $env:MAKENSIS)) { $env:MAKENSIS }
-                      else { (Get-Command makensis -ErrorAction SilentlyContinue).Source }
-          if (-not $makensis) { throw 'makensis não encontrado' }
-          Write-Host "makensis: $makensis"
-          & $makensis /V2 "/DVERSION=$label" "/DVERSIONNUM=$versionNum" "/DSRCDIR=$PWD" scripts/windows-installer.nsi
-          if ($LASTEXITCODE -ne 0) { throw 'makensis falhou' }
-          $installer = Get-Item "dist/dish-$label-windows-x86_64-setup.exe"
-          if ($installer.Length -lt 1MB) { throw "Instalador pequeno demais: $($installer.Length) bytes" }
-          Write-Host "Instalador: $($installer.Name) ($([math]::Round($installer.Length / 1MB, 1)) MB)"
+      - name: Build the installer and its license bundle
+        run: python3 scripts/package-windows.py
       - name: Save Windows executable
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

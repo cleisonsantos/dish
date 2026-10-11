@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -17,6 +18,9 @@ spec.loader.exec_module(package)
 deb_spec = importlib.util.spec_from_file_location("package_deb", ROOT / "scripts/package-deb.py")
 deb = importlib.util.module_from_spec(deb_spec)
 deb_spec.loader.exec_module(deb)
+win_spec = importlib.util.spec_from_file_location("package_windows", ROOT / "scripts/package-windows.py")
+windows = importlib.util.module_from_spec(win_spec)
+win_spec.loader.exec_module(windows)
 
 
 class ReleaseToolTests(unittest.TestCase):
@@ -165,6 +169,30 @@ class CandidateArchiveTests(unittest.TestCase):
             self.assertTrue((data / "dish/licenses/sources" / mpl["source_archive"]).is_file())
             subprocess.run(["bash", str(app / "uninstall.sh")], env=env, check=True, capture_output=True)
             self.assertFalse((home / ".local/bin/dish").exists())
+
+
+class WindowsPackagingTests(unittest.TestCase):
+    def test_numeric_version_for_viproductversion(self):
+        self.assertEqual(windows.numeric_version("0.1.0-alpha.3"), "0.1.0.3")
+        self.assertEqual(windows.numeric_version("0.1.0"), "0.1.0.0")
+        self.assertEqual(windows.numeric_version("1.2.3-beta.4"), "1.2.3.4")
+
+    def test_release_label_comes_from_ci_then_cargo(self):
+        self.assertEqual(windows.release_version("9.9.9"), "9.9.9")
+        expected = re.search(r"--version ([0-9][^\s'\"]*)",
+                             (ROOT / ".github/workflows/ci.yml").read_text()).group(1)
+        self.assertEqual(windows.release_version(None), expected)
+
+    def test_installer_ships_the_shared_license_bundle(self):
+        nsi = (ROOT / "scripts/windows-installer.nsi").read_text()
+        self.assertIn('File /r "${SRCDIR}\\dist\\windows-payload\\licenses"', nsi)
+        self.assertIn('RMDir /r "$INSTDIR\\licenses"', nsi)
+
+    def test_shared_bundle_module_is_used_by_both_packagers(self):
+        for script in ["package-linux.py", "package-windows.py"]:
+            text = (ROOT / "scripts" / script).read_text()
+            self.assertIn("license_bundle", text, script)
+        self.assertTrue((ROOT / "scripts/license_bundle.py").is_file())
 
 
 @unittest.skipUnless(shutil.which("dpkg-deb") and shutil.which("dpkg-query") and shutil.which("readelf"),
