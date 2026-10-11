@@ -1,4 +1,5 @@
 """Unit and installation tests for the Linux release tooling; no network or sudo."""
+import hashlib
 import importlib.util
 import json
 import os
@@ -187,6 +188,53 @@ class WindowsPackagingTests(unittest.TestCase):
         nsi = (ROOT / "scripts/windows-installer.nsi").read_text()
         self.assertIn('File /r "${SRCDIR}\\dist\\windows-payload\\licenses"', nsi)
         self.assertIn('RMDir /r "$INSTDIR\\licenses"', nsi)
+
+    def test_published_crate_without_license_files_uses_standard_texts(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "licenses/standard").mkdir(parents=True)
+            shutil.copyfile(ROOT / "licenses/standard/MIT.txt", root / "licenses/standard/MIT.txt")
+            (root / "LICENSE").write_text("apache", encoding="utf-8")
+            (root / "licenses/overrides.json").write_text("[]", encoding="utf-8")
+            crate = root / "registry/src/index/plain-1.0.0"
+            crate.mkdir(parents=True)
+            (crate / "Cargo.toml").touch()
+            archive = root / "registry/cache/index/plain-1.0.0.crate"
+            archive.parent.mkdir(parents=True)
+            archive.write_bytes(b"published crate")
+            lock = {"package": [{"name": "plain", "version": "1.0.0", "source": "registry+test",
+                                 "checksum": hashlib.sha256(archive.read_bytes()).hexdigest()}]}
+            (root / "Cargo.lock").write_text("package = []", encoding="utf-8")
+            metadata = {"resolve": {"root": "dish"}, "packages": [
+                {"id": "plain", "name": "plain", "version": "1.0.0", "license": "MIT OR Apache-2.0",
+                 "source": "registry+test", "manifest_path": str(crate / "Cargo.toml")}]}
+            import license_bundle
+            with patch.object(license_bundle, "tomllib") as tomllib_mock:
+                tomllib_mock.loads.return_value = lock
+                count = license_bundle.collect_licenses(metadata, root / "out", root)
+            self.assertEqual(count, 1)
+            files = sorted(p.name for p in (root / "out/dependencies/plain-1.0.0").iterdir())
+            self.assertEqual(files, ["0-MIT.txt", "1-LICENSE"])
+            record = json.loads((root / "out/dependencies.json").read_text(encoding="utf-8"))[0]
+            self.assertIn("standard_texts", record["override"])
+            # A crate completa acompanha os textos padrão, preservando os avisos.
+            self.assertTrue((root / "out/sources/plain-1.0.0.crate").is_file())
+
+    def test_unknown_license_without_files_still_fails_closed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "licenses").mkdir(parents=True)
+            (root / "licenses/overrides.json").write_text("[]", encoding="utf-8")
+            (root / "Cargo.lock").write_text("package = []", encoding="utf-8")
+            crate = root / "registry/src/index/weird-1.0.0"
+            crate.mkdir(parents=True)
+            (crate / "Cargo.toml").touch()
+            metadata = {"resolve": {"root": "dish"}, "packages": [
+                {"id": "weird", "name": "weird", "version": "1.0.0", "license": "LicenseRef-Proprietary",
+                 "source": "registry+test", "manifest_path": str(crate / "Cargo.toml")}]}
+            import license_bundle
+            with self.assertRaisesRegex(RuntimeError, "Missing license texts"):
+                license_bundle.collect_licenses(metadata, root / "out", root)
 
     def test_shared_bundle_module_is_used_by_both_packagers(self):
         for script in ["package-linux.py", "package-windows.py"]:

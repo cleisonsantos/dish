@@ -18,9 +18,38 @@ import urllib.request
 
 LICENSE_NAME = re.compile(r"^(licen[sc]e|copying|copyright|notice)([._-].*|$)", re.I)
 
+# Textos padrão para crates publicadas sem nenhum arquivo de licença. Só são
+# usados quando o pacote não traz nada e não existe override; a crate completa
+# (com seus avisos de copyright) entra junto no bundle.
+FALLBACK_TEXTS = {
+    "MIT": "licenses/standard/MIT.txt",
+    "Apache-2.0": "LICENSE",
+    "CC0-1.0": "licenses/standard/CC0-1.0.txt",
+}
+SPDX_PARTS = re.compile(r"\s+(?:OR|AND)\s+|[()]")
+
 
 def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def fallback_texts(license_expr: str, root: Path) -> list[str]:
+    """Textos conhecidos que cobrem a expressão SPDX declarada, se houver.
+
+    Devolve vazio quando algum identificador é desconhecido: nesse caso o build
+    falha de propósito, porque não dá para garantir os termos.
+    """
+    chosen = []
+    for part in SPDX_PARTS.split(license_expr):
+        part = (part or "").strip()
+        if not part:
+            continue
+        relative = FALLBACK_TEXTS.get(part)
+        if relative is None or not (root / relative).is_file():
+            return []
+        if relative not in chosen:
+            chosen.append(relative)
+    return chosen
 
 
 def crate_archive(package, dest: Path, lock, root: Path) -> str:
@@ -61,9 +90,25 @@ def collect_licenses(metadata, destination: Path, root: Path) -> int:
                 copied.append(str(relative))
         else:
             override = overrides.get((p["name"], p["version"]))
-            if not override:
-                raise RuntimeError(f'Missing license texts: {p["name"]} {p["version"]}; review licenses/overrides.json')
-            for i, entry in enumerate(override["files"]):
+            if override is None:
+                # Versões diferentes entre plataformas aparecem aqui (o Windows
+                # resolve alguns crates em outra versão). Antes de falhar, usa os
+                # textos padrão das licenças declaradas e leva junto a crate
+                # completa, que preserva os avisos de copyright.
+                fallback = fallback_texts(p.get("license", ""), root)
+                if not fallback:
+                    raise RuntimeError(f'Missing license texts: {p["name"]} {p["version"]}; review licenses/overrides.json')
+                for i, relative in enumerate(fallback):
+                    f = (root / relative).resolve()
+                    if not f.is_file() or not f.is_relative_to(root):
+                        raise RuntimeError(f'Invalid standard license text for {p["name"]}: {relative}')
+                    target = folder / f'{i}-{f.name}'
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(f, target)
+                    copied.append(target.name)
+                override = {"standard_texts": fallback,
+                            "reason": "published crate without license files"}
+            for i, entry in enumerate(override.get("files", [])):
                 f = (root / entry["path"]).resolve()
                 if not f.is_relative_to(root) or sha256(f) != entry["sha256"]:
                     raise RuntimeError(f'Invalid license override for {p["name"]}')
@@ -91,10 +136,14 @@ def collect_licenses(metadata, destination: Path, root: Path) -> int:
             record["selected_license"] = "Apache-2.0"
         if override:
             record["override"] = override
-        if p["name"] == "option-ext" or (override and override.get("include_source")) or (native_entry and native_entry.get("include_source")):
+        needs_source = bool(override and override.get("standard_texts"))
+        if p["name"] == "option-ext" or (override and override.get("include_source")) or needs_source or (native_entry and native_entry.get("include_source")):
             record["source_archive"] = crate_archive(p, destination / "sources", lock, root)
         packages.append(record)
     (destination / "dependencies.json").write_text(json.dumps(packages, indent=2) + "\n", encoding="utf-8")
+    fallbacks = [f'{p["name"]} {p["version"]}' for p in packages if p.get("override", {}).get("standard_texts")]
+    if fallbacks:
+        print("warning: standard license texts used for: " + ", ".join(sorted(fallbacks)))
     return len(packages)
 
 
