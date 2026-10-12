@@ -116,10 +116,10 @@ pub fn text() -> Hsla {
     c(0xeceef2ff)
 }
 pub fn dim() -> Hsla {
-    c(0xaab2bdff)
+    c(0xa6aeb8ff)
 }
 pub fn faint() -> Hsla {
-    c(0x8b939eff)
+    c(0x858d97ff)
 }
 pub fn on_accent() -> Hsla {
     c(0x0b0e13ff)
