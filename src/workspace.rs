@@ -1066,8 +1066,10 @@ impl Workspace {
                     .child(
                         div()
                             // Controle segmentado: um só poço com um cursor
-                            // claro. Cada segmento é um modo de leitura; as
-                            // contagens ficam no rodapé, não aqui.
+                            // claro. Rótulos compactos de propósito: a métrica
+                            // da fonte de fallback varia entre sistemas, e
+                            // nenhum modo pode truncar; o nome completo fica
+                            // no tooltip e as contagens ficam no rodapé.
                             .flex()
                             .flex_row()
                             .items_stretch()
@@ -1088,7 +1090,7 @@ impl Workspace {
                                     cx.notify();
                                 },
                             ))
-                            .child(nav_segment("nav-filter-input", "Pendentes", "sessões que precisam de você", self.filter == SessionFilter::NeedsInput, cx, |workspace, cx| {
+                            .child(nav_segment("nav-filter-input", "Pend.", "sessões que precisam de você", self.filter == SessionFilter::NeedsInput, cx, |workspace, cx| {
                                 workspace.filter = SessionFilter::NeedsInput; cx.notify();
                             }))
                             .child(nav_segment("nav-filter-unread", "Novas", "respostas ainda não lidas", self.filter == SessionFilter::Unread, cx, |workspace, cx| {
@@ -1096,7 +1098,7 @@ impl Workspace {
                             }))
                             .child(nav_segment(
                                 "nav-filter-running",
-                                "Executando",
+                                "Exec.",
                                 "tarefas em execução agora",
                                 self.filter == SessionFilter::Running,
                                 cx,
