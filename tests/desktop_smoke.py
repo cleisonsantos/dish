@@ -764,9 +764,11 @@ with tempfile.TemporaryDirectory(prefix="dish-metadata-") as directory:
                 park_mouse(window)
                 # O frame dos detalhes pode demorar na CPU de CI: um clique
                 # apressado fecharia o que acabou de abrir.
-                for _ in range(3):
+                for attempt in range(3):
                     if find_word(window, "monot", last=True):
                         return True
+                    subprocess.run(["import", "-window", str(window),
+                                    f"/tmp/dish-meta-dbg-{attempt}.png"], check=False)
                     time.sleep(0.3)
                 return False
 
