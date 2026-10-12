@@ -6,16 +6,22 @@
 //!    the panels; nothing is outlined just to be outlined. Steps between
 //!    layers carry a touch more blue as they rise, so the depth is felt
 //!    instead of only measured.
-//! 2. **The accent is the effort meter.** Pi's own dark-theme effort palette
-//!    drives the accent, so the window looks different when the model is
-//!    thinking hard. It stays concentrated on the effort control, focus and
-//!    small indicators.
+//! 2. **The accent is the effort meter.** Pi's own effort palette drives the
+//!    accent, so the window looks different when the model is thinking hard.
+//!    It stays concentrated on the effort control, focus and small indicators.
 //! 3. **Effort colours are not status colours.** Execution, success and failure
 //!    live on their own hues so that `max` never reads as an error — enforced by
 //!    the tests at the bottom of this file, not by opinion.
+//!
+//! The palette is a [`Theme`] value. `dish-dark` is the original look and
+//! `dish-light` is its light counterpart; the active one is resolved at render
+//! time from the user's [`AppearanceMode`], so switching themes — including
+//! following the desktop — never needs a restart.
 
-use gpui::{BoxShadow, Hsla, Pixels, point, px, rgb_to_hsla, rgba};
-use std::sync::atomic::{AtomicU32, Ordering};
+use gpui::{BoxShadow, Hsla, Pixels, WindowAppearance, point, px, rgb_to_hsla, rgba};
+use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU8, AtomicU32, AtomicUsize, Ordering};
 
 /// Interface font.
 pub const FONT_UI: &str = "Roboto";
@@ -78,82 +84,267 @@ fn c(hex: u32) -> Hsla {
     rgb_to_hsla(rgba(hex))
 }
 
+// ---------------------------------------------------------------------- temas
+//
+// Um tema é um valor: cada papel semântico da interface é um campo. Os temas
+// embutidos são construídos uma única vez; o índice ativo fica num átomo
+// porque a interface lê cores centenas de vezes por quadro.
+
+/// Como o usuário quer a aparência da janela.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AppearanceMode {
+    Dark,
+    Light,
+    /// Segue o tema do desktop.
+    #[default]
+    System,
+}
+
+/// Um esquema de cores completo. `effort` guarda a rampa na ordem
+/// `off, minimal, low, medium, high, xhigh, max`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Theme {
+    pub name: &'static str,
+    pub dark: bool,
+    pub bg: Hsla,
+    pub surface: Hsla,
+    pub surface_2: Hsla,
+    pub inset: Hsla,
+    pub hover: Hsla,
+    pub line: Hsla,
+    pub line_soft: Hsla,
+    pub line_strong: Hsla,
+    pub text: Hsla,
+    pub dim: Hsla,
+    pub faint: Hsla,
+    pub on_accent: Hsla,
+    pub running: Hsla,
+    pub failure: Hsla,
+    pub warn: Hsla,
+    pub attention: Hsla,
+    pub ok: Hsla,
+    pub git_added: Hsla,
+    pub git_removed: Hsla,
+    pub effort: [Hsla; 7],
+}
+
+/// Níveis de raciocínio, na ordem da rampa de esforço.
+pub const LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/// O visual original do Dish: grafite com separação.
+fn dark_theme() -> Theme {
+    Theme {
+        name: "dish-dark",
+        dark: true,
+        bg: c(0x0b0e13ff),
+        surface: c(0x11151cff),
+        surface_2: c(0x191e26ff),
+        inset: c(0x07080bff),
+        hover: c(0x1e242dff),
+        line: c(0x252b35ff),
+        line_soft: c(0x1a1f27ff),
+        line_strong: c(0x333b47ff),
+        text: c(0xeceef2ff),
+        dim: c(0xa6aeb8ff),
+        faint: c(0x858d97ff),
+        on_accent: c(0x0b0e13ff),
+        running: c(0x4fb3a5ff),
+        failure: c(0xcf5f92ff),
+        warn: c(0xd8a24aff),
+        attention: c(0x2ecc71ff),
+        ok: c(0xa6aeb8ff),
+        git_added: c(0x81b88bff),
+        git_removed: c(0xd98282ff),
+        effort: [
+            c(0x6c767bff),
+            c(0x68808dff),
+            c(0x5489a4ff),
+            c(0x6185ccff),
+            c(0x9776e5ff),
+            c(0xde54c1ff),
+            c(0xfe5462ff),
+        ],
+    }
+}
+
+/// O par claro do tema escuro: papel por papel, com as mesmas regras.
+///
+/// A rampa de esforço mantém o matiz do Pi e desce a luminosidade até 4,5:1
+/// sobre o branco — é a derivação documentada de `effort` para o tema claro.
+fn light_theme() -> Theme {
+    Theme {
+        name: "dish-light",
+        dark: false,
+        bg: c(0xeef1f5ff),
+        surface: c(0xf8f9fbff),
+        surface_2: c(0xffffffff),
+        inset: c(0xe3e8eeff),
+        hover: c(0xe8edf3ff),
+        line: c(0xd5dbe3ff),
+        line_soft: c(0xe2e7eeff),
+        line_strong: c(0xc3cbd5ff),
+        text: c(0x1a1f26ff),
+        dim: c(0x3f4753ff),
+        faint: c(0x606874ff),
+        on_accent: c(0xffffffff),
+        running: c(0x1f7a6dff),
+        failure: c(0xa93a67ff),
+        warn: c(0x8a5c10ff),
+        attention: c(0x187237ff),
+        ok: c(0x3f4753ff),
+        git_added: c(0x2f6f38ff),
+        git_removed: c(0xa83c3cff),
+        effort: [
+            c(0x6a7378ff),
+            c(0x53778bff),
+            c(0x4a778fff),
+            c(0x4670c3ff),
+            c(0x7d54deff),
+            c(0xca27a8ff),
+            c(0xe50c1eff),
+        ],
+    }
+}
+
+fn themes() -> &'static [Theme; 2] {
+    static THEMES: OnceLock<[Theme; 2]> = OnceLock::new();
+    THEMES.get_or_init(|| [dark_theme(), light_theme()])
+}
+
+static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+static MODE: AtomicU8 = AtomicU8::new(0);
+
+/// Guarda a preferência do usuário; [`apply`] resolve a aparência efetiva.
+pub fn set_mode(mode: AppearanceMode) {
+    MODE.store(
+        match mode {
+            AppearanceMode::System => 0,
+            AppearanceMode::Dark => 1,
+            AppearanceMode::Light => 2,
+        },
+        Ordering::Relaxed,
+    );
+}
+
+/// A preferência em vigor.
+pub fn mode() -> AppearanceMode {
+    match MODE.load(Ordering::Relaxed) {
+        1 => AppearanceMode::Dark,
+        2 => AppearanceMode::Light,
+        _ => AppearanceMode::System,
+    }
+}
+
+/// Decide se a aparência efetiva é escura: `Dark`/`Light` mandam no desktop;
+/// `System` segue o tema dele (e o `NoPreference` do GPUI conta como claro).
+pub fn prefers_dark(mode: AppearanceMode, system: WindowAppearance) -> bool {
+    match mode {
+        AppearanceMode::Dark => true,
+        AppearanceMode::Light => false,
+        AppearanceMode::System => matches!(
+            system,
+            WindowAppearance::Dark | WindowAppearance::VibrantDark
+        ),
+    }
+}
+
+/// Resolve a aparência efetiva a partir da preferência e do tema do desktop.
+///
+/// Chamado a cada render, como o esforço: a troca é imediata e o modo
+/// `System` acompanha o desktop sem reiniciar.
+pub fn apply(system: WindowAppearance) {
+    let dark = prefers_dark(mode(), system);
+    ACTIVE.store(if dark { 0 } else { 1 }, Ordering::Relaxed);
+}
+
+/// O tema em uso agora.
+pub fn active() -> Theme {
+    themes()[ACTIVE.load(Ordering::Relaxed)]
+}
+
+/// Se a aparência efetiva é escura.
+pub fn is_dark() -> bool {
+    active().dark
+}
+
 // ---------------------------------------------------------------- superfícies
 
 /// The window itself, behind the conversation.
 pub fn bg() -> Hsla {
-    c(0x0b0e13ff)
+    active().bg
 }
 /// Panels: navigation, inspector.
 pub fn surface() -> Hsla {
-    c(0x11151cff)
+    active().surface
 }
 /// Raised surfaces: composer, the user's request, the active row.
 pub fn surface_2() -> Hsla {
-    c(0x191e26ff)
+    active().surface_2
 }
 /// Recessed surfaces: code, tool output, search fields.
 pub fn inset() -> Hsla {
-    c(0x07080bff)
+    active().inset
 }
 pub fn hover() -> Hsla {
-    c(0x1e242dff)
+    active().hover
 }
 
 pub fn line() -> Hsla {
-    c(0x252b35ff)
+    active().line
 }
 pub fn line_soft() -> Hsla {
-    c(0x1a1f27ff)
+    active().line_soft
 }
 pub fn line_strong() -> Hsla {
-    c(0x333b47ff)
+    active().line_strong
 }
 
 // ------------------------------------------------------------------- texto
 
 pub fn text() -> Hsla {
-    c(0xeceef2ff)
+    active().text
 }
 pub fn dim() -> Hsla {
-    c(0xa6aeb8ff)
+    active().dim
 }
 pub fn faint() -> Hsla {
-    c(0x858d97ff)
+    active().faint
 }
+/// Texto sobre o accent (o botão de enviar, por exemplo).
 pub fn on_accent() -> Hsla {
-    c(0x0b0e13ff)
+    active().on_accent
 }
 /// Text over a light control (the send button).
 pub fn on_light() -> Hsla {
-    c(0x0b0e13ff)
+    active().on_accent
 }
 
 // --------------------------------------------------------------- semântica
 //
 // Fora da rampa de effort, que vai do cinza-azulado ao coral passando pelo
-// magenta. Estas três ficam a ΔE ≥ 28 de todos os níveis (ver testes).
+// magenta. Estas ficam a ΔE ≥ 25 de todos os níveis (ver testes).
 
 /// Executando. Verde-água.
 pub fn running() -> Hsla {
-    c(0x4fb3a5ff)
+    active().running
 }
 /// Falha. Magenta-carmim, longe do coral do `max`.
 pub fn failure() -> Hsla {
-    c(0xcf5f92ff)
+    active().failure
 }
 /// Aviso de recurso (contexto cheio), o âmbar que o Pi usa para isso.
 pub fn warn() -> Hsla {
-    c(0xd8a24aff)
+    active().warn
 }
 /// Sucesso: neutro de propósito — a marca é o ícone e o texto, não a cor.
 pub fn ok() -> Hsla {
-    c(0xa6aeb8ff)
+    active().ok
 }
 /// Conteúdo novo: a resposta terminou e ainda não foi lida. Verde vivo,
 /// longe do teal de execução e do âmbar de aviso.
 pub fn attention() -> Hsla {
-    c(0x2ecc71ff)
+    active().attention
 }
 /// Mantido para os pontos que ainda pedem a cor de perigo antiga.
 pub fn danger() -> Hsla {
@@ -162,10 +353,10 @@ pub fn danger() -> Hsla {
 
 /// Diff Git: cores semânticas próprias, sem alterar o acento do esforço.
 pub fn git_added() -> Hsla {
-    c(0x81b88bff)
+    active().git_added
 }
 pub fn git_removed() -> Hsla {
-    c(0xd98282ff)
+    active().git_removed
 }
 
 pub fn wash(color: Hsla, alpha: f32) -> Hsla {
@@ -178,7 +369,8 @@ pub fn wash(color: Hsla, alpha: f32) -> Hsla {
 // ------------------------------------------------------------ effort accent
 //
 // Reference: Pi's modes/interactive/theme/dark.json thinking* tokens,
-// converted from OKHSL with pi-tui's parseColor/colorToHex.
+// converted from OKHSL with pi-tui's parseColor/colorToHex. The light theme
+// keeps those hues and lowers lightness until each level reads on white.
 
 /// Hue, saturation and lightness of the current accent, packed as f32 bits.
 static ACCENT_H: AtomicU32 = AtomicU32::new(f32::to_bits(0.60));
@@ -200,11 +392,16 @@ pub fn accent() -> Hsla {
     hsla_f(load(&ACCENT_H), load(&ACCENT_S), load(&ACCENT_L), 1.0)
 }
 
-/// The accent lifted for hover states.
+/// The accent lifted for hover states. No tema escuro "levantar" é clarear;
+/// no claro, o accent já é escuro e o hover escurece um pouco mais.
 pub fn accent_hover() -> Hsla {
     let accent = accent();
     let mut hsl = accent.color;
-    hsl.lightness = (hsl.lightness + 0.10).min(0.92);
+    hsl.lightness = if is_dark() {
+        (hsl.lightness + 0.10).min(0.92)
+    } else {
+        (hsl.lightness - 0.06).max(0.12)
+    };
     Hsla {
         color: hsl,
         alpha: accent.alpha,
@@ -219,49 +416,31 @@ pub fn accent_edge() -> Hsla {
     }
 }
 
-
 fn hsla_f(h: f32, s: f32, l: f32, a: f32) -> Hsla {
     gpui::hsla(h, s, l, a)
 }
 
+fn effort_index(level: &str) -> usize {
+    LEVELS.iter().position(|name| *name == level).unwrap_or(0)
+}
+
 /// The colour of a single reasoning level, so the selector can show the ramp.
-pub fn effort_color(level: &str, available: &[String]) -> Hsla {
-    let (h, s, l) = effort_ramp(level, available);
-    hsla_f(h, s, l, 1.0)
+pub fn effort_color(level: &str, _available: &[String]) -> Hsla {
+    active().effort[effort_index(level)]
 }
 
 /// Point the accent at the current reasoning level.
-pub fn set_effort(level: Option<&str>, available: &[String]) {
-    let (h, s, l) = match level {
-        Some(level) => effort_ramp(level, available),
-        None => neutral(),
-    };
-    store(h, s, l);
-}
-
-/// No reasoning control: a cool, quiet slate.
-fn neutral() -> (f32, f32, f32) {
-    effort_ramp("off", &[])
-}
-
-/// Map a level to hue/saturation/lightness.
-fn effort_ramp(level: &str, _available: &[String]) -> (f32, f32, f32) {
-    let hex = match level {
-        "minimal" => 0x68808dff,
-        "low" => 0x5489a4ff,
-        "medium" => 0x6185ccff,
-        "high" => 0x9776e5ff,
-        "xhigh" => 0xde54c1ff,
-        "max" => 0xfe5462ff,
-        // Pi also falls back to thinkingOff for unknown levels.
-        _ => 0x6c767bff,
-    };
-    let color = c(hex).color;
-    (
+pub fn set_effort(level: Option<&str>, _available: &[String]) {
+    let color = match level {
+        Some(level) => active().effort[effort_index(level)],
+        None => active().effort[0],
+    }
+    .color;
+    store(
         color.hue.into_positive_degrees() / 360.0,
         color.saturation,
         color.lightness,
-    )
+    );
 }
 
 /// Anel de foco do teclado. Fica fora da caixa, para não competir com as
@@ -301,6 +480,10 @@ pub fn shadow_overlay() -> Vec<BoxShadow> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn built_ins() -> [Theme; 2] {
+        [dark_theme(), light_theme()]
+    }
 
     fn luminance(color: Hsla) -> f32 {
         let rgba = gpui::hsla_to_rgba(color);
@@ -355,16 +538,23 @@ mod tests {
     #[test]
     fn delta_e_anchors_are_sane() {
         assert!(delta_e(c(0x000000ff), c(0xffffffff)) > 99.);
-        assert!(delta_e(text(), text()) < 0.01);
+        let text = dark_theme().text;
+        assert!(delta_e(text, text) < 0.01);
     }
 
     /// Todo texto normal precisa de 4,5:1 nas superfícies em que aparece.
     #[test]
     fn text_meets_contrast_requirement() {
-        for surface in [bg(), surface(), surface_2(), inset()] {
-            for (name, color) in [("text", text()), ("dim", dim()), ("faint", faint())] {
-                let ratio = contrast(color, surface);
-                assert!(ratio >= 4.5, "{name}: {ratio:.2}:1");
+        for theme in built_ins() {
+            for surface in [theme.bg, theme.surface, theme.surface_2, theme.inset] {
+                for (name, color) in [
+                    ("text", theme.text),
+                    ("dim", theme.dim),
+                    ("faint", theme.faint),
+                ] {
+                    let ratio = contrast(color, surface);
+                    assert!(ratio >= 4.5, "{} {name}: {ratio:.2}:1", theme.name);
+                }
             }
         }
     }
@@ -376,28 +566,37 @@ mod tests {
     /// cor de erro antiga (#e2655f) ficava a ΔE 16,9 do coral do `max`.
     #[test]
     fn git_diff_colors_are_readable_and_distinguishable() {
-        for color in [git_added(), git_removed()] {
-            assert!(contrast(color, bg()) >= 4.5);
+        for theme in built_ins() {
+            for color in [theme.git_added, theme.git_removed] {
+                let ratio = contrast(color, theme.bg);
+                assert!(ratio >= 4.5, "{} git: {ratio:.2}:1", theme.name);
+            }
+            assert!(
+                delta_e(theme.git_added, theme.git_removed) >= 20.,
+                "{} git ΔE {:.1}",
+                theme.name,
+                delta_e(theme.git_added, theme.git_removed)
+            );
         }
-        assert!(delta_e(git_added(), git_removed()) >= 20.);
     }
 
     #[test]
     fn status_colors_are_distinct_from_the_effort_ramp() {
-        let levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
-        for (name, semantic) in [
-            ("running", running()),
-            ("failure", failure()),
-            ("warn", warn()),
-            ("attention", attention()),
-        ] {
-            for level in levels {
-                let effort = effort_color(level, &[]);
-                let distance = delta_e(semantic, effort);
-                assert!(
-                    distance > 25.0,
-                    "{name} vs effort {level}: ΔE {distance:.1} (mínimo 25)"
-                );
+        for theme in built_ins() {
+            for (name, semantic) in [
+                ("running", theme.running),
+                ("failure", theme.failure),
+                ("warn", theme.warn),
+                ("attention", theme.attention),
+            ] {
+                for (level, effort) in LEVELS.iter().zip(theme.effort) {
+                    let distance = delta_e(semantic, effort);
+                    assert!(
+                        distance > 25.0,
+                        "{} {name} vs effort {level}: ΔE {distance:.1} (mínimo 25)",
+                        theme.name
+                    );
+                }
             }
         }
     }
@@ -407,9 +606,15 @@ mod tests {
     /// esforço `off`, senão vira mingau.
     #[test]
     fn success_neutral_stays_off_the_neutral_effort() {
-        for level in ["off", "minimal"] {
-            let distance = delta_e(ok(), effort_color(level, &[]));
-            assert!(distance > 15.0, "ok vs effort {level}: ΔE {distance:.1}");
+        for theme in built_ins() {
+            for (level, effort) in [("off", theme.effort[0]), ("minimal", theme.effort[1])] {
+                let distance = delta_e(theme.ok, effort);
+                assert!(
+                    distance > 15.0,
+                    "{} ok vs effort {level}: ΔE {distance:.1}",
+                    theme.name
+                );
+            }
         }
     }
 
@@ -417,18 +622,24 @@ mod tests {
     /// dos outros estados e legível sobre as superfícies em que aparece.
     #[test]
     fn attention_reads_as_new_content_not_as_running_or_warning() {
-        for (name, color) in [
-            ("running", running()),
-            ("failure", failure()),
-            ("warn", warn()),
-            ("ok", ok()),
-        ] {
-            let distance = delta_e(attention(), color);
-            assert!(distance > 25.0, "attention vs {name}: ΔE {distance:.1}");
-        }
-        for surface in [bg(), surface(), surface_2(), hover()] {
-            let ratio = contrast(attention(), surface);
-            assert!(ratio >= 4.5, "attention: {ratio:.2}:1");
+        for theme in built_ins() {
+            for (name, color) in [
+                ("running", theme.running),
+                ("failure", theme.failure),
+                ("warn", theme.warn),
+                ("ok", theme.ok),
+            ] {
+                let distance = delta_e(theme.attention, color);
+                assert!(
+                    distance > 25.0,
+                    "{} attention vs {name}: ΔE {distance:.1}",
+                    theme.name
+                );
+            }
+            for surface in [theme.bg, theme.surface, theme.surface_2, theme.hover] {
+                let ratio = contrast(theme.attention, surface);
+                assert!(ratio >= 4.5, "{} attention: {ratio:.2}:1", theme.name);
+            }
         }
     }
 
@@ -454,5 +665,45 @@ mod tests {
             assert!((actual.saturation - expected.saturation).abs() < 0.00001, "{level}");
             assert!((actual.lightness - expected.lightness).abs() < 0.00001, "{level}");
         }
+    }
+
+    /// A rampa clara é a mesma progressão do Pi com a luminosidade baixada: os
+    /// matizes seguem o tema escuro e cada nível lê sobre o branco.
+    #[test]
+    fn light_effort_ramp_keeps_the_dark_hues_and_stays_readable() {
+        let dark = dark_theme();
+        let light = light_theme();
+        for (index, level) in LEVELS.iter().enumerate() {
+            let a = dark.effort[index].color.hue.into_positive_degrees();
+            let b = light.effort[index].color.hue.into_positive_degrees();
+            let difference = (a - b).abs().min(360.0 - (a - b).abs());
+            assert!(difference < 2.0, "{level}: hue {a:.1} vs {b:.1}");
+            let ratio = contrast(light.effort[index], light.surface_2);
+            assert!(ratio >= 4.5, "{level} clear: {ratio:.2}:1");
+        }
+    }
+
+    /// A preferência é serializada em minúsculas e o padrão é seguir o desktop.
+    #[test]
+    fn appearance_mode_round_trips_through_json() {
+        assert_eq!(AppearanceMode::default(), AppearanceMode::System);
+        assert_eq!(serde_json::to_string(&AppearanceMode::Dark).unwrap(), "\"dark\"");
+        assert_eq!(
+            serde_json::from_str::<AppearanceMode>("\"light\"").unwrap(),
+            AppearanceMode::Light
+        );
+    }
+
+    /// `Dark` e `Light` mandam no desktop; `System` obedece (e `Vibrant*`
+    /// conta como a sua variante).
+    #[test]
+    fn appearance_mode_decides_the_palette() {
+        use gpui::WindowAppearance::*;
+        assert!(prefers_dark(AppearanceMode::Dark, Light));
+        assert!(!prefers_dark(AppearanceMode::Light, Dark));
+        assert!(prefers_dark(AppearanceMode::System, Dark));
+        assert!(prefers_dark(AppearanceMode::System, VibrantDark));
+        assert!(!prefers_dark(AppearanceMode::System, Light));
+        assert!(!prefers_dark(AppearanceMode::System, VibrantLight));
     }
 }

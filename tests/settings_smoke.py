@@ -18,6 +18,11 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
     env.pop("WAYLAND_DISPLAY", None)
     env.pop("PI_CODING_AGENT_SESSION_DIR", None)
     log = open(temp / "dish.log", "w")
+    # A aparência segue o desktop por padrão; estes testes verificam o visual
+    # escuro, então a preferência fica fixada como numa instalação existente.
+    (temp / "config/dish").mkdir(parents=True, exist_ok=True)
+    (temp / "config/dish/state.json").write_text(json.dumps({"appearance": "dark"}))
+
     process = subprocess.Popen([os.environ.get("DISH_TEST_BIN", str(ROOT / "target/release/dish")), "--session", str(session), str(temp)],
                                env=env, stdout=log, stderr=log)
     screenshot = tempfile.mktemp(prefix="dish-settings-", suffix=".png")

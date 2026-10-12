@@ -340,6 +340,11 @@ impl Workspace {
                             });
                         }
                     }
+                    SettingsEvent::Appearance(mode) => {
+                        this.preferences.appearance = *mode;
+                        theme::set_mode(*mode);
+                        crate::preferences::save(this.preferences.clone());
+                    }
                     SettingsEvent::ModelVisibility(key, visible) => {
                         if *visible {
                             this.preferences.hidden_models.remove(key);
@@ -419,20 +424,23 @@ impl Workspace {
             self.settings = Some(settings);
         }
         let state = self.conversations[self.active].state.read(cx);
-        let options = [state.sidebar, self.visible, state.show_thinking, state.generated_titles];
-        let models: Vec<(String, String)> = state
-            .models
-            .iter()
-            .map(|model| (model.provider.clone(), model.id.clone()))
-            .collect();
-        let hidden = self.preferences.hidden_models.clone();
+        let view = crate::settings::SettingsView {
+            options: [state.sidebar, self.visible, state.show_thinking, state.generated_titles],
+            appearance: self.preferences.appearance,
+            models: state
+                .models
+                .iter()
+                .map(|model| (model.provider.clone(), model.id.clone()))
+                .collect(),
+            hidden: self.preferences.hidden_models.clone(),
+        };
         self.conversations[self.active].state.update(cx, |state, _| {
             state.visible = false;
             state.model_menu = false;
             state.model_search_focus_pending = false;
             state.effort_menu = false;
         });
-        self.settings.as_ref().unwrap().update(cx, |settings, cx| settings.show(section, options, models, hidden, window, cx));
+        self.settings.as_ref().unwrap().update(cx, |settings, cx| settings.show(section, view, window, cx));
         self.settings_models = self
             .settings
             .as_ref()
@@ -1783,6 +1791,7 @@ impl Render for Workspace {
             });
         }
         let active = state.read(cx);
+        theme::apply(window.appearance());
         theme::set_effort(active.thinking_level.as_deref(), &active.thinking_levels);
         let mut root = div()
             .id("workspace")

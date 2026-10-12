@@ -275,6 +275,11 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
     env.pop("WAYLAND_DISPLAY", None)
     env.pop("PI_CODING_AGENT_SESSION_DIR", None)
     log = open(temp / "dish.log", "w")
+    # A aparência segue o desktop por padrão; estes testes verificam o visual
+    # escuro, então a preferência fica fixada como numa instalação existente.
+    (temp / "config/dish").mkdir(parents=True, exist_ok=True)
+    (temp / "config/dish/state.json").write_text(json.dumps({"appearance": "dark"}))
+
     process = subprocess.Popen([os.environ.get("DISH_TEST_BIN", str(ROOT / "target/debug/dish")), str(projects[0])], env=env, stdout=log, stderr=log)
 
     def events():
@@ -666,6 +671,9 @@ with tempfile.TemporaryDirectory(prefix="dish-metadata-") as directory:
             return subprocess.check_output(["tesseract", image.name, "stdout", "--psm", "11"],
                                            stderr=subprocess.DEVNULL).decode()
     with open(directory / "dish.log", "w") as log:
+        # Mesmo motivo do teste principal: o visual verificado é o escuro.
+        (directory / "config/dish").mkdir(parents=True, exist_ok=True)
+        (directory / "config/dish/state.json").write_text(json.dumps({"appearance": "dark"}))
         process = subprocess.Popen([os.environ.get("DISH_TEST_BIN", str(ROOT / "target/debug/dish")), str(directory)],
                                    env=metadata_env, stdout=log, stderr=log)
         try:

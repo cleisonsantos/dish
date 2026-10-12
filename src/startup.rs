@@ -361,6 +361,7 @@ impl Render for Startup {
         if let Some(workspace) = &self.ready {
             return workspace.clone().into_any_element();
         }
+        theme::apply(window.appearance());
         let mut view = div()
             .id("pi-setup")
             .size_full()

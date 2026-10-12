@@ -61,7 +61,7 @@ jobs:
           test -n "$DISH_TEST_BIN"
           bash tests/run_ui.sh tests/desktop_smoke.py tests/search_stability_smoke.py \
                              tests/startup_smoke.py tests/settings_smoke.py \
-                             tests/session_activity_smoke.py
+                             tests/session_activity_smoke.py tests/appearance_smoke.py
       - name: Install the Debian package and smoke-test /usr/bin/dish
         run: |
           sudo apt-get install -y ./dist/dish_*_amd64.deb

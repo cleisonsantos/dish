@@ -25,6 +25,8 @@ pub struct Preferences {
     /// Client-observed completion time for responses not yet viewed.
     pub unread_sessions: BTreeMap<PathBuf, u64>,
     pub session_filter: crate::session_activity::SessionFilter,
+    /// Aparência escolhida: escuro, claro ou seguindo o desktop.
+    pub appearance: crate::theme::AppearanceMode,
 }
 
 fn env_path(name: &str) -> Option<PathBuf> {
@@ -98,6 +100,7 @@ mod tests {
         assert_eq!(preferences.details_open, Some(false));
         assert_eq!(preferences.navigation_open, None);
         assert!(preferences.collapsed_projects.is_empty());
+        assert_eq!(preferences.appearance, crate::theme::AppearanceMode::System);
     }
     #[test]
     fn atomic_write_creates_directory_and_replaces_file() {
@@ -125,6 +128,7 @@ mod tests {
             pi_executable: None,
             unread_sessions: [(PathBuf::from("/tmp/session.jsonl"), 123456)].into(),
             session_filter: crate::session_activity::SessionFilter::Unread,
+            appearance: crate::theme::AppearanceMode::Dark,
         };
         let bytes = serde_json::to_vec(&preferences).unwrap();
         assert_eq!(serde_json::from_slice::<Preferences>(&bytes).unwrap(), preferences);
