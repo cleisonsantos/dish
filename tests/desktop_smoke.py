@@ -731,12 +731,16 @@ with tempfile.TemporaryDirectory(prefix="dish-metadata-") as directory:
                 # its row between OCR and the click, especially in release CI.
                 # Re-locate the badge on each attempt and stop once details open
                 # rather than clicking twice and closing them again.
+                #
+                # O clique vai na borda esquerda do texto: o centro da palavra
+                # pode cair sobre o cabeçalho do cartão (que abre o cartão em
+                # vez do bloco de metadados) em fontes diferentes das do CI.
                 if find_word(window, "monot", last=True):
                     return True
                 end = find_word(window, "fim", last=True)
                 if end is None:
                     return False
-                click(window, end[0] + end[2] // 2, end[1] + end[3] // 2)
+                click(window, end[0] + 2, end[1] + end[3] // 2)
                 park_mouse(window)
                 return find_word(window, "monot", last=True)
 
