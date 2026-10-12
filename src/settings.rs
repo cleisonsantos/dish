@@ -1,13 +1,15 @@
-use crate::{editor::{self, Editor}, theme};
+use crate::{editor::{self, Editor}, theme::{self, AppearanceMode}};
 use gpui::{prelude::*, *};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy, PartialEq)]
-pub enum Section { App, Models, Keys, About }
+pub enum Section { App, Appearance, Models, Keys, About }
 
 pub enum SettingsEvent {
     Closed,
     Preference(&'static str, bool),
+    /// O usuário escolheu escuro, claro ou seguir o desktop.
+    Appearance(AppearanceMode),
     /// Um modelo passou a visível (`true`) ou oculto (`false`) no seletor.
     ModelVisibility(String, bool),
     /// Vários modelos de uma vez (toggle de provedor, ocultar todos).
@@ -29,9 +31,20 @@ pub struct Settings {
     navigation: bool,
     thinking: bool,
     titles: bool,
+    appearance: AppearanceMode,
     /// `(provider, id)` de cada modelo que o Pi reportou.
     models: Vec<(String, String)>,
     hidden: BTreeSet<String>,
+}
+
+/// O que a tela de configurações precisa mostrar quando abre.
+pub struct SettingsView {
+    /// `[detalhes, navegação, raciocínio, títulos]`.
+    pub options: [bool; 4],
+    pub appearance: AppearanceMode,
+    /// `(provider, id)` de cada modelo que o Pi reportou.
+    pub models: Vec<(String, String)>,
+    pub hidden: BTreeSet<String>,
 }
 
 impl Settings {
@@ -42,6 +55,7 @@ impl Settings {
             open: false, section: Section::App, focus: cx.focus_handle(),
             previous_focus: None, search,
             details: true, navigation: true, thinking: true, titles: false,
+            appearance: AppearanceMode::System,
             models: Vec::new(), hidden: BTreeSet::new(),
         }
     }
@@ -49,18 +63,17 @@ impl Settings {
     pub fn show(
         &mut self,
         section: Section,
-        options: [bool; 4],
-        models: Vec<(String, String)>,
-        hidden: BTreeSet<String>,
+        view: SettingsView,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if !self.open { self.previous_focus = window.focused(cx); }
         self.open = true;
         self.section = section;
-        [self.details, self.navigation, self.thinking, self.titles] = options;
-        self.models = models;
-        self.hidden = hidden;
+        [self.details, self.navigation, self.thinking, self.titles] = view.options;
+        self.appearance = view.appearance;
+        self.models = view.models;
+        self.hidden = view.hidden;
         self.focus.focus(window, cx);
         if section == Section::Keys { self.search.read(cx).focus_handle.clone().focus(window, cx); }
         cx.notify();
@@ -180,6 +193,44 @@ fn control(id: impl Into<ElementId>, label: impl Into<SharedString>, click: impl
         .cursor_pointer().hover(|s| s.bg(theme::hover()).text_color(theme::text()))
         .on_click(click).child(label.into())
 }
+/// Um cursor do controle segmentado da Aparência, na mesma linguagem dos
+/// filtros da navegação: poço escuro com o item ativo em superfície clara.
+fn appearance_segment(
+    id: &'static str,
+    label: &'static str,
+    active: bool,
+    cx: &mut Context<Settings>,
+    run: impl Fn(&mut Settings, &mut Context<Settings>) + 'static,
+) -> AnyElement {
+    div()
+        .id(id)
+        .min_w(px(0.))
+        .px(px(theme::S2))
+        .py(px(3.))
+        .rounded(theme::r_small())
+        .when(active, |el| {
+            el.bg(theme::surface_2())
+                .border_1()
+                .border_color(theme::line())
+                .text_color(theme::text())
+                .font_weight(FontWeight::MEDIUM)
+        })
+        .when(!active, |el| {
+            el.cursor_pointer()
+                .border_1()
+                .border_color(transparent_black())
+                .text_color(theme::faint())
+                .hover(|s| s.bg(theme::hover()).text_color(theme::text()))
+        })
+        .text_size(px(theme::TEXT_XS))
+        .truncate()
+        .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+            run(this, cx);
+        }))
+        .child(SharedString::from(label.to_owned()))
+        .into_any_element()
+}
+
 /// Título de página: uma linha, sem rótulo de seção novo — é a mesma palavra
 /// do menu à esquerda.
 fn page_title(label: &str) -> Div {
@@ -198,6 +249,7 @@ impl Render for Settings {
         let mut menu = column().w(px(184.)).flex_none();
         for (section, label, id) in [
             (Section::App, "Aplicativo", "settings-app"),
+            (Section::Appearance, "Aparência", "settings-appearance"),
             (Section::Models, "Modelos", "settings-models"),
             (Section::Keys, "Atalhos de teclado", "settings-keys"),
             (Section::About, "Sobre / Pi", "settings-about"),
@@ -256,6 +308,45 @@ impl Render for Settings {
                 }
                 page = page.child(note("Resume a intenção do último pedido com o modelo da sessão (gasta tokens). O resumo aparece só no Dish, sem renomear a sessão do Pi. Durante a geração, mantém o título anterior."));
                 page.into_any_element()
+            }
+            Section::Appearance => {
+                let page = column().child(page_title("Aparência")).child(note(
+                    "Vale para todas as janelas e é salva entre execuções. O modo Sistema acompanha o tema do desktop; sem preferência do sistema, o Dish fica claro.",
+                ));
+                let mut segments = div()
+                    .flex()
+                    .flex_row()
+                    .items_stretch()
+                    .p(px(2.))
+                    .gap(px(1.))
+                    .rounded(theme::r_control())
+                    .bg(theme::inset())
+                    .border_1()
+                    .border_color(theme::line_soft());
+                for (mode, label, id) in [
+                    (AppearanceMode::System, "Sistema", "appearance-system"),
+                    (AppearanceMode::Dark, "Escuro", "appearance-dark"),
+                    (AppearanceMode::Light, "Claro", "appearance-light"),
+                ] {
+                    segments = segments.child(appearance_segment(
+                        id,
+                        label,
+                        self.appearance == mode,
+                        cx,
+                        move |this, cx| {
+                            this.appearance = mode;
+                            cx.emit(SettingsEvent::Appearance(mode));
+                            cx.notify();
+                        },
+                    ));
+                }
+                page.child(
+                    div().flex().flex_row().items_center().gap(px(12.))
+                        .px(px(12.)).py(px(8.)).rounded(theme::r_control())
+                        .bg(theme::surface_2()).border_1().border_color(theme::line_soft())
+                        .child(div().flex_1().min_w(px(0.)).text_size(px(theme::TEXT_SM)).text_color(theme::dim()).child("Tema"))
+                        .child(segments),
+                ).into_any_element()
             }
             Section::Models => {
                 let mut page = column().child("Modelos").child(note(

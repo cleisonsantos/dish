@@ -282,6 +282,10 @@ fn main() {
         ]);
         cx.bind_keys(keys);
 
+        // A preferência de aparência vale desde a primeira pintura; o render
+        // resolve o modo Sistema a cada quadro.
+        theme::set_mode(preferences.appearance);
+
         let [width, height] = preferences.window_size
             .filter(|s| s.iter().all(|v| v.is_finite()) && s[0] >= 720. && s[1] >= 520.)
             .unwrap_or([1240., 860.]);
@@ -305,6 +309,10 @@ fn main() {
 
         cx.open_window(options, move |window, cx| {
             window.set_window_title("Dish");
+            // Modo Sistema: quando o desktop troca de tema, a janela repinta.
+            window
+                .observe_window_appearance(|window, _| window.refresh())
+                .detach();
             let root = cx.new(|cx| startup::Startup::new(cwd.clone(), pi_flags.clone(), initial_prompt.clone(), window, cx));
             let weak = root.downgrade();
             window.on_window_should_close(cx, move |_, cx| {
