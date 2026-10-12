@@ -134,8 +134,11 @@ Function FinishPage
   Pop $DishCheckbox
   ${NSD_Check} $DishCheckbox
   ${If} $RunPiInstaller == ${BST_CHECKED}
+    ; Desmarcado, mas utilizável: abrir o Dish com o instalador do Pi ainda
+    ; rodando mostra o assistente sem achar o Pi. Quem quiser, marca.
     ${NSD_Uncheck} $DishCheckbox
-    EnableWindow $DishCheckbox 0
+    ${NSD_CreateLabel} 0 52u 100% 24u "O instalador do Pi abre em outra janela; conclua-o antes de abrir o Dish."
+    Pop $0
   ${EndIf}
   nsDialogs::Show
 FunctionEnd

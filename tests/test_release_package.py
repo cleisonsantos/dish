@@ -250,8 +250,10 @@ class WindowsPackagingTests(unittest.TestCase):
         # Sem Pi, a instalação já vem marcada; e o Dish não abre junto com o
         # instalador do Pi (evita duas instalações ao mesmo tempo).
         self.assertIn("${NSD_Check} $PiCheckbox", nsi)
-        self.assertIn("EnableWindow $DishCheckbox 0", nsi)
         self.assertIn("ExecShell \"open\" \"$INSTDIR\\${APP_EXE}\"", nsi)
+        # O "Executar o Dish" fica desmarcado, mas nunca desabilitado.
+        self.assertIn("${NSD_Uncheck} $DishCheckbox", nsi)
+        self.assertNotIn("EnableWindow $DishCheckbox", nsi)
 
     def test_shared_bundle_module_is_used_by_both_packagers(self):
         for script in ["package-linux.py", "package-windows.py"]:
