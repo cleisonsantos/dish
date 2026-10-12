@@ -717,11 +717,14 @@ with tempfile.TemporaryDirectory(prefix="dish-metadata-") as directory:
             history = json.loads((ROOT / "tests/fixtures/metadata_history.json").read_text())
             expected_command = history[1]["content"][0]["arguments"]["command"]
             assert clipboard_text() == expected_command, repr(clipboard_text())
-            # With details closed, the full marker must still be readable in
-            # the hoverable tooltip, not only the truncated summary.
+            # Com os detalhes fechados, o resumo está truncado; expandir o
+            # grupo revela o comando completo (antes era verificado no
+            # tooltip flutuante, que disputava o clique no CI).
+            group = find_word(window, "comando", last=True)
+            click(window, group[0] + group[2] // 2, group[1] + group[3] // 2)
             bash = find_word(window, "bash")
             click(window, bash[0] + bash[2] // 2, bash[1] + bash[3] // 2)
-            wait_for(lambda: find_word(window, "COMANDO_COMPLETO"), "Full command tooltip missing", timeout=4)
+            wait_for(lambda: find_word(window, "COMANDO_COMPLETO"), "Full command not expanded", timeout=6)
             park_mouse(window)
             result = find_word(window, "resultado")
             click(window, result[0] + result[2] // 2, result[1] + result[3] // 2)
@@ -760,15 +763,15 @@ with tempfile.TemporaryDirectory(prefix="dish-metadata-") as directory:
                 end = find_word(window, "fim", last=True)
                 if end is None:
                     return False
-                click(window, end[0] + 2, end[1] + end[3] // 2)
+                # O clique na borda esquerda介s pode cair no vão entre o
+                # botão de copiar e o badge; mira no meio do primeiro glifo.
+                click(window, end[0] + 5, end[1] + end[3] // 2)
                 park_mouse(window)
                 # O frame dos detalhes pode demorar na CPU de CI: um clique
                 # apressado fecharia o que acabou de abrir.
                 for attempt in range(3):
                     if find_word(window, "monot", last=True):
                         return True
-                    subprocess.run(["import", "-window", str(window),
-                                    f"/tmp/dish-meta-dbg-{attempt}.png"], check=False)
                     time.sleep(0.3)
                 return False
 
