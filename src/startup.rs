@@ -584,8 +584,6 @@ fn primary_button(
         .bg(theme::surface_2())
         .border_1()
         .border_color(theme::line_strong())
-        .text_size(px(theme::TEXT))
-        .font_weight(FontWeight::MEDIUM)
         .text_color(theme::text())
         .cursor_pointer()
         .hover(|s| s.bg(theme::hover()).border_color(theme::text()))

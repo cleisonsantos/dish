@@ -696,6 +696,7 @@ fn tool_row(
     let weak = weak.clone();
     let command = card.args.get("command").and_then(serde_json::Value::as_str).map(str::to_owned);
     let complete = tool_copy_text(&card.args, &card.args_text);
+    let tooltip = complete.clone();
     let prefix = format!("tool-section-{message_index}-{block_index}");
     let mut sections: Vec<AnyElement> = Vec::new();
     if let Some(command) = command.as_ref() {
@@ -735,6 +736,9 @@ fn tool_row(
         .cursor_pointer()
         .focusable().tab_index(0)
         .focus(|s| s.border_1().border_color(theme::accent()))
+        .hoverable_tooltip(move |_, cx| {
+            cx.new(|_| super::copy_button::TextTooltip(tooltip.clone())).into()
+        })
         .on_key_down(move |event, window, cx| match event.keystroke.key.as_str() {
             "enter" | "space" => {
                 let _ = keyboard_weak.update(cx, |state, cx| {
@@ -845,6 +849,7 @@ fn command_row(
         None => label.to_string(),
     };
 
+    let tooltip = card.command.clone();
     let prefix = format!("bash-section-{message_index}-{block_index}");
     let mut column = div()
         .flex()
@@ -852,6 +857,9 @@ fn command_row(
         .child(
             div()
                 .id(SharedString::from(format!("bash-command-{message_index}-{block_index}")))
+                .hoverable_tooltip(move |_, cx| {
+                    cx.new(|_| super::copy_button::TextTooltip(tooltip.clone())).into()
+                })
                 .flex()
                 .flex_row()
                 .flex_wrap()

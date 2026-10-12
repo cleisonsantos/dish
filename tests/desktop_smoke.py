@@ -117,20 +117,6 @@ def click(window, x, y):
     time.sleep(0.2)
 
 
-def switch_conversation(window, n):
-    """Troca de conversa por teclado: Atalho determinístico (ctrl-tab gira entre abertas)."""
-    for _ in range(n):
-        chord("Control_L", "Tab")
-    time.sleep(0.3)
-
-
-def switch_conversation_back(window, n):
-    """Caminho inverso do switch_conversation (ctrl-shift-tab)."""
-    for _ in range(n):
-        chord("Control_L", "Shift_L", "Tab")
-    time.sleep(0.3)
-
-
 def find_word(window, needle, last=False):
     """Locate rendered text instead of assuming transcript row coordinates."""
     with tempfile.NamedTemporaryFile(suffix=".png") as image:
@@ -215,8 +201,6 @@ def park_mouse(window):
                               ctypes.byref(root_x), ctypes.byref(root_y), ctypes.byref(child))
     xtst.XTestFakeMotionEvent(display, -1, root_x.value, root_y.value, 0)
     x11.XFlush(display)
-    # O evento de leave só vira fechamento de tooltip no próximo frame.
-    time.sleep(0.2)
 
 
 def transcript_pixels(window):
@@ -310,9 +294,9 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         expose_window(window)
         # Wait for rendered placeholder text, then click its actual glyphs.
         # A native title/get_messages can exist before focus/layout is ready.
-        wait_for(lambda: find_word(window, "pergun"), "Composer did not render")
+        wait_for(lambda: find_word(window, "Pergunte"), "Composer did not render")
         wait_for(lambda: find_word(window, "gitcontext-main"), "Git branch footer did not render")
-        placeholder = find_word(window, "pergun")
+        placeholder = find_word(window, "Pergunte")
         click(window, placeholder[0] + placeholder[2] // 2, placeholder[1] + placeholder[3] // 2)
         # Content search reaches archived message bodies, not just titles,
         # and stays scoped to the current project's sessions.
@@ -413,10 +397,10 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         wait_for(lambda: len(commands("prompt")) == 2, "Second prompt not sent")
         type_text("draft-b")
         # Return to alpha (the initial, unsaved conversation).
-        switch_conversation_back(window, 1)
+        click_nav_label(window, "long-a")
         type_text("draft-a")
         # Return to beta, whose draft must survive.
-        switch_conversation(window, 1)
+        click_beta_session(window)
         press("Return")
         wait_for(lambda: len(commands("prompt")) == 3, "Draft prompt not sent")
         prompts = commands("prompt")
@@ -433,40 +417,36 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         scroll_up(window)
         park_mouse(window)
         scrolled = stable_transcript_pixels(window)
-        switch_conversation_back(window, 1)
-        switch_conversation(window, 1)
+        click_nav_label(window, "long-a")
+        click_beta_session(window)
         park_mouse(window)
         wait_for(lambda: transcript_pixels(window) == scrolled,
                  "Transcript scroll position was lost", timeout=3)
-        switch_conversation_back(window, 1)
+        click_nav_label(window, "long-a")
         press("Return")
         wait_for(lambda: len(commands("prompt")) == 4, "Alpha draft was lost")
         assert commands("prompt")[3]["command"]["message"] == "draft-a"
         # A hidden extension dialog must neither take beta's input nor stop navigation.
         type_text("dialog")
         press("Return")
-        switch_conversation(window, 1)
+        click_beta_session(window)
         wait_for(lambda: any(item.get("record", {}).get("type") == "extension_ui_request" for item in events()),
                  "Background extension dialog did not arrive")
         time.sleep(0.2)
         # Alpha has just changed to max; beta's visible accent must remain low.
-        # Repinturas em CPU ocupada podem mostrar o frame anterior; repete a
-        # leitura com prazo em vez de reprovar no primeiro quadro.
-        def visible_accent():
-            pixels = subprocess.check_output(
-                ["import", "-window", str(window), "-crop", ACCENT_PROBE, "-depth", "8", "rgb:-"])
-            return bytes((84, 137, 164)) in pixels
-        wait_for(visible_accent, "Background effort changed the visible accent")
+        accent_pixels = subprocess.check_output(
+            ["import", "-window", str(window), "-crop", ACCENT_PROBE, "-depth", "8", "rgb:-"])
+        assert bytes((84, 137, 164)) in accent_pixels, "Background effort changed the visible accent"
         type_text("still-beta")
         press("Return")
         wait_for(lambda: len(commands("prompt")) == 6, "Hidden dialog stole keyboard focus")
         assert commands("prompt")[-1]["pid"] == prompts[1]["pid"]
-        switch_conversation_back(window, 1)
+        click_nav_label(window, "dialog")
         type_text("answer")
         press("Return")
         wait_for(lambda: commands("extension_ui_response"), "Pending dialog could not be answered")
         assert commands("extension_ui_response")[-1]["command"]["value"] == "answer"
-        switch_conversation(window, 1)
+        click_beta_session(window)
         type_text("long-close")
         press("Return")
         wait_for(lambda: len(commands("prompt")) == 7, "Close test prompt not sent")
@@ -574,7 +554,7 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         time.sleep(0.65)
         assert transcript_pixels(window) == before, "Streaming pulled the reader back to the bottom"
         # Direct selection on formatted text, including Unicode and code.
-        placeholder = find_word(window, "pergun")
+        placeholder = find_word(window, "Pergunte")
         click(window, placeholder[0] + placeholder[2] // 2, placeholder[1] + placeholder[3] // 2)
         initializations = len(commands("get_messages"))
         chord("Control_L", "n")
@@ -717,14 +697,11 @@ with tempfile.TemporaryDirectory(prefix="dish-metadata-") as directory:
             history = json.loads((ROOT / "tests/fixtures/metadata_history.json").read_text())
             expected_command = history[1]["content"][0]["arguments"]["command"]
             assert clipboard_text() == expected_command, repr(clipboard_text())
-            # Com os detalhes fechados, o resumo está truncado; expandir o
-            # grupo revela o comando completo (antes era verificado no
-            # tooltip flutuante, que disputava o clique no CI).
-            group = find_word(window, "comando", last=True)
-            click(window, group[0] + group[2] // 2, group[1] + group[3] // 2)
+            # With details closed, the full marker must still be readable in
+            # the hoverable tooltip, not only the truncated summary.
             bash = find_word(window, "bash")
             click(window, bash[0] + bash[2] // 2, bash[1] + bash[3] // 2)
-            wait_for(lambda: find_word(window, "COMANDO_COMPLETO"), "Full command not expanded", timeout=6)
+            wait_for(lambda: find_word(window, "COMANDO_COMPLETO"), "Full command tooltip missing", timeout=4)
             park_mouse(window)
             result = find_word(window, "resultado")
             click(window, result[0] + result[2] // 2, result[1] + result[3] // 2)
@@ -763,17 +740,9 @@ with tempfile.TemporaryDirectory(prefix="dish-metadata-") as directory:
                 end = find_word(window, "fim", last=True)
                 if end is None:
                     return False
-                # O clique na borda esquerda介s pode cair no vão entre o
-                # botão de copiar e o badge; mira no meio do primeiro glifo.
-                click(window, end[0] + 5, end[1] + end[3] // 2)
+                click(window, end[0] + 2, end[1] + end[3] // 2)
                 park_mouse(window)
-                # O frame dos detalhes pode demorar na CPU de CI: um clique
-                # apressado fecharia o que acabou de abrir.
-                for attempt in range(3):
-                    if find_word(window, "monot", last=True):
-                        return True
-                    time.sleep(0.3)
-                return False
+                return find_word(window, "monot", last=True)
 
             wait_for(open_observed_metadata, "Observed duration details missing")
             duration_word = find_word(window, "monot", last=True)

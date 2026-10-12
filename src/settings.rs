@@ -172,7 +172,9 @@ fn note(value: &str) -> Div {
         .child(SharedString::from(value.to_owned()))
 }
 fn control(id: impl Into<ElementId>, label: impl Into<SharedString>, click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Stateful<Div> {
-    div().id(id).px(px(12.)).py(px(8.)).rounded(theme::r_control())
+    // O padding desconta a borda: a caixa final fica com as mesmas medidas da
+    // versão sem fio, e o conteúdo abaixo não desliza um pixel.
+    div().id(id).px(px(11.)).py(px(7.)).rounded(theme::r_control())
         .bg(theme::surface_2()).border_1().border_color(theme::line_soft())
         .text_color(theme::dim())
         .cursor_pointer().hover(|s| s.bg(theme::hover()).text_color(theme::text()))
@@ -256,7 +258,7 @@ impl Render for Settings {
                 page.into_any_element()
             }
             Section::Models => {
-                let mut page = column().child(page_title("Modelos")).child(note(
+                let mut page = column().child("Modelos").child(note(
                     "Oculta modelos apenas no seletor do Dish. O Pi continua com a lista completa; nada é alterado na configuração dele.",
                 ));
                 if self.models.is_empty() {

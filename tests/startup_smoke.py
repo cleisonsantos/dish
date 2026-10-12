@@ -93,11 +93,11 @@ printf '#!/bin/sh\\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@
         assert not terminal_log.exists(), "Official installer ran without consent"
         screenshot = tempfile.mktemp(prefix="dish-setup-", suffix=".png")
         # O assistente mostra o resultado da verificação antes de qualquer ação.
-        click_text("Instalar")
+        click_text("Instalar o Pi")
         subprocess.run(["import", "-window", str(window), screenshot], check=True)
         print(f"Setup screenshot: {screenshot}", flush=True)
         # Official consent launches only a fake terminal, never a remote script.
-        click_text("Aceitar")
+        click_text("Aceitar e abrir instalador oficial")
         wait_for(lambda: terminal_log.exists(), "Official consent did not open terminal")
         arguments = terminal_log.read_text().splitlines()
         assert arguments[:3] == ["-e", "/bin/sh", "-c"]
@@ -113,11 +113,11 @@ printf '#!/bin/sh\\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@
         x11.XFlush(display)
         time.sleep(2)
         # Segundo passo do assistente: a alternativa sem terminal.
-        click_text("Instalar")
-        click_text("instalar via npm")
+        click_text("Instalar o Pi")
+        click_text("Instalar via npm")
         wait_for(lambda: install_log.exists(), "Consent did not start fake installation")
         # A instalação leva ao passo Pronto; abrir o Dish confirma a escolha.
-        click_text("Abrir")
+        click_text("Abrir o Dish")
         wait_for(lambda: any(e.get("command", {}).get("type") == "get_messages" for e in events()),
                  "Installed Pi did not initialize")
         preferences = temp / "config/dish/state.json"
