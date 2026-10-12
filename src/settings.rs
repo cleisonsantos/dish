@@ -158,13 +158,36 @@ fn switch(id: impl Into<ElementId>, state: SwitchState, click: impl Fn(&ClickEve
                     SwitchState::Off => theme::faint(),
                 }),
         )
-        .on_click(click)
+        // O interruptor é o alvo próprio; em linhas toda-clicáveis ele não
+        // pode repetir o mesmo giro duas vezes.
+        .on_click(move |event: &ClickEvent, window: &mut Window, cx: &mut App| {
+            cx.stop_propagation();
+            click(event, window, cx);
+        })
 }
-fn note(value: &str) -> Div { div().text_size(px(theme::TEXT_SM)).text_color(theme::dim()).child(SharedString::from(value.to_owned())) }
+fn note(value: &str) -> Div {
+    div()
+        .text_size(px(theme::TEXT_SM))
+        .text_color(theme::dim())
+        .child(SharedString::from(value.to_owned()))
+}
 fn control(id: impl Into<ElementId>, label: impl Into<SharedString>, click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Stateful<Div> {
-    div().id(id).px(px(12.)).py(px(8.)).rounded(theme::r_control())
-        .bg(theme::surface_2()).cursor_pointer().hover(|s| s.bg(theme::hover()))
+    // O padding desconta a borda: a caixa final fica com as mesmas medidas da
+    // versão sem fio, e o conteúdo abaixo não desliza um pixel.
+    div().id(id).px(px(11.)).py(px(7.)).rounded(theme::r_control())
+        .bg(theme::surface_2()).border_1().border_color(theme::line_soft())
+        .text_color(theme::dim())
+        .cursor_pointer().hover(|s| s.bg(theme::hover()).text_color(theme::text()))
         .on_click(click).child(label.into())
+}
+/// Título de página: uma linha, sem rótulo de seção novo — é a mesma palavra
+/// do menu à esquerda.
+fn page_title(label: &str) -> Div {
+    div()
+        .text_size(px(14.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(theme::text())
+        .child(SharedString::from(label.to_owned()))
 }
 
 impl Render for Settings {
@@ -184,27 +207,52 @@ impl Render for Settings {
                 if section == Section::Keys { this.search.read(cx).focus_handle.clone().focus(window, cx); }
                 else { this.focus.focus(window, cx); }
                 cx.notify();
-            })).when(self.section == section, |el| el.border_l_2().border_color(theme::accent())));
+            })).when(self.section == section, |el| el
+                // A escolha na esquerda é neutra: o accent é do raciocínio,
+                // e não muda de cor porque uma tela de configurações abriu.
+                .bg(theme::surface_2()).border_color(theme::line()).text_color(theme::text())));
         }
         let content = match self.section {
             Section::App => {
-                let mut page = column().child("Aplicativo");
+                let mut page = column().child(page_title("Aplicativo"));
                 for (id, label, current) in [
                     ("details", "Painel de detalhes", self.details),
                     ("navigation", "Navegação de sessões", self.navigation),
                     ("thinking", "Raciocínio expandido", self.thinking),
                     ("generated_titles", "Títulos gerados por modelo", self.titles),
                 ] {
-                    page = page.child(control(id, SharedString::from(format!("{label}: {}", if current { "ativado" } else { "desativado" })),
-                        cx.listener(move |this, _, _, cx| {
-                            match id {
-                                "details" => this.details = !current,
-                                "navigation" => this.navigation = !current,
-                                "thinking" => this.thinking = !current,
-                                _ => this.titles = !current,
-                            }
-                            cx.emit(SettingsEvent::Preference(id, !current)); cx.notify();
-                        })));
+                    // Linha inteira clicável — o interruptor é o estado, não
+                    // o único alvo.
+                    page = page.child(
+                        div().id(id).flex().flex_row().items_center().gap(px(12.))
+                            .px(px(12.)).py(px(8.)).rounded(theme::r_control())
+                            .bg(theme::surface_2()).border_1().border_color(theme::line_soft())
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme::hover()).border_color(theme::line()))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                match id {
+                                    "details" => this.details = !current,
+                                    "navigation" => this.navigation = !current,
+                                    "thinking" => this.thinking = !current,
+                                    _ => this.titles = !current,
+                                }
+                                cx.emit(SettingsEvent::Preference(id, !current)); cx.notify();
+                            }))
+                            .child(div().flex_1().min_w(px(0.))
+                                .text_size(px(theme::TEXT_SM)).text_color(theme::dim())
+                                .child(SharedString::from(label.to_owned())))
+                            .child(switch(SharedString::from(format!("{id}-switch")),
+                                if current { SwitchState::On } else { SwitchState::Off },
+                                cx.listener(move |this, _, _, cx| {
+                                    match id {
+                                        "details" => this.details = !current,
+                                        "navigation" => this.navigation = !current,
+                                        "thinking" => this.thinking = !current,
+                                        _ => this.titles = !current,
+                                    }
+                                    cx.emit(SettingsEvent::Preference(id, !current)); cx.notify();
+                                }))),
+                    );
                 }
                 page = page.child(note("Resume a intenção do último pedido com o modelo da sessão (gasta tokens). O resumo aparece só no Dish, sem renomear a sessão do Pi. Durante a geração, mantém o título anterior."));
                 page.into_any_element()
@@ -329,10 +377,12 @@ impl Render for Settings {
                 let focus = self.search.read(cx).focus_handle.clone();
                 let click_focus = focus.clone();
                 let query = self.search.read(cx).text(cx).trim().to_lowercase();
-                let mut page = column().child("Atalhos de teclado").child(div().id("settings-key-search")
+                let mut page = column().child(page_title("Atalhos de teclado")).child(div().id("settings-key-search")
                     .key_context("DishHelpSearch").track_focus(&focus)
                     .on_mouse_down(MouseButton::Left, move |_, window, cx| click_focus.focus(window, cx))
-                    .map(editor::standard_actions(self.search.clone())).p(px(8.)).bg(theme::inset()).child(self.search.clone()));
+                    .map(editor::standard_actions(self.search.clone()))
+                    .p(px(8.)).rounded(theme::r_technical()).bg(theme::inset())
+                    .border_1().border_color(theme::line_soft()).child(self.search.clone()));
                 let mut count = 0;
                 for (key, description) in crate::ui::overlays::keyboard_shortcuts() {
                     if !query.is_empty() && !format!("{key} {description}").to_lowercase().contains(&query) { continue; }
@@ -342,9 +392,11 @@ impl Render for Settings {
                 if count == 0 { page = page.child(note("Nenhum atalho encontrado.")); }
                 page.into_any_element()
             }
-            Section::About => column().child("Dish")
+            Section::About => column().child(page_title("Dish"))
                 .child(note(&format!("Versão do Dish: {}", env!("CARGO_PKG_VERSION"))))
-                .child(note(&format!("Pi selecionado: {}", crate::installation::program())))
+                // Os pares de valor分离tens: rótulo em uma linha, path na
+                // seguinte — caminhos longos não roubam a leitura do rótulo.
+                .child(about_pair("Pi selecionado", &crate::installation::program()))
                 .child(note("Pi mantém as sessões e credenciais. O Dish não executa um serviço em segundo plano."))
                 .child(control("settings-pi-choose", "Escolher executável do Pi", cx.listener(
                     |_, _, _, cx| cx.emit(SettingsEvent::ChoosePi),
@@ -352,11 +404,11 @@ impl Render for Settings {
                 .child(control("settings-docs", "Documentação oficial do Pi", |_, _, cx| cx.open_url("https://github.com/earendil-works/pi"))).into_any_element(),
         };
         let card = column().id("settings-card").w(px(width)).h(px(height.min(620.)))
-            .p(px(20.)).rounded(px(6.)).border_1().border_color(theme::line_strong())
+            .p(px(20.)).rounded(theme::r_surface()).border_1().border_color(theme::line_strong())
             .bg(theme::surface()).shadow(theme::shadow_overlay())
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(div().flex().justify_between().items_center()
-                .child("Configurações")
+                .child(div().text_color(theme::text()).child("Configurações"))
                 .child(control("settings-close", "Fechar · Esc", cx.listener(|this, _, window, cx| this.close(window, cx)))))
             .child(crate::ui::rule())
             .child(div().flex().flex_1().gap(px(20.)).min_h(px(0.)).child(menu)
@@ -403,6 +455,17 @@ impl Render for Settings {
             .child(card).into_any_element()
     }
 }
+
+/// Par rótulo/valor da tela "Sobre": o rótulo numa linha própria (curta,
+/// legível) e o caminho qualquer abaixo, em fonte de máquina.
+fn about_pair(label: &str, value: &str) -> Div {
+    div().flex().flex_col().gap(px(2.)).min_w(px(0.))
+        .child(div().text_size(px(theme::TEXT_SM)).text_color(theme::text()).child(SharedString::from(label.to_owned())))
+        .child(div().min_w(px(0.)).truncate().font_family(theme::FONT_MONO)
+            .text_size(px(theme::TEXT_XS)).text_color(theme::dim())
+            .child(SharedString::from(value.to_owned())))
+}
+
 
 #[cfg(test)]
 mod model_grouping_tests {

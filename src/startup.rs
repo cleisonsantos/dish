@@ -320,9 +320,9 @@ impl Startup {
     }
 
     fn connect(&self, client: PiClient, window: &mut Window, cx: &mut App) -> Entity<Workspace> {
-        let editor = cx.new(|cx| Editor::new("", "Ask anything", window, cx));
-        let modal = cx.new(|cx| Editor::new("", "Type here…", window, cx));
-        let search = cx.new(|cx| Editor::new("", "Search models or providers…", window, cx));
+        let editor = cx.new(|cx| Editor::new("", "Pergunte algo ao agente", window, cx));
+        let modal = cx.new(|cx| Editor::new("", "Escreva aqui…", window, cx));
+        let search = cx.new(|cx| Editor::new("", "Buscar modelos ou provedores…", window, cx));
         let help = cx.new(|cx| Editor::new("", "Buscar atalhos…", window, cx));
         let nav = cx.new(|cx| Editor::new("", "Filtrar sessões", window, cx));
         let state = cx.new(|cx| {
@@ -370,19 +370,37 @@ impl Render for Startup {
             .items_center()
             .track_focus(&self.focus)
             .justify_center()
-            .gap(px(16.))
+            .gap(px(14.))
             .p(px(24.))
             .bg(theme::bg())
             .text_color(theme::text())
             .font_family(theme::FONT_UI)
             .text_size(px(14.))
             .line_height(px(20.))
-            .child(div().text_size(px(22.)).child(self.step.title()));
+            // O pratinho dá as boas-vindas; o passo aparece por cima dele,
+            // sem rótulo pequeno explicando o que é a tela.
+            .child(
+                img("dish-icon.png").flex_none().w(px(64.)).h(px(64.)).opacity(0.9),
+            )
+            .child(
+                div()
+                    .text_size(px(20.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme::text())
+                    .child(self.step.title()),
+            );
 
         if !self.message.is_empty() {
             view = view.child(
                 div()
                     .max_w(px(680.))
+                    .px(px(theme::S4))
+                    .py(px(theme::S2 + 1.))
+                    .rounded(theme::r_control())
+                    .bg(theme::surface())
+                    .border_1()
+                    .border_color(theme::line())
+                    .text_color(theme::dim())
                     .text_center()
                     .child(self.message.clone()),
             );
@@ -408,7 +426,7 @@ impl Render for Startup {
                 match self.probe.as_ref() {
                     Some(probe) if probe.found() => {
                         step = step
-                            .child(button("setup-open", "Abrir o Dish", cx.listener(|this, _: &ClickEvent, window, cx| this.connect_now(window, cx))))
+                            .child(primary_button("setup-open", "Abrir o Dish", cx.listener(|this, _: &ClickEvent, window, cx| this.connect_now(window, cx))))
                             .child(
                                 div()
                                     .flex()
@@ -420,7 +438,7 @@ impl Render for Startup {
                     }
                     Some(_) => {
                         step = step
-                            .child(button("setup-install-step", "Instalar o Pi", cx.listener(|this, _: &ClickEvent, _, cx| {
+                            .child(primary_button("setup-install-step", "Instalar o Pi", cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.step = Step::Install;
                                 this.check_node(cx);
                                 cx.notify();
@@ -448,7 +466,7 @@ impl Render for Startup {
                     .child(div().max_w(px(680.)).text_center().text_color(theme::dim()).child(
                         "O instalador oficial abre em um terminal, baixa o Pi, escolhe o destino e pode instalar dependências (o Node, quando falta). O comando fica visível lá.",
                     ))
-                    .child(button("setup-official", "Aceitar e abrir instalador oficial", cx.listener(|this, _: &ClickEvent, _, cx| this.install_official(cx))))
+                    .child(primary_button("setup-official", "Aceitar e abrir instalador oficial", cx.listener(|this, _: &ClickEvent, _, cx| this.install_official(cx))))
                     .child(
                         div()
                             .flex()
@@ -497,7 +515,7 @@ impl Render for Startup {
                     "Tudo certo. O Dish vai usar esse executável e guardar a escolha nas preferências.",
                 ))
                 .child(div().max_w(px(680.)).text_center().font_family(theme::FONT_MONO).child(summary))
-                .child(button("setup-open", "Abrir o Dish", cx.listener(|this, _: &ClickEvent, window, cx| this.connect_now(window, cx))))
+                .child(primary_button("setup-open", "Abrir o Dish", cx.listener(|this, _: &ClickEvent, window, cx| this.connect_now(window, cx))))
                 .child(
                     div()
                         .flex()
@@ -534,10 +552,41 @@ fn button(
         .id(id)
         .px(px(16.))
         .py(px(8.))
-        .rounded(px(6.))
-        .bg(theme::surface())
+        .rounded(theme::r_control())
+        .bg(theme::surface_2())
+        .border_1()
+        .border_color(theme::line())
+        .text_size(px(theme::TEXT_SM))
+        .text_color(theme::dim())
         .cursor_pointer()
-        .hover(|s| s.bg(theme::hover()))
+        .hover(|s| {
+            s.bg(theme::hover())
+                .border_color(theme::line_strong())
+                .text_color(theme::text())
+        })
+        .on_click(click)
+        .child(label)
+}
+
+/// A ação principal de cada passo: contorno forte com a cor de texto —
+/// é o único peso visual do passo, sem virar um bloco claro que o
+/// reconhecimento de tela (e olhos cansados) precisam adivinhar.
+fn primary_button(
+    id: &'static str,
+    label: &'static str,
+    click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .px(px(theme::S4))
+        .py(px(9.))
+        .rounded(theme::r_action())
+        .bg(theme::surface_2())
+        .border_1()
+        .border_color(theme::line_strong())
+        .text_color(theme::text())
+        .cursor_pointer()
+        .hover(|s| s.bg(theme::hover()).border_color(theme::text()))
         .on_click(click)
         .child(label)
 }

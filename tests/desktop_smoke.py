@@ -294,9 +294,9 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         expose_window(window)
         # Wait for rendered placeholder text, then click its actual glyphs.
         # A native title/get_messages can exist before focus/layout is ready.
-        wait_for(lambda: find_word(window, "anything"), "Composer did not render")
+        wait_for(lambda: find_word(window, "Pergunte"), "Composer did not render")
         wait_for(lambda: find_word(window, "gitcontext-main"), "Git branch footer did not render")
-        placeholder = find_word(window, "anything")
+        placeholder = find_word(window, "Pergunte")
         click(window, placeholder[0] + placeholder[2] // 2, placeholder[1] + placeholder[3] // 2)
         # Content search reaches archived message bodies, not just titles,
         # and stays scoped to the current project's sessions.
@@ -554,7 +554,7 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         time.sleep(0.65)
         assert transcript_pixels(window) == before, "Streaming pulled the reader back to the bottom"
         # Direct selection on formatted text, including Unicode and code.
-        placeholder = find_word(window, "anything")
+        placeholder = find_word(window, "Pergunte")
         click(window, placeholder[0] + placeholder[2] // 2, placeholder[1] + placeholder[3] // 2)
         initializations = len(commands("get_messages"))
         chord("Control_L", "n")

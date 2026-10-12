@@ -104,18 +104,29 @@ fn empty_state(weak: &WeakEntity<AppState>) -> Div {
                 .w(px(520.))
                 .flex()
                 .flex_col()
-                .gap(px(theme::S4))
+                .items_center()
+                .gap(px(theme::S5))
+                // O pratinho identifica o app sem transformar o vazio em
+                // marketing: a voz aqui é a das próprias sugestões.
+                .child(
+                    img("dish-icon.png")
+                        .flex_none()
+                        .w(px(56.))
+                        .h(px(56.))
+                        .opacity(0.9),
+                )
                 .child(
                     div()
-                        .text_size(px(theme::TEXT_XS))
-                        .text_color(theme::faint())
-                        .child("Começar"),
-                )
-                .children(
-                    prompts
-                        .into_iter()
-                        .enumerate()
-                        .map(|(index, prompt)| prompt_row(index, prompt, &weak)),
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .gap(px(theme::S1 + 1.))
+                        .children(
+                            prompts
+                                .into_iter()
+                                .enumerate()
+                                .map(|(index, prompt)| prompt_row(index, prompt, &weak)),
+                        ),
                 ),
         )
 }
@@ -132,8 +143,14 @@ fn prompt_row(index: usize, prompt: &'static str, weak: &WeakEntity<AppState>) -
         .px(px(theme::S3))
         .py(px(theme::S2))
         .rounded(theme::r_control())
+        .bg(theme::surface())
+        .border_1()
+        .border_color(theme::line_soft())
         .cursor_pointer()
-        .hover(|style| style.bg(theme::hover()))
+        .focusable()
+        .tab_index(0)
+        .hover(|style| style.bg(theme::hover()).border_color(theme::line()))
+        .focus(|style| style.bg(theme::hover()).shadow(theme::focus_ring()))
         .on_click(move |_event: &ClickEvent, _window: &mut Window, cx: &mut App| {
             weak.update(cx, |state, cx| state.set_composer_text(text.clone(), cx))
                 .ok();
@@ -207,9 +224,9 @@ fn request(state: &AppState, message: &Message, index: usize, _weak: &WeakEntity
                 .rounded(theme::r_surface())
                 .bg(theme::surface_2())
                 .border_1()
-                .border_color(theme::line_soft())
+                .border_color(theme::line())
                 .px(px(theme::S4))
-                .py(px(theme::S2))
+                .py(px(theme::S2 + 1.))
                 .children(markdown::blocks(&text, &style, &state.cwd, SharedString::from(format!("request-text-{index}")).into(), state.search_query.as_deref()))
                 .child(
                     div()
@@ -267,7 +284,9 @@ fn assistant_turn(
         .gap(px(theme::S3))
         .px(px(theme::S5))
         .py(px(theme::S3))
-        // Cabeçalho de turno no lugar de uma barra vertical colorida.
+        // Cabeçalho de turno no lugar de uma barra vertical colorida. O modelo
+        // é um valor técnico e leva a fonte de máquina a um passo maior que o
+        // do status, que é só um qualificador da resposta.
         .child(
             div()
                 .flex()
@@ -277,8 +296,9 @@ fn assistant_turn(
                 .gap(px(theme::S2))
                 .child(
                     div()
-                        .text_size(px(theme::TEXT_XS))
-                        .text_color(theme::faint())
+                        .font_family(theme::FONT_MONO)
+                        .text_size(px(theme::TEXT_SM))
+                        .text_color(theme::dim())
                         .child(SharedString::from(model)),
                 )
                 .child(
@@ -287,7 +307,7 @@ fn assistant_turn(
                         .text_color(if response_error {
                             theme::failure()
                         } else {
-                            theme::dim()
+                            theme::faint()
                         })
                         .child(response_status),
                 )

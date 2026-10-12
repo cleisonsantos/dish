@@ -30,23 +30,37 @@ pub fn toasts(state: &AppState, _cx: &Context<AppState>) -> Vec<AnyElement> {
                 .max_w(px(420.))
                 .flex()
                 .flex_row()
-                .items_center()
-                .gap(px(10.))
-                .pl(px(11.))
-                .pr(px(13.))
-                .py(px(8.))
-                .border_l_2()
-                .border_color(color)
-                .rounded(px(3.))
-                .bg(theme::surface_2())
-                .text_size(px(theme::TEXT_SM))
-                .text_color(theme::dim())
-                .child(dot(color, 5.0))
+                .items_stretch()
+                .gap(px(theme::S2 - 2.))
                 .child(
                     div()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .child(SharedString::from(toast.text.clone())),
+                        .flex_none()
+                        .w(px(2.))
+                        .rounded(px(1.))
+                        .bg(color),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(10.))
+                        .px(px(12.))
+                        .py(px(9.))
+                        .rounded(theme::r_control())
+                        .bg(theme::surface_2())
+                        .border_1()
+                        .border_color(theme::line_strong())
+                        .shadow(theme::shadow_overlay())
+                        .text_size(px(theme::TEXT_SM))
+                        .text_color(theme::dim())
+                        .child(dot(color, 5.0))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .child(SharedString::from(toast.text.clone())),
+                        ),
                 )
                 .into_any_element()
         }));
@@ -56,7 +70,7 @@ pub fn toasts(state: &AppState, _cx: &Context<AppState>) -> Vec<AnyElement> {
 /// The model picker, as a floating panel rather than a list nested inside the
 /// scrolling rail — nested scroll areas fight each other.
 /// Seletor de modelo: vive acima do compositor, como o menu de esforço.
-pub fn model_picker(state: &AppState, cx: &Context<AppState>) -> Stateful<Div> {
+pub fn model_picker(state: &AppState, window: &Window, cx: &Context<AppState>) -> Stateful<Div> {
     let weak = cx.entity().downgrade();
     let current = state.model.clone();
 
@@ -82,7 +96,7 @@ pub fn model_picker(state: &AppState, cx: &Context<AppState>) -> Stateful<Div> {
             .gap(px(10.))
             .px(px(10.))
             .py(px(6.))
-            .rounded(px(3.))
+            .rounded(theme::r_small())
             .cursor_pointer()
             .when(highlighted == Some(index), |el| el.bg(theme::hover()))
             .when(highlighted != Some(index), |el| {
@@ -162,16 +176,25 @@ pub fn model_picker(state: &AppState, cx: &Context<AppState>) -> Stateful<Div> {
                 .gap(px(theme::S2))
                 .px(px(12.))
                 .py(px(9.))
-                .child(micro("SELECT MODEL"))
+                .child(
+                    div()
+                        .text_size(px(theme::TEXT_SM))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme::text())
+                        .child("Selecionar modelo"),
+                )
                 .child(
                     div()
                         .flex()
                         .flex_row()
                         .items_center()
                         .gap(px(theme::S2))
-                        .child(micro(format!("{count} / {} available", state.models.len())))
+                        .child(micro(format!(
+                            "{count} / {} disponíveis",
+                            state.models.len()
+                        )))
                         .when(state.hidden_models_fallback(), |el| {
-                            el.child(micro("all hidden — showing all"))
+                            el.child(micro("todos ocultos — mostrando todos"))
                         })
                         .child(
                             div()
@@ -206,9 +229,17 @@ pub fn model_picker(state: &AppState, cx: &Context<AppState>) -> Stateful<Div> {
                 .py(px(8.))
                 .h(px(38.))
                 .overflow_hidden()
-                .rounded(px(4.))
+                .rounded(theme::r_technical())
                 .border_1()
-                .border_color(theme::accent_edge())
+                .border_color(
+                    // O acento marca o campo vivo: é a busca que decide o que
+                    // a lista mostra enquanto ela está aberta.
+                    if focus.is_focused(window) {
+                        theme::accent_edge()
+                    } else {
+                        theme::line_strong()
+                    },
+                )
                 .bg(theme::inset())
                 .cursor_text()
                 .on_mouse_down(MouseButton::Left, move |event, window, cx| {
@@ -231,9 +262,26 @@ pub fn model_picker(state: &AppState, cx: &Context<AppState>) -> Stateful<Div> {
                 .track_scroll(&state.model_scroll)
                 .p(px(6.))
                 .when(count == 0, |el| {
-                    el.child(div().p(px(12.)).child(micro("No models found")))
+                    el.child(div().p(px(12.)).child(micro("Nenhum modelo encontrado")))
                 })
                 .children(rows),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(theme::S3))
+                .px(px(12.))
+                .py(px(8.))
+                .border_t_1()
+                .border_color(theme::line_soft())
+                .font_family(theme::FONT_MONO)
+                .text_size(px(theme::TEXT_XS))
+                .text_color(theme::faint())
+                .child("↑↓ escolher")
+                .child("⏎ usar")
+                .child("esc fechar"),
         );
 
     panel
@@ -264,7 +312,7 @@ pub fn modal(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) 
         .flex()
         .flex_col()
         .gap(px(14.))
-        .rounded(px(6.))
+        .rounded(theme::r_surface())
         .border_1()
         .border_color(theme::line_strong())
         .bg(theme::surface())
@@ -278,7 +326,8 @@ pub fn modal(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) 
                 .gap(px(6.))
                 .child(
                     div()
-                        .text_size(px(14.))
+                        .text_size(px(15.))
+                        .font_weight(FontWeight::MEDIUM)
                         .text_color(theme::text())
                         .child(SharedString::from(modal.title.clone())),
                 )
@@ -327,7 +376,7 @@ fn select_body(state: &AppState, cx: &Context<AppState>) -> AnyElement {
                 .id(SharedString::from(format!("option-{index}")))
                 .px(px(11.))
                 .py(px(8.))
-                .rounded(px(3.))
+                .rounded(theme::r_small())
                 .border_1()
                 .border_color(theme::line_soft())
                 .text_size(px(theme::TEXT))
@@ -364,13 +413,13 @@ fn confirm_body(cx: &Context<AppState>) -> AnyElement {
             .id("confirm-yes")
             .px(px(14.))
             .py(px(7.))
-            .rounded(px(4.))
+            .rounded(theme::r_control())
             .bg(theme::accent())
             .text_size(px(theme::TEXT_SM))
             .text_color(theme::on_accent())
             .cursor_pointer()
             .hover(|style| style.bg(theme::accent_hover()))
-            .child("confirm")
+            .child("Confirmar")
             .on_click(move |_event: &ClickEvent, _window: &mut Window, cx: &mut App| {
                 weak.update(cx, |state, cx| {
                     state.respond_modal(ModalAnswer::Confirmed(true), cx)
@@ -384,14 +433,14 @@ fn confirm_body(cx: &Context<AppState>) -> AnyElement {
             .id("confirm-no")
             .px(px(14.))
             .py(px(7.))
-            .rounded(px(4.))
+            .rounded(theme::r_control())
             .border_1()
             .border_color(theme::line_strong())
             .text_size(px(theme::TEXT_SM))
             .text_color(theme::dim())
             .cursor_pointer()
             .hover(|style| style.bg(theme::hover()).text_color(theme::text()))
-            .child("cancel")
+            .child("Cancelar")
             .on_click(move |_event: &ClickEvent, _window: &mut Window, cx: &mut App| {
                 weak.update(cx, |state, cx| {
                     state.respond_modal(ModalAnswer::Confirmed(false), cx)
@@ -438,7 +487,7 @@ fn input_body(state: &AppState, kind: ModalKind, cx: &Context<AppState>) -> AnyE
         .h(height)
         .max_h(px(280.))
         .overflow_y_scroll()
-        .rounded(px(4.))
+        .rounded(theme::r_technical())
         .border_1()
         .border_color(theme::accent_edge())
         .bg(theme::inset())
@@ -453,14 +502,14 @@ fn input_body(state: &AppState, kind: ModalKind, cx: &Context<AppState>) -> AnyE
             .id("modal-cancel")
             .px(px(12.))
             .py(px(6.))
-            .rounded(px(4.))
+            .rounded(theme::r_control())
             .border_1()
             .border_color(theme::line_strong())
             .text_size(px(theme::TEXT_SM))
             .text_color(theme::faint())
             .cursor_pointer()
             .hover(|style| style.bg(theme::hover()).text_color(theme::text()))
-            .child("cancel")
+            .child("Cancelar")
             .on_click(move |_event: &ClickEvent, _window: &mut Window, cx: &mut App| {
                 weak.update(cx, |state, cx| {
                     state.respond_modal(ModalAnswer::Cancelled, cx)
@@ -474,13 +523,13 @@ fn input_body(state: &AppState, kind: ModalKind, cx: &Context<AppState>) -> AnyE
             .id("modal-submit")
             .px(px(14.))
             .py(px(6.))
-            .rounded(px(4.))
+            .rounded(theme::r_control())
             .bg(theme::accent())
             .text_size(px(theme::TEXT_SM))
             .text_color(theme::on_accent())
             .cursor_pointer()
             .hover(|style| style.bg(theme::accent_hover()))
-            .child("submit")
+            .child("Enviar")
             .on_click(move |_event: &ClickEvent, _window: &mut Window, cx: &mut App| {
                 weak.update(cx, submit_modal).ok();
             })
@@ -502,7 +551,7 @@ fn input_body(state: &AppState, kind: ModalKind, cx: &Context<AppState>) -> AnyE
                         .font_family(theme::FONT_MONO)
                         .text_size(px(theme::TEXT_MICRO))
                         .text_color(theme::faint())
-                        .child("⏎ submit   ⇧⏎ newline   esc cancel"),
+                        .child("⏎ enviar   ⇧⏎ nova linha   esc cancelar"),
                 )
                 .child(div().flex().flex_row().gap(px(8.)).child(cancel).child(submit)),
         )
@@ -522,48 +571,48 @@ pub fn submit_modal(state: &mut AppState, cx: &mut Context<AppState>) {
 
 pub fn keyboard_shortcuts() -> Vec<(&'static str, &'static str)> {
     let app_keys: [(&'static str, &'static str); 27] = [
-        ("⏎", "send the prompt"),
-        ("⇧⏎", "insert a newline"),
-        ("esc", "dismiss a menu or notice, or stop the run"),
-        ("↑ ↓", "choose in the slash menu"),
-        ("⇥", "complete the command or move focus"),
-        ("⇧⇥", "move focus to the previous control"),
-        ("↑ ↓", "recall sent prompts at the field edges"),
-        ("↑ ↓ ⏎", "pick a model in the model picker"),
-        ("↑ ↓ ⏎", "open a session from the session search"),
-        ("← →", "collapse or expand that session's project"),
-        ("↑ ↓ ⏎", "choose an option in a Pi dialog"),
-        ("ctrl-n", "start a new session"),
-        ("ctrl-tab", "next open conversation"),
-        ("ctrl-⇧tab", "previous open conversation"),
-        ("ctrl-w", "close conversation (confirms if running)"),
-        ("ctrl-k", "focus session search"),
-        ("ctrl-f", "search content in the current session"),
-        ("ctrl-⇧f", "search content in all sessions of the project"),
-        ("esc / ctrl-l", "leave session search or return to the prompt"),
-        ("⇥ / ⇧⇥", "next or previous result while searching sessions"),
-        ("ctrl-alt-f", "cycle session attention filters"),
-        ("ctrl-l", "return to prompt or active dialog"),
-        ("ctrl-⇧m", "open model picker"),
-        ("F1", "open keyboard shortcuts in settings"),
-        ("ctrl-⇧e", "cycle the model's effort level"),
-        ("ctrl-⇧b", "show or hide project sessions"),
-        ("ctrl-q", "close the app"),
+        ("⏎", "enviar o pedido"),
+        ("⇧⏎", "inserir uma linha nova"),
+        ("esc", "fechar o menu aberto ou a notícia; parar a execução"),
+        ("↑ ↓", "escolher no menu de comandos /"),
+        ("⇥", "completar o comando ou mover o foco"),
+        ("⇧⇥", "mover o foco para o controle anterior"),
+        ("↑ ↓", "relembrar pedidos enviados nas bordas do campo"),
+        ("↑ ↓ ⏎", "escolher um modelo no seletor"),
+        ("↑ ↓ ⏎", "abrir uma sessão pela busca de sessões"),
+        ("← →", "recolher ou abrir o projeto da sessão destacada"),
+        ("↑ ↓ ⏎", "escolher uma opção num diálogo do Pi"),
+        ("ctrl-n", "iniciar uma sessão nova"),
+        ("ctrl-tab", "próxima conversa aberta"),
+        ("ctrl-⇧tab", "conversa aberta anterior"),
+        ("ctrl-w", "fechar conversa (confirma se estiver executando)"),
+        ("ctrl-k", "focar a busca de sessões"),
+        ("ctrl-f", "buscar conteúdo na sessão atual"),
+        ("ctrl-⇧f", "buscar conteúdo nas sessões do projeto"),
+        ("esc / ctrl-l", "sair da busca ou voltar ao campo de prompt"),
+        ("⇥ / ⇧⇥", "resultado seguinte ou anterior na busca de sessões"),
+        ("ctrl-alt-f", "girar os filtros de atenção de sessões"),
+        ("ctrl-l", "voltar ao prompt ou ao diálogo ativo"),
+        ("ctrl-⇧m", "abrir o seletor de modelos"),
+        ("F1", "abrir os atalhos de teclado nas configurações"),
+        ("ctrl-⇧e", "girar o nível de esforço do modelo"),
+        ("ctrl-⇧b", "mostrar ou ocultar as sessões do projeto"),
+        ("ctrl-q", "fechar o app"),
     ];
     let editing: [(&'static str, &'static str); 13] = [
-        ("← →", "move by character"),
-        ("⇧ ← →", "select by character"),
-        ("ctrl ← →", "move by word"),
-        ("home end", "line start and end"),
-        ("ctrl-a", "select everything"),
-        ("ctrl-c", "copy"),
-        ("ctrl-x", "cut"),
-        ("ctrl-v", "paste"),
-        ("ctrl-z", "undo"),
-        ("ctrl-⇧z", "redo"),
-        ("ctrl-Bksp", "delete the previous word"),
-        ("click, drag", "place the caret, select"),
-        ("2x, 3x", "select a word, a line"),
+        ("← →", "mover por caractere"),
+        ("⇧ ← →", "selecionar por caractere"),
+        ("ctrl ← →", "mover por palavra"),
+        ("home end", "início e fim da linha"),
+        ("ctrl-a", "selecionar tudo"),
+        ("ctrl-c", "copiar"),
+        ("ctrl-x", "recortar"),
+        ("ctrl-v", "colar"),
+        ("ctrl-z", "desfazer"),
+        ("ctrl-⇧z", "refazer"),
+        ("ctrl-Bksp", "apagar a palavra anterior"),
+        ("clique, arrasto", "posicionar o cursor, selecionar"),
+        ("2x, 3x", "selecionar uma palavra, uma linha"),
     ];
 
     app_keys.into_iter().chain(editing).collect()

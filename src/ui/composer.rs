@@ -1,6 +1,10 @@
 //! The composer: a roomy writing surface with the model and reasoning controls
 //! where they belong — next to the thing they influence — and two unambiguous
 //! actions. No permanent shortcut row, no character counter.
+//!
+//! The visual grammar: one raised card, recessed tokens for the technical
+//! controls, and a single light action for sending. The accent appears only
+//! where it means "this is your turn" — the focused edge.
 
 use gpui::prelude::*;
 use gpui::*;
@@ -41,19 +45,10 @@ pub fn composer(
         column = column.child(inset_block(state));
     }
     if state.paste_loading {
-        column = column.child(div().px(px(theme::S5)).text_color(theme::dim()).child("Preparando colagem…"));
+        column = column.child(loading_note(state));
     }
     for (index, (name, _)) in state.pasted_images.iter().enumerate() {
-        column = column.child(div().px(px(theme::S5)).flex().gap(px(12.))
-            .child(SharedString::from(format!("Imagem: {name}")))
-            .child(div().id(("remove-pasted-image", index)).cursor_pointer()
-                .text_color(theme::dim()).child("remover")
-                .on_click(cx.listener(move |state, _: &ClickEvent, _, cx| {
-                    if index < state.pasted_images.len() {
-                        state.pasted_images.remove(index);
-                        cx.notify();
-                    }
-                }))));
+        column = column.child(image_note(index, name, cx));
     }
     if has_queue {
         column = column.child(queue(state, cx));
@@ -61,7 +56,7 @@ pub fn composer(
     if !matches.is_empty() {
         column = column.child(slash_menu(matches, selected, cx));
     } else if state.model_menu {
-        column = column.child(crate::ui::overlays::model_picker(state, cx));
+        column = column.child(crate::ui::overlays::model_picker(state, window, cx));
     } else if state.effort_menu {
         column = column.child(effort_menu(state, cx));
     }
@@ -88,7 +83,7 @@ pub fn composer(
                     .items_end()
                     .gap(px(theme::S2))
                     .px(px(theme::S4))
-                    .pt(px(theme::S4))
+                    .pt(px(theme::S3))
                     .pb(px(theme::S2))
                     .child(
                         div()
@@ -128,7 +123,7 @@ pub fn composer(
                             .flex()
                             .flex_row()
                             .items_center()
-                            .gap(px(theme::S1))
+                            .gap(px(theme::S1 + 1.))
                             .min_w(px(0.))
                             .child(model_control(state, cx))
                             .child(effort_control(state, cx)),
@@ -140,18 +135,28 @@ pub fn composer(
 
 // ------------------------------------------------------------------ controles
 
+/// Token rebaixado: fundo inset, fio fino. É um controle técnico — o modelo e
+/// o esforço são valores, não botões de ação — e por isso assenta no mesmo
+/// vocabulário do código e da busca.
 fn control_shell(id: impl Into<ElementId>) -> Stateful<Div> {
     div()
         .id(id)
         .flex()
         .flex_row()
         .items_center()
-        .gap(px(theme::S2))
-        .px(px(theme::S2 + 2.))
+        .gap(px(theme::S1 + 1.))
+        .px(px(theme::S2 + 1.))
         .py(px(theme::S1 + 2.))
         .rounded(theme::r_control())
+        .bg(theme::inset())
+        .border_1()
+        .border_color(theme::line_soft())
         .cursor_pointer()
-        .hover(|style| style.bg(theme::hover()))
+        .hover(|style| {
+            style
+                .bg(theme::hover())
+                .border_color(theme::line())
+        })
 }
 
 fn model_control(state: &AppState, cx: &Context<AppState>) -> AnyElement {
@@ -192,8 +197,8 @@ fn effort_control(state: &AppState, cx: &Context<AppState>) -> AnyElement {
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(theme::S2))
-            .px(px(theme::S2 + 2.))
+            .gap(px(theme::S1 + 1.))
+            .px(px(theme::S2 + 1.))
             .py(px(theme::S1 + 2.))
             .rounded(theme::r_control())
             .child(crate::ui::dot(theme::faint(), 8.))
@@ -240,11 +245,12 @@ fn actions(streaming: bool, empty: bool, cx: &Context<AppState>) -> AnyElement {
             .rounded(px(10.))
             .border_1()
             .border_color(theme::line())
+            .bg(theme::inset())
             .flex()
             .items_center()
             .justify_center()
             .cursor_pointer()
-            .hover(|style| style.bg(theme::wash(theme::failure(), 0.14)))
+            .hover(|style| style.bg(theme::wash(theme::failure(), 0.14)).border_color(theme::line_strong()))
             .on_click(move |_event: &ClickEvent, _window: &mut Window, cx: &mut App| {
                 weak.update(cx, |state, cx| state.abort(cx)).ok();
             })
@@ -286,6 +292,74 @@ fn actions(streaming: bool, empty: bool, cx: &Context<AppState>) -> AnyElement {
         .into_any_element()
 }
 
+// ---------------------------------------------------------------- anotações
+
+fn loading_note(_state: &AppState) -> Div {
+    div()
+        .mx(px(theme::S5))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(theme::S2))
+        .px(px(theme::S2))
+        .py(px(theme::S1 + 2.))
+        .rounded(theme::r_control())
+        .bg(theme::surface())
+        .border_1()
+        .border_color(theme::line_soft())
+        .child(crate::ui::pulse("paste-pulse", 6., theme::running()))
+        .child(
+            div()
+                .text_size(px(theme::TEXT_SM))
+                .text_color(theme::dim())
+                .child("Preparando colagem…"),
+        )
+}
+
+fn image_note(index: usize, name: &str, cx: &Context<AppState>) -> Div {
+    div()
+        .mx(px(theme::S5))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(theme::S2))
+        .px(px(theme::S2 + 1.))
+        .py(px(theme::S1 + 2.))
+        .rounded(theme::r_control())
+        .bg(theme::surface())
+        .border_1()
+        .border_color(theme::line_soft())
+        .child(icon(Icon::File, 12., theme::faint()))
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .truncate()
+                .text_size(px(theme::TEXT_SM))
+                .text_color(theme::dim())
+                .child(SharedString::from(format!("Imagem: {name}"))),
+        )
+        .child(
+            div()
+                .id(("remove-pasted-image", index))
+                .flex_none()
+                .px(px(theme::S1 + 1.))
+                .py(px(2.))
+                .rounded(theme::r_control())
+                .cursor_pointer()
+                .text_size(px(theme::TEXT_XS))
+                .text_color(theme::faint())
+                .hover(|style| style.text_color(theme::failure()).bg(theme::hover()))
+                .child("remover")
+                .on_click(cx.listener(move |state, _: &ClickEvent, _, cx| {
+                    if index < state.pasted_images.len() {
+                        state.pasted_images.remove(index);
+                        cx.notify();
+                    }
+                })),
+        )
+}
+
 // ---------------------------------------------------------------------- fila
 
 fn queue(state: &AppState, cx: &Context<AppState>) -> Div {
@@ -296,7 +370,7 @@ fn queue(state: &AppState, cx: &Context<AppState>) -> Div {
         .mx(px(theme::S5))
         .flex()
         .flex_col()
-        .gap(px(theme::S2))
+        .gap(px(theme::S1))
         .child(
             div()
                 .id("queue-header")
@@ -304,8 +378,11 @@ fn queue(state: &AppState, cx: &Context<AppState>) -> Div {
                 .flex_row()
                 .items_center()
                 .gap(px(theme::S2))
+                .px(px(theme::S2))
+                .py(px(theme::S1 + 1.))
+                .rounded(theme::r_control())
                 .cursor_pointer()
-                .hover(|style| style.text_color(theme::text()))
+                .hover(|style| style.bg(theme::hover()))
                 .on_click(cx.listener(|state, _: &ClickEvent, _window, cx| {
                     state.queue_open = !state.queue_open;
                     cx.notify();
@@ -407,7 +484,8 @@ fn effort_menu(state: &AppState, cx: &Context<AppState>) -> Div {
             .gap(px(theme::S3))
             .px(px(theme::S3))
             .py(px(theme::S1 + 2.))
-            .rounded(theme::r_control())
+            .rounded(theme::r_small())
+            .when(selected, |el| el.bg(theme::hover()))
             .when(!selected, |el| {
                 el.hover(|style| style.bg(theme::hover()))
             })
@@ -419,8 +497,8 @@ fn effort_menu(state: &AppState, cx: &Context<AppState>) -> Div {
             .child(
                 div()
                     .flex_none()
-                    .w(px(8.))
-                    .when(selected, |el| el.child(crate::ui::dot(color, 7.))),
+                    .w(px(10.))
+                    .child(crate::ui::dot(color, if selected { 8. } else { 6. })),
             )
             .child(
                 div()
@@ -428,6 +506,7 @@ fn effort_menu(state: &AppState, cx: &Context<AppState>) -> Div {
                     .text_color(if selected { color } else { theme::dim() })
                     .child(SharedString::from(crate::state::effort_label(level))),
             )
+            .child(div().flex_1())
             .when(selected, |el| {
                 el.child(
                     div()
@@ -445,7 +524,7 @@ fn effort_menu(state: &AppState, cx: &Context<AppState>) -> Div {
         .border_color(theme::line_strong())
         .bg(theme::surface())
         .shadow(theme::shadow_overlay())
-        .p(px(theme::S1))
+        .p(px(theme::S1 + 1.))
         .flex()
         .flex_col()
         .children(rows)
@@ -481,7 +560,7 @@ fn slash_menu(matches: &[(String, String)], selected: usize, cx: &Context<AppSta
                 .gap(px(theme::S3))
                 .px(px(theme::S3))
                 .py(px(theme::S1 + 2.))
-                .rounded(theme::r_control())
+                .rounded(theme::r_small())
                 .when(is_selected, |el| el.bg(theme::hover()))
                 .when(!is_selected, |el| {
                     el.hover(|style| style.bg(theme::hover()))
@@ -489,7 +568,7 @@ fn slash_menu(matches: &[(String, String)], selected: usize, cx: &Context<AppSta
                 .child(
                     div()
                         .flex_none()
-                        .w(px(8.))
+                        .w(px(10.))
                         .when(is_selected, |el| {
                             el.child(crate::ui::dot(theme::accent(), 5.0))
                         }),
@@ -531,7 +610,7 @@ fn slash_menu(matches: &[(String, String)], selected: usize, cx: &Context<AppSta
         .border_color(theme::line_strong())
         .bg(theme::surface())
         .shadow(theme::shadow_overlay())
-        .p(px(theme::S1))
+        .p(px(theme::S1 + 1.))
         .flex()
         .flex_col()
         .children(rows)
@@ -558,19 +637,39 @@ fn slash_menu(matches: &[(String, String)], selected: usize, cx: &Context<AppSta
 }
 
 fn inset_block(state: &AppState) -> Div {
+    // Extensão falando dentro do compositor: um poço técnico com uma faixa
+    // à esquerda, para ler como saída de máquina e não como campo de digitação.
     div()
         .mx(px(theme::S5))
-        .pl(px(theme::S3))
-        .py(px(theme::S2))
-        .border_l_2()
-        .border_color(theme::line_strong())
-        .font_family(theme::FONT_MONO)
-        .text_size(px(theme::TEXT_XS))
-        .text_color(theme::dim())
-        .children(
-            state
-                .ext_widget
-                .iter()
-                .map(|line| SharedString::from(line.clone())),
+        .flex()
+        .flex_row()
+        .items_stretch()
+        .gap(px(theme::S2))
+        .child(
+            div()
+                .flex_none()
+                .w(px(2.))
+                .rounded(px(1.))
+                .bg(theme::line_strong()),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .px(px(theme::S2))
+                .py(px(theme::S2))
+                .rounded(theme::r_control())
+                .bg(theme::surface())
+                .border_1()
+                .border_color(theme::line_soft())
+                .font_family(theme::FONT_MONO)
+                .text_size(px(theme::TEXT_XS))
+                .text_color(theme::dim())
+                .children(
+                    state
+                        .ext_widget
+                        .iter()
+                        .map(|line| SharedString::from(line.clone())),
+                ),
         )
 }

@@ -592,7 +592,7 @@ impl AppState {
                 state.activity_error = true;
                 state.last_activity = Some(std::time::SystemTime::now());
                 state.loading = false;
-                state.push_toast("Pi exited. Restart Dish to reconnect.".to_string(), Tone::Error, cx);
+                state.push_toast("O Pi encerrou. Reinicie o Dish para reconectar.".to_string(), Tone::Error, cx);
             });
         })
         .detach();
@@ -777,10 +777,10 @@ impl AppState {
                 self.session.is_compacting = false;
                 if record.get("aborted").and_then(Value::as_bool).unwrap_or(false) {
                     self.banner = None;
-                    self.push_toast("Compaction cancelled".into(), Tone::Warning, cx);
+                    self.push_toast("Compactação cancelada".into(), Tone::Warning, cx);
                 } else if let Some(error) = record.get("errorMessage").and_then(Value::as_str) {
                     self.banner = None;
-                    self.push_toast(format!("Compaction failed: {error}"), Tone::Error, cx);
+                    self.push_toast(format!("Falha na compactação: {error}"), Tone::Error, cx);
                 } else if let Some(result) = record.get("result") {
                     let before = result.get("tokensBefore").and_then(Value::as_u64).unwrap_or(0);
                     let after = result
@@ -793,9 +793,9 @@ impl AppState {
                         .unwrap_or_default()
                         .to_string();
                     self.banner = None;
-                    self.push_message(self.summary_message("Context compacted", &summary, before, after));
+                    self.push_message(self.summary_message("Contexto compactado", &summary, before, after));
                     self.push_toast(
-                        format!("Compacted {} → {} tokens", compact_number(before), compact_number(after)),
+                        format!("Compactado {} → {} tokens", compact_number(before), compact_number(after)),
                         Tone::Success,
                         cx,
                     );
@@ -1080,7 +1080,7 @@ impl AppState {
                     .unwrap_or(false);
                 if !cancelled {
                     self.reset_transcript();
-                    self.push_toast("Started a new session".into(), Tone::Success, cx);
+                    self.push_toast("Nova sessão iniciada".into(), Tone::Success, cx);
                 }
                 None
             }
@@ -1088,7 +1088,7 @@ impl AppState {
             "export_html" => {
                 if let Some(path) = response.data.get("path").and_then(Value::as_str) {
                     self.push_toast(
-                        format!("Exported session to {path}"),
+                        format!("Sessão exportada para {path}"),
                         Tone::Success,
                         cx,
                     );
@@ -1744,7 +1744,7 @@ impl AppState {
                         .get("placeholder")
                         .and_then(Value::as_str)
                         .filter(|text| !text.is_empty())
-                        .unwrap_or("Type here…")
+                        .unwrap_or("Escreva aqui…")
                         .to_string();
                     let editor = self.modal_editor.clone();
                     editor.update(cx, |editor, cx| {
@@ -2001,7 +2001,7 @@ impl AppState {
             return;
         }
         if self.disconnected {
-            self.push_toast("This session's Pi process has exited. Close and reopen the session.".into(), Tone::Error, cx);
+            self.push_toast("O processo do Pi desta sessão encerrou. Feche-a e reabra-a.".into(), Tone::Error, cx);
             return;
         }
         self.last_run = Some(std::time::SystemTime::now());
@@ -2111,7 +2111,7 @@ impl AppState {
             }
             "/name" => {
                 if argument.is_empty() {
-                    self.push_toast("Usage: /name <session name>".into(), Tone::Info, cx);
+                    self.push_toast("Uso: /name <nome da sessão>".into(), Tone::Info, cx);
                 } else {
                     self.client
                         .call("set_session_name", json!({ "name": argument }));
@@ -2129,8 +2129,8 @@ impl AppState {
             }
             "/auto-compact" => {
                 self.toggle_auto_compaction();
-                let enabled = if self.session.auto_compaction { "on" } else { "off" };
-                self.push_toast(format!("Auto-compaction {enabled}"), Tone::Info, cx);
+                let enabled = if self.session.auto_compaction { "ligada" } else { "desligada" };
+                self.push_toast(format!("Compactação automática {enabled}"), Tone::Info, cx);
                 true
             }
             "/clear" => {
@@ -2599,11 +2599,11 @@ impl AppState {
         let Some(level) = next_effort_level(&self.thinking_levels, self.thinking_level.as_deref())
             .map(str::to_string)
         else {
-            self.push_toast("No effort levels available for this model".into(), Tone::Info, cx);
+            self.push_toast("Este modelo não controla o nível de esforço".into(), Tone::Info, cx);
             return;
         };
         self.set_thinking_level(&level);
-        self.push_toast(format!("Effort: {level}"), Tone::Info, cx);
+        self.push_toast(format!("Esforço: {}", effort_label(&level)), Tone::Info, cx);
     }
 
     pub fn set_thinking_level(&mut self, level: &str) {

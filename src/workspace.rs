@@ -122,16 +122,6 @@ fn filter_counts(signals: &[SessionSignals]) -> [usize; 4] {
     counts
 }
 
-/// Rótulo de filtro com contagem. Zero só aparece em "Todas": números
-/// vazios nos outros filtros viram ruído.
-fn filter_label(label: &str, count: usize, always: bool) -> String {
-    if always || count > 0 {
-        format!("{label} · {count}")
-    } else {
-        label.to_owned()
-    }
-}
-
 fn select_item<'a, T>(items: &'a mut [T], active: &mut usize, index: usize) -> Option<&'a mut T> {
     let item = items.get_mut(index)?;
     *active = index;
@@ -554,7 +544,7 @@ impl Workspace {
         }
         if self.conversations[0].state.read(cx).loading {
             self.error =
-                Some("Wait for the initial session to load before opening a saved session.".into());
+                Some("Aguarde a sessão inicial carregar antes de abrir uma sessão salva.".into());
             cx.notify();
             return;
         }
@@ -563,7 +553,7 @@ impl Workspace {
         }
         if !info.cwd.is_dir() {
             self.error = Some(format!(
-                "Project folder no longer exists: {}",
+                "A pasta do projeto não existe mais: {}",
                 info.cwd.display()
             ));
             cx.notify();
@@ -658,7 +648,7 @@ impl Workspace {
                         // Entity construction needs the window and is deferred to render.
                         workspace.pending = Some((cwd, path, client));
                     }
-                    Err(error) => workspace.error = Some(format!("Cannot open session: {error}")),
+                    Err(error) => workspace.error = Some(format!("Não foi possível abrir a sessão: {error}")),
                 }
                 cx.notify();
             });
@@ -672,7 +662,7 @@ impl Workspace {
         }
         if self.conversations.len() == 1 {
             self.error = Some(
-                "Keep at least one session open. Create another before closing this one.".into(),
+                "Mantenha pelo menos uma sessão aberta. Crie outra antes de fechar esta.".into(),
             );
             cx.notify();
             return;
@@ -721,7 +711,7 @@ impl Workspace {
             }
             Err(error) => {
                 self.pending_delete = None;
-                self.error = Some(format!("Cannot delete session: {error}"));
+                self.error = Some(format!("Não foi possível excluir a sessão: {error}"));
                 cx.notify();
             }
         }
@@ -740,7 +730,7 @@ impl Workspace {
             }
             Err(error) => {
                 self.undo_delete = Some(undo);
-                self.error = Some(format!("Cannot restore session: {error}"));
+                self.error = Some(format!("Não foi possível restaurar a sessão: {error}"));
             }
         }
         cx.notify();
@@ -1075,14 +1065,24 @@ impl Workspace {
                     )
                     .child(
                         div()
+                            // Controle segmentado: um só poço com um cursor
+                            // claro. Rótulos compactos de propósito: a métrica
+                            // da fonte de fallback varia entre sistemas, e
+                            // nenhum modo pode truncar; o nome completo fica
+                            // no tooltip e as contagens ficam no rodapé.
                             .flex()
                             .flex_row()
-                            .flex_wrap()
-                            .items_center()
-                            .gap(px(theme::S1))
-                            .child(nav_filter_chip(
+                            .items_stretch()
+                            .p(px(2.))
+                            .gap(px(1.))
+                            .rounded(theme::r_control())
+                            .bg(theme::inset())
+                            .border_1()
+                            .border_color(theme::line_soft())
+                            .child(nav_segment(
                                 "nav-filter-all",
-                                filter_label("Todas", counts[0], true),
+                                "Todas",
+                                "todas as sessões abertas e salvas",
                                 self.filter == SessionFilter::All,
                                 cx,
                                 |workspace, cx| {
@@ -1090,15 +1090,16 @@ impl Workspace {
                                     cx.notify();
                                 },
                             ))
-                            .child(nav_filter_chip("nav-filter-input", filter_label("Precisa de você", counts[1], false), self.filter == SessionFilter::NeedsInput, cx, |workspace, cx| {
+                            .child(nav_segment("nav-filter-input", "Pend.", "sessões que precisam de você", self.filter == SessionFilter::NeedsInput, cx, |workspace, cx| {
                                 workspace.filter = SessionFilter::NeedsInput; cx.notify();
                             }))
-                            .child(nav_filter_chip("nav-filter-unread", filter_label("Não lidas", counts[2], false), self.filter == SessionFilter::Unread, cx, |workspace, cx| {
+                            .child(nav_segment("nav-filter-unread", "Novas", "respostas ainda não lidas", self.filter == SessionFilter::Unread, cx, |workspace, cx| {
                                 workspace.filter = SessionFilter::Unread; cx.notify();
                             }))
-                            .child(nav_filter_chip(
+                            .child(nav_segment(
                                 "nav-filter-running",
-                                filter_label("Executando", counts[3], false),
+                                "Exec.",
+                                "tarefas em execução agora",
                                 self.filter == SessionFilter::Running,
                                 cx,
                                 |workspace, cx| {
@@ -1620,31 +1621,44 @@ fn nav_icon_button(
         .into_any_element()
 }
 
-/// Filtro segmentado da navegação.
-fn nav_filter_chip(
+/// Um segmento do filtro de sessões: modo de leitura, ocupando a faixa toda.
+/// O nome completo vive no tooltip; o número da contagem vive no rodapé.
+fn nav_segment(
     id: &'static str,
-    label: impl Into<SharedString>,
+    label: &'static str,
+    hint: &'static str,
     active: bool,
     cx: &mut Context<Workspace>,
     run: impl Fn(&mut Workspace, &mut Context<Workspace>) + 'static,
 ) -> AnyElement {
     div()
         .id(id)
-        .px(px(theme::S2 + theme::S1))
+        .min_w(px(0.))
+        .px(px(theme::S1 + 1.))
         .py(px(3.))
-        .rounded(theme::r_control())
+        .rounded(theme::r_small())
         .when(active, |el| {
-            el.bg(theme::surface_2()).border_1().border_color(theme::line())
+            el.bg(theme::surface_2())
+                .border_1()
+                .border_color(theme::line())
         })
         .when(!active, |el| {
-            el.cursor_pointer().hover(|s| s.bg(theme::hover()))
+            el.cursor_pointer()
+                .border_1()
+                .border_color(gpui::transparent_black())
+                .hover(|s| s.bg(theme::hover()))
+        })
+        .tooltip(move |_, cx| {
+            cx.new(|_| crate::ui::copy_button::TextTooltip(hint.into())).into()
         })
         .text_size(px(theme::TEXT_XS))
-        .text_color(if active { theme::dim() } else { theme::faint() })
+        .text_color(if active { theme::text() } else { theme::faint() })
+        .when(active, |el| el.font_weight(FontWeight::MEDIUM))
+        .truncate()
         .on_click(cx.listener(move |workspace, _: &ClickEvent, _window, cx| {
             run(workspace, cx);
         }))
-        .child(label.into())
+        .child(SharedString::from(label.to_owned()))
         .into_any_element()
 }
 
@@ -1687,9 +1701,9 @@ impl Render for Workspace {
             }
         }
         if let Some((cwd, path, client)) = self.pending.take() {
-            let editor = cx.new(|cx| Editor::new("", "Ask anything", window, cx));
-            let modal_editor = cx.new(|cx| Editor::new("", "Type here…", window, cx));
-            let search = cx.new(|cx| Editor::new("", "Search models or providers…", window, cx));
+            let editor = cx.new(|cx| Editor::new("", "Pergunte algo ao agente", window, cx));
+            let modal_editor = cx.new(|cx| Editor::new("", "Escreva aqui…", window, cx));
+            let search = cx.new(|cx| Editor::new("", "Buscar modelos ou provedores…", window, cx));
             let help = cx.new(|cx| Editor::new("", "Buscar atalhos…", window, cx));
             let state = cx.new(|cx| {
                 AppState::new(cwd, client, crate::state::AppEditors {
@@ -2258,21 +2272,52 @@ impl Render for Workspace {
                     .bg(theme::wash(theme::bg(), 0.85))
                     .child(
                         div()
-                            .p(px(24.))
+                            .w(px(420.))
+                            .p(px(theme::S5))
+                            .rounded(theme::r_surface())
+                            .border_1()
+                            .border_color(theme::line_strong())
                             .bg(theme::surface())
+                            .shadow(theme::shadow_overlay())
                             .flex()
                             .flex_col()
-                            .gap(px(16.))
-                            .child("Tasks are still running. Closing will stop their Pi processes.")
+                            .gap(px(theme::S4))
+                            .child(
+                                div()
+                                    .text_size(px(15.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(theme::text())
+                                    .child("Tarefas em execução"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(theme::TEXT_SM))
+                                    .line_height(px(19.))
+                                    .text_color(theme::dim())
+                                    .child(
+                                        "Fechar agora interrompe os processos do Pi destas sessões.",
+                                    ),
+                            )
                             .child(
                                 div()
                                     .flex()
-                                    .gap(px(20.))
+                                    .justify_end()
+                                    .gap(px(theme::S2))
                                     .child(
                                         div()
                                             .id("cancel-workspace-close")
+                                            .px(px(theme::S3))
+                                            .py(px(theme::S1 + 3.))
+                                            .rounded(theme::r_control())
+                                            .border_1()
+                                            .border_color(theme::line_strong())
+                                            .text_size(px(theme::TEXT_SM))
+                                            .text_color(theme::dim())
                                             .cursor_pointer()
-                                            .child("Keep running")
+                                            .hover(|s| {
+                                                s.bg(theme::hover()).text_color(theme::text())
+                                            })
+                                            .child("Manter em execução")
                                             .on_click(cx.listener(
                                                 |workspace, _: &ClickEvent, window, cx| {
                                                     workspace.confirm_close = false;
@@ -2283,9 +2328,19 @@ impl Render for Workspace {
                                     .child(
                                         div()
                                             .id("confirm-workspace-close")
-                                            .cursor_pointer()
+                                            .px(px(theme::S3))
+                                            .py(px(theme::S1 + 3.))
+                                            .rounded(theme::r_control())
+                                            .border_1()
+                                            .border_color(theme::line_strong())
+                                            .text_size(px(theme::TEXT_SM))
                                             .text_color(theme::danger())
-                                            .child("Stop and close")
+                                            .cursor_pointer()
+                                            .hover(|s| {
+                                                s.bg(theme::wash(theme::failure(), 0.12))
+                                                    .border_color(theme::line_strong())
+                                            })
+                                            .child("Interromper e fechar")
                                             .on_click(cx.listener(
                                                 move |workspace, _: &ClickEvent, window, cx| {
                                                     workspace.confirm_close = false;
@@ -2415,7 +2470,7 @@ fn folder_of(cwd: &std::path::Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{add_to_catalog, drop_from_catalog, select_item, sort_session_rows, row_key, attention_summary, filter_counts, filter_label, nav_position, NavEntry, SessionSignals, SessionFilter};
+    use super::{add_to_catalog, drop_from_catalog, select_item, sort_session_rows, row_key, attention_summary, filter_counts, nav_position, NavEntry, SessionSignals, SessionFilter};
     use crate::sessions::SessionInfo;
     use std::path::PathBuf;
 
@@ -2518,13 +2573,6 @@ mod tests {
             SessionSignals { saved: true, ..Default::default() },
         ];
         assert_eq!(filter_counts(&signals), [4, 1, 1, 1]);
-    }
-
-    #[test]
-    fn filter_labels_hide_empty_counts_except_for_all() {
-        assert_eq!(filter_label("Todas", 0, true), "Todas · 0");
-        assert_eq!(filter_label("Não lidas", 2, false), "Não lidas · 2");
-        assert_eq!(filter_label("Não lidas", 0, false), "Não lidas");
     }
 
     #[test]
