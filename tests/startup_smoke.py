@@ -80,6 +80,9 @@ printf '#!/bin/sh\\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@
             return False
         wait_for(locate, f"Button not found: {label}")
 
+    # O assistente também segue a aparência; o visual verificado é o escuro.
+    (temp / "config/dish").mkdir(parents=True, exist_ok=True)
+    (temp / "config/dish/state.json").write_text(json.dumps({"appearance": "dark"}))
     process, log = launch()
     try:
         wait_for(lambda: find_window(), "Setup window not created")

@@ -34,6 +34,8 @@ with tempfile.TemporaryDirectory(prefix="dish-activity-") as temporary:
     wrapper.chmod(0o700)
     log_path = temp / "events.jsonl"
     preferences_path = temp / "config/dish/state.json"
+    preferences_path.parent.mkdir(parents=True, exist_ok=True)
+    preferences_path.write_text(json.dumps({"appearance": "dark"}))
     env = dict(os.environ, HOME=str(temp / "home"), DISH_PI_BIN=str(wrapper),
                PI_CODING_AGENT_DIR=str(agent), XDG_CONFIG_HOME=str(temp / "config"),
                XDG_DATA_HOME=str(temp / "data"), DISH_FAKE_PI_LOG=str(log_path), DISH_FAKE_PI_RUN_GATE_DIR=str(gates), XDG_SESSION_TYPE="x11")
