@@ -18,7 +18,9 @@ impl Render for TextTooltip {
             .bg(theme::surface_2())
             .border_1()
             .border_color(theme::line_strong())
+            .shadow(theme::shadow_overlay())
             .text_size(px(theme::TEXT_XS))
+            .line_height(px(17.))
             .text_color(theme::text())
             .child(SharedString::from(self.0.clone()))
     }

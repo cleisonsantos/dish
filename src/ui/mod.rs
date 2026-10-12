@@ -305,22 +305,25 @@ fn conversation_header(state: &AppState, cx: &Context<AppState>) -> Div {
                 .gap(px(theme::S2))
                 .flex_none()
                 .child(
+                    // Estado sem pílmulo: a leitura vem da palavra com o ícone;
+                    // caixa escrita aqui só aumentaria o ruído do cabeçalho.
                     div()
                         .flex()
                         .flex_row()
                         .items_center()
                         .gap(px(theme::S1 + 2.))
-                        .px(px(theme::S3))
+                        .px(px(theme::S2))
                         .py(px(theme::S1 + 3.))
                         .rounded(theme::r_control())
-                        .bg(theme::surface_2())
-                        .border_1()
-                        .border_color(theme::line_soft())
                         .child(icon(glyph, 13., color))
                         .child(
                             div()
                                 .text_size(px(theme::TEXT_SM))
-                                .text_color(color)
+                                .text_color(if state.streaming {
+                                    color
+                                } else {
+                                    theme::dim()
+                                })
                                 .child(SharedString::from(label)),
                         ),
                 )
@@ -336,7 +339,7 @@ fn conversation_header(state: &AppState, cx: &Context<AppState>) -> Div {
                         .rounded(theme::r_control())
                         .border_1()
                         .border_color(if state.sidebar {
-                            theme::line()
+                            theme::line_strong()
                         } else {
                             theme::line_soft()
                         })
@@ -593,7 +596,7 @@ pub fn keycap_all(label: &str) -> Div {
         .flex_none()
         .px(px(7.))
         .py(px(3.))
-        .rounded(px(3.))
+        .rounded(px(4.))
         .bg(theme::inset())
         .border_1()
         .border_color(theme::line())

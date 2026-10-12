@@ -3,7 +3,9 @@
 //! Three rules hold the design together:
 //!
 //! 1. **Graphite with separation.** Surfaces step up from the conversation to
-//!    the panels; nothing is outlined just to be outlined.
+//!    the panels; nothing is outlined just to be outlined. Steps between
+//!    layers carry a touch more blue as they rise, so the depth is felt
+//!    instead of only measured.
 //! 2. **The accent is the effort meter.** Pi's own dark-theme effort palette
 //!    drives the accent, so the window looks different when the model is
 //!    thinking hard. It stays concentrated on the effort control, focus and
@@ -54,9 +56,21 @@ pub const S6: f32 = 32.;
 pub fn r_control() -> Pixels {
     px(8.)
 }
+/// Radius for inner cards and technical blocks.
+pub fn r_small() -> Pixels {
+    px(6.)
+}
 /// Radius for surfaces: composer, code, panels.
 pub fn r_surface() -> Pixels {
     px(12.)
+}
+/// Radius for the isolated actions: send, stop, primary setup action.
+pub fn r_action() -> Pixels {
+    px(10.)
+}
+/// Radius for technical fields: recessed search and detail wells.
+pub fn r_technical() -> Pixels {
+    px(4.)
 }
 
 #[inline]
@@ -68,51 +82,51 @@ fn c(hex: u32) -> Hsla {
 
 /// The window itself, behind the conversation.
 pub fn bg() -> Hsla {
-    c(0x0c0e12ff)
+    c(0x0b0e13ff)
 }
 /// Panels: navigation, inspector.
 pub fn surface() -> Hsla {
-    c(0x101318ff)
+    c(0x11151cff)
 }
 /// Raised surfaces: composer, the user's request, the active row.
 pub fn surface_2() -> Hsla {
-    c(0x171b21ff)
+    c(0x191e26ff)
 }
 /// Recessed surfaces: code, tool output, search fields.
 pub fn inset() -> Hsla {
-    c(0x08090dff)
+    c(0x07080bff)
 }
 pub fn hover() -> Hsla {
-    c(0x1b1f26ff)
+    c(0x1e242dff)
 }
 
 pub fn line() -> Hsla {
-    c(0x22262eff)
+    c(0x252b35ff)
 }
 pub fn line_soft() -> Hsla {
-    c(0x191d23ff)
+    c(0x1a1f27ff)
 }
 pub fn line_strong() -> Hsla {
-    c(0x2e343dff)
+    c(0x333b47ff)
 }
 
 // ------------------------------------------------------------------- texto
 
 pub fn text() -> Hsla {
-    c(0xe9ebeeff)
+    c(0xeceef2ff)
 }
 pub fn dim() -> Hsla {
-    c(0xa6aeb8ff)
+    c(0xaab2bdff)
 }
 pub fn faint() -> Hsla {
-    c(0x858d97ff)
+    c(0x8b939eff)
 }
 pub fn on_accent() -> Hsla {
-    c(0x0c0e12ff)
+    c(0x0b0e13ff)
 }
 /// Text over a light control (the send button).
 pub fn on_light() -> Hsla {
-    c(0x0c0e12ff)
+    c(0x0b0e13ff)
 }
 
 // --------------------------------------------------------------- semântica

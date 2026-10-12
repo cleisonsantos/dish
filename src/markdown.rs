@@ -195,9 +195,9 @@ fn code_block(language: Option<&str>, code: &str, style: &MarkdownStyle, selecti
     let copy_code = code.to_string();
     div()
         .w_full()
-        .rounded(px(4.))
+        .rounded(theme::r_technical())
         .border_1()
-        .border_color(theme::line_soft())
+        .border_color(theme::line())
         .bg(theme::inset())
         .overflow_hidden()
         .child(
@@ -208,6 +208,8 @@ fn code_block(language: Option<&str>, code: &str, style: &MarkdownStyle, selecti
                 .justify_between()
                 .px(px(12.))
                 .py(px(6.))
+                .border_b_1()
+                .border_color(theme::line_soft())
                 .child(
                     div()
                         .text_size(px(theme::TEXT_MICRO))
@@ -313,8 +315,8 @@ fn table(rows: &[Vec<String>], alignments: &[gpui::TextAlign], style: &MarkdownS
         body = body.child(rendered);
     }
     div().id(crate::ui::content_id("md-table", &format!("{rows:?}")))
-        .w_full().overflow_x_scroll().border_1().border_color(theme::line_soft())
-        .rounded(px(4.)).child(body).into_any_element()
+        .w_full().overflow_x_scroll().border_1().border_color(theme::line())
+        .rounded(theme::r_technical()).child(body).into_any_element()
 }
 
 /// Standalone Markdown images; incomplete streaming syntax stays ordinary text.

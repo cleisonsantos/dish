@@ -139,6 +139,8 @@ fn header(_state: &AppState, cx: &Context<AppState>) -> Div {
 fn heading(label: &str) -> Div {
     div()
         .text_size(px(theme::TEXT_XS))
+        .font_weight(FontWeight::MEDIUM)
+        .letter_spacing(px(0.4))
         .text_color(theme::faint())
         .child(SharedString::from(label.to_string()))
 }
@@ -521,25 +523,54 @@ fn actions_section(state: &AppState, cx: &Context<AppState>) -> Div {
                         .flex()
                         .flex_row()
                         .items_center()
-                        .gap(px(theme::S2))
+                        .justify_between()
+                        .px(px(theme::S3))
+                        .py(px(theme::S1 + 3.))
+                        .rounded(theme::r_control())
                         .cursor_pointer()
-                        .hover(|style| style.text_color(theme::text()))
+                        .hover(|style| style.bg(theme::hover()))
                         .on_click(cx.listener(|state, _: &ClickEvent, _window, cx| {
                             state.toggle_auto_compaction();
                             cx.notify();
                         }))
-                        .child(if state.session.auto_compaction {
-                            crate::ui::dot(theme::accent(), 6.)
-                        } else {
-                            crate::ui::ring(theme::line_strong(), 6.)
-                        })
                         .child(
                             div()
                                 .text_size(px(theme::TEXT_XS))
-                                .text_color(theme::faint())
+                                .text_color(theme::dim())
                                 .child("compactar sozinho quando encher"),
-                        ),
+                        )
+                        .child(mini_switch(state.session.auto_compaction)),
                 ),
+        )
+}
+
+/// Interruptor compacto mesmo diálogo: quando ligado usa o accent da janela,
+/// que é o tom do nível de raciocínio — o único lugar onde essas duas coisas
+/// se encontram por decisão de produto.
+fn mini_switch(on: bool) -> Div {
+    div()
+        .flex_none()
+        .flex()
+        .flex_row()
+        .items_center()
+        .w(px(26.))
+        .h(px(15.))
+        .px(px(2.))
+        .rounded(px(7.5))
+        .bg(if on { theme::accent() } else { theme::inset() })
+        .border_1()
+        .border_color(if on {
+            theme::accent()
+        } else {
+            theme::line_strong()
+        })
+        .when(on, |el| el.justify_end())
+        .child(
+            div()
+                .flex_none()
+                .size(px(9.))
+                .rounded(px(4.5))
+                .bg(if on { theme::on_accent() } else { theme::faint() }),
         )
 }
 
@@ -554,10 +585,16 @@ fn action(
         .px(px(theme::S3))
         .py(px(theme::S1 + 3.))
         .rounded(theme::r_control())
+        .bg(theme::surface_2())
         .border_1()
-        .border_color(theme::line())
+        .border_color(theme::line_soft())
         .cursor_pointer()
-        .hover(|style| style.bg(theme::hover()).border_color(theme::line_strong()))
+        .hover(|style| {
+            style
+                .bg(theme::hover())
+                .border_color(theme::line())
+                .text_color(theme::text())
+        })
         .text_size(px(theme::TEXT_SM))
         .text_color(theme::dim())
         .on_click(cx.listener(move |state, _: &ClickEvent, _window, cx| run(state, cx)))

@@ -56,7 +56,7 @@ with tempfile.TemporaryDirectory(prefix="dish-search-stability-") as temporary:
         def composer_ready():
             # Xvfb has no WM; mapping may follow the first title notification.
             expose_window(window)
-            return find_word(window, "anything")
+            return find_word(window, "pergun")
 
         wait_for(composer_ready, "Composer did not render")
         chord("Control_L", "l")
