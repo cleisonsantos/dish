@@ -242,6 +242,14 @@ class WindowsPackagingTests(unittest.TestCase):
         data = (ROOT / "scripts/windows-installer.nsi").read_bytes()
         self.assertTrue(data.startswith(b"\xef\xbb\xbf"), "windows-installer.nsi precisa do BOM UTF-8")
 
+    def test_installer_pre_checks_pi_and_holds_dish_back(self):
+        nsi = (ROOT / "scripts/windows-installer.nsi").read_text(encoding="utf-8")
+        # Sem Pi, a instalação já vem marcada; e o Dish não abre junto com o
+        # instalador do Pi (evita duas instalações ao mesmo tempo).
+        self.assertIn("${NSD_Check} $PiCheckbox", nsi)
+        self.assertIn("EnableWindow $DishCheckbox 0", nsi)
+        self.assertIn("ExecShell \"open\" \"$INSTDIR\\${APP_EXE}\"", nsi)
+
     def test_shared_bundle_module_is_used_by_both_packagers(self):
         for script in ["package-linux.py", "package-windows.py"]:
             text = (ROOT / "scripts" / script).read_text()

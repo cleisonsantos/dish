@@ -1,4 +1,4 @@
-﻿; Instalador do Dish para Windows (NSIS).
+﻿﻿; Instalador do Dish para Windows (NSIS).
 ;
 ; Escolha por um EXE/NSIS em vez de MSI: o fluxo pedido na issue #13 é um
 ; assistente (avançar/avançar/concluir) com detecção do Pi, e o NSIS faz isso
@@ -58,9 +58,7 @@ Page custom PiCheckPage PiCheckLeave
 !insertmacro MUI_PAGE_COMPONENTS
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
-!define MUI_FINISHPAGE_RUN "$INSTDIR\${APP_EXE}"
-!define MUI_FINISHPAGE_RUN_TEXT "Executar o Dish"
-!insertmacro MUI_PAGE_FINISH
+Page custom FinishPage FinishLeave
 
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
@@ -99,6 +97,9 @@ Function PiCheckPage
     Pop $0
     ${NSD_CreateCheckbox} 0 76u 100% 12u "Executar o instalador oficial do Pi agora"
     Pop $PiCheckbox
+    ; Marcado por padrão: sem Pi o Dish não faz nada, e o assistente já mostra
+    ; o que será executado. Quem não quiser, desmarca.
+    ${NSD_Check} $PiCheckbox
   ${Else}
     ${NSD_CreateLabel} 0 30u 100% 24u "Pi encontrado neste computador."
     Pop $0
@@ -115,11 +116,39 @@ Function PiCheckLeave
   ${EndIf}
 FunctionEnd
 
-Function .onInstSuccess
+var DishCheckbox
+var RunDish
+
+; Página final própria: com o instalador do Pi em execução, abrir o Dish junto
+; confundiria (ele ainda não encontraria o Pi e poderia iniciar outra
+; instalação), então o "Executar o Dish" fica desmarcado e desabilitado.
+Function FinishPage
+  nsDialogs::Create 1018
+  Pop $0
+  ${If} $0 == error
+    Abort
+  ${EndIf}
+  ${NSD_CreateLabel} 0 0 100% 24u "A instalação do Dish terminou."
+  Pop $0
+  ${NSD_CreateCheckbox} 0 32u 100% 12u "Executar o Dish agora"
+  Pop $DishCheckbox
+  ${NSD_Check} $DishCheckbox
+  ${If} $RunPiInstaller == ${BST_CHECKED}
+    ${NSD_Uncheck} $DishCheckbox
+    EnableWindow $DishCheckbox 0
+  ${EndIf}
+  nsDialogs::Show
+FunctionEnd
+
+Function FinishLeave
+  ${NSD_GetState} $DishCheckbox $RunDish
   ${If} $RunPiInstaller == ${BST_CHECKED}
     ; Instalador oficial do Pi, como no assistente do Linux: nada é escondido
     ; da pessoa e o Dish não reimplementa a instalação.
     ExecShell "open" "powershell.exe" "-NoProfile -ExecutionPolicy Bypass -Command $\"irm https://pi.dev/install.ps1 | iex$\""
+  ${EndIf}
+  ${If} $RunDish == ${BST_CHECKED}
+    ExecShell "open" "$INSTDIR\${APP_EXE}"
   ${EndIf}
 FunctionEnd
 
