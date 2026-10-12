@@ -27,9 +27,20 @@ pub struct Preferences {
     pub session_filter: crate::session_activity::SessionFilter,
 }
 
+fn env_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name).filter(|value| !value.is_empty()).map(PathBuf::from)
+}
+
+/// Raiz de configuração: XDG no Unix, `%APPDATA%` no Windows (onde `HOME` e
+/// `XDG_CONFIG_HOME` não existem). Sem isso nada era salvo no Windows — nem a
+/// escolha do Pi, nem tamanho de janela, nem modelos ocultos.
+fn config_root(xdg: Option<PathBuf>, appdata: Option<PathBuf>, home: Option<PathBuf>) -> Option<PathBuf> {
+    xdg.or(appdata).or_else(|| home.map(|home| home.join(".config")))
+}
+
 fn path() -> Option<PathBuf> {
-    std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()).map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+    let appdata = if cfg!(windows) { env_path("APPDATA") } else { None };
+    config_root(env_path("XDG_CONFIG_HOME"), appdata, env_path("HOME"))
         .map(|root| root.join("dish/state.json"))
 }
 
@@ -70,6 +81,17 @@ fn write(path: &std::path::Path, preferences: &Preferences) -> anyhow::Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn config_root_follows_the_platform_convention() {
+        let xdg = Some(PathBuf::from("/xdg"));
+        let appdata = Some(PathBuf::from("C:/Users/dish/AppData/Roaming"));
+        let home = Some(PathBuf::from("/home/dish"));
+        assert_eq!(config_root(xdg.clone(), appdata.clone(), home.clone()), xdg);
+        assert_eq!(config_root(None, appdata.clone(), home.clone()), appdata);
+        assert_eq!(config_root(None, None, home), Some(PathBuf::from("/home/dish/.config")));
+        assert_eq!(config_root(None, None, None), None);
+    }
+
     #[test]
     fn old_or_partial_preferences_use_defaults() {
         let preferences: Preferences = serde_json::from_str(r#"{"details_open":false,"unknown":1}"#).unwrap();

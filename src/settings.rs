@@ -14,6 +14,8 @@ pub enum SettingsEvent {
     ModelsVisibility(Vec<String>, bool),
     /// Limpar todos os modelos ocultos.
     ShowAllModels,
+    /// Trocar o executável do Pi escolhido.
+    ChoosePi,
 }
 impl EventEmitter<SettingsEvent> for Settings {}
 
@@ -344,6 +346,9 @@ impl Render for Settings {
                 .child(note(&format!("Versão do Dish: {}", env!("CARGO_PKG_VERSION"))))
                 .child(note(&format!("Pi selecionado: {}", crate::installation::program())))
                 .child(note("Pi mantém as sessões e credenciais. O Dish não executa um serviço em segundo plano."))
+                .child(control("settings-pi-choose", "Escolher executável do Pi", cx.listener(
+                    |_, _, _, cx| cx.emit(SettingsEvent::ChoosePi),
+                )))
                 .child(control("settings-docs", "Documentação oficial do Pi", |_, _, cx| cx.open_url("https://github.com/earendil-works/pi"))).into_any_element(),
         };
         let card = column().id("settings-card").w(px(width)).h(px(height.min(620.)))

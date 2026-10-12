@@ -392,6 +392,36 @@ impl Workspace {
                             });
                         }
                     }
+                    SettingsEvent::ChoosePi => {
+                        let picker = cx.prompt_for_paths(PathPromptOptions {
+                            files: true,
+                            directories: false,
+                            multiple: false,
+                            prompt: Some("Escolher executável do Pi".into()),
+                        });
+                        cx.spawn(async move |this, cx| {
+                            let Ok(Ok(Some(paths))) = picker.await else { return; };
+                            let Some(path) = paths.first() else { return; };
+                            let program = path.to_string_lossy().into_owned();
+                            let candidate = program.clone();
+                            let result = cx
+                                .background_executor()
+                                .spawn(async move { crate::installation::validate(&candidate) })
+                                .await;
+                            let _ = this.update(cx, |workspace, cx| {
+                                let (message, tone) = match result {
+                                    Ok(version) => {
+                                        crate::installation::remember(&program);
+                                        (format!("Pi {version} salvo. Novas conversas usarão esse executável."), crate::state::Tone::Success)
+                                    }
+                                    Err(error) => (format!("Esse executável não respondeu como o Pi: {error:#}"), crate::state::Tone::Error),
+                                };
+                                let state = workspace.conversations[workspace.active].state.clone();
+                                state.update(cx, |state, cx| state.push_toast(message, tone, cx));
+                            });
+                        })
+                        .detach();
+                    }
                     SettingsEvent::Closed => {}
                 }
                 cx.notify();

@@ -23,12 +23,14 @@ pub fn remember(program: &str) {
 }
 
 /// Dish's data directory (`$XDG_DATA_HOME/dish`, default `~/.local/share/dish`).
+/// Raiz de dados: XDG no Unix, `%LOCALAPPDATA%` no Windows.
+fn data_root(xdg: Option<PathBuf>, local_app_data: Option<PathBuf>, home: Option<PathBuf>) -> Option<PathBuf> {
+    xdg.or(local_app_data).or_else(|| home.map(|home| home.join(".local/share")))
+}
+
 pub fn data_dir() -> Option<PathBuf> {
-    std::env::var_os("XDG_DATA_HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".local/share")))
-        .map(|p| p.join("dish"))
+    let local_app_data = if cfg!(windows) { env_path("LOCALAPPDATA") } else { None };
+    data_root(env_path("XDG_DATA_HOME"), local_app_data, env_path("HOME")).map(|root| root.join("dish"))
 }
 
 pub fn prefix() -> Option<PathBuf> {
@@ -328,6 +330,17 @@ mod tests {
         assert_eq!(attempts, 1);
         let result: std::io::Result<()> = retry_text_busy(|| Err(std::io::Error::from_raw_os_error(libc::ETXTBSY)), Duration::ZERO);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn data_root_follows_the_platform_convention() {
+        let xdg = Some(PathBuf::from("/xdg"));
+        let local = Some(PathBuf::from("C:/Users/dish/AppData/Local"));
+        let home = Some(PathBuf::from("/home/dish"));
+        assert_eq!(data_root(xdg.clone(), local.clone(), home.clone()), xdg);
+        assert_eq!(data_root(None, local.clone(), home.clone()), local);
+        assert_eq!(data_root(None, None, home), Some(PathBuf::from("/home/dish/.local/share")));
+        assert_eq!(data_root(None, None, None), None);
     }
 
     #[test]
