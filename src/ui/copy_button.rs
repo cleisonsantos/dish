@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 pub struct TextTooltip(pub String);
 impl Render for TextTooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        // Sem sombra: com a rasterização de software o blur custa caro no
+        // repaint, e o fio já separa a camada flutuante do conteúdo.
         div()
             .id("text-tooltip")
             .max_h(px(420.))
@@ -18,9 +20,7 @@ impl Render for TextTooltip {
             .bg(theme::surface_2())
             .border_1()
             .border_color(theme::line_strong())
-            .shadow(theme::shadow_overlay())
             .text_size(px(theme::TEXT_XS))
-            .line_height(px(17.))
             .text_color(theme::text())
             .child(SharedString::from(self.0.clone()))
     }

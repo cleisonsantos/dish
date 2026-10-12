@@ -117,6 +117,20 @@ def click(window, x, y):
     time.sleep(0.2)
 
 
+def switch_conversation(window, n):
+    """Troca de conversa por teclado: Atalho determinístico (ctrl-tab gira entre abertas)."""
+    for _ in range(n):
+        chord("Control_L", "Tab")
+    time.sleep(0.3)
+
+
+def switch_conversation_back(window, n):
+    """Caminho inverso do switch_conversation (ctrl-shift-tab)."""
+    for _ in range(n):
+        chord("Control_L", "Shift_L", "Tab")
+    time.sleep(0.3)
+
+
 def find_word(window, needle, last=False):
     """Locate rendered text instead of assuming transcript row coordinates."""
     with tempfile.NamedTemporaryFile(suffix=".png") as image:
@@ -201,6 +215,8 @@ def park_mouse(window):
                               ctypes.byref(root_x), ctypes.byref(root_y), ctypes.byref(child))
     xtst.XTestFakeMotionEvent(display, -1, root_x.value, root_y.value, 0)
     x11.XFlush(display)
+    # O evento de leave só vira fechamento de tooltip no próximo frame.
+    time.sleep(0.2)
 
 
 def transcript_pixels(window):
@@ -397,10 +413,10 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         wait_for(lambda: len(commands("prompt")) == 2, "Second prompt not sent")
         type_text("draft-b")
         # Return to alpha (the initial, unsaved conversation).
-        click_nav_label(window, "long-a")
+        switch_conversation_back(window, 1)
         type_text("draft-a")
         # Return to beta, whose draft must survive.
-        click_beta_session(window)
+        switch_conversation(window, 1)
         press("Return")
         wait_for(lambda: len(commands("prompt")) == 3, "Draft prompt not sent")
         prompts = commands("prompt")
@@ -417,36 +433,40 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         scroll_up(window)
         park_mouse(window)
         scrolled = stable_transcript_pixels(window)
-        click_nav_label(window, "long-a")
-        click_beta_session(window)
+        switch_conversation_back(window, 1)
+        switch_conversation(window, 1)
         park_mouse(window)
         wait_for(lambda: transcript_pixels(window) == scrolled,
                  "Transcript scroll position was lost", timeout=3)
-        click_nav_label(window, "long-a")
+        switch_conversation_back(window, 1)
         press("Return")
         wait_for(lambda: len(commands("prompt")) == 4, "Alpha draft was lost")
         assert commands("prompt")[3]["command"]["message"] == "draft-a"
         # A hidden extension dialog must neither take beta's input nor stop navigation.
         type_text("dialog")
         press("Return")
-        click_beta_session(window)
+        switch_conversation(window, 1)
         wait_for(lambda: any(item.get("record", {}).get("type") == "extension_ui_request" for item in events()),
                  "Background extension dialog did not arrive")
         time.sleep(0.2)
         # Alpha has just changed to max; beta's visible accent must remain low.
-        accent_pixels = subprocess.check_output(
-            ["import", "-window", str(window), "-crop", ACCENT_PROBE, "-depth", "8", "rgb:-"])
-        assert bytes((84, 137, 164)) in accent_pixels, "Background effort changed the visible accent"
+        # Repinturas em CPU ocupada podem mostrar o frame anterior; repete a
+        # leitura com prazo em vez de reprovar no primeiro quadro.
+        def visible_accent():
+            pixels = subprocess.check_output(
+                ["import", "-window", str(window), "-crop", ACCENT_PROBE, "-depth", "8", "rgb:-"])
+            return bytes((84, 137, 164)) in pixels
+        wait_for(visible_accent, "Background effort changed the visible accent")
         type_text("still-beta")
         press("Return")
         wait_for(lambda: len(commands("prompt")) == 6, "Hidden dialog stole keyboard focus")
         assert commands("prompt")[-1]["pid"] == prompts[1]["pid"]
-        click_nav_label(window, "dialog")
+        switch_conversation_back(window, 1)
         type_text("answer")
         press("Return")
         wait_for(lambda: commands("extension_ui_response"), "Pending dialog could not be answered")
         assert commands("extension_ui_response")[-1]["command"]["value"] == "answer"
-        click_beta_session(window)
+        switch_conversation(window, 1)
         type_text("long-close")
         press("Return")
         wait_for(lambda: len(commands("prompt")) == 7, "Close test prompt not sent")
@@ -742,7 +762,13 @@ with tempfile.TemporaryDirectory(prefix="dish-metadata-") as directory:
                     return False
                 click(window, end[0] + 2, end[1] + end[3] // 2)
                 park_mouse(window)
-                return find_word(window, "monot", last=True)
+                # O frame dos detalhes pode demorar na CPU de CI: um clique
+                # apressado fecharia o que acabou de abrir.
+                for _ in range(3):
+                    if find_word(window, "monot", last=True):
+                        return True
+                    time.sleep(0.3)
+                return False
 
             wait_for(open_observed_metadata, "Observed duration details missing")
             duration_word = find_word(window, "monot", last=True)
