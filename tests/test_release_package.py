@@ -241,6 +241,9 @@ class WindowsPackagingTests(unittest.TestCase):
         # saem corrompidos ("Ã¡rea de trabalho").
         data = (ROOT / "scripts/windows-installer.nsi").read_bytes()
         self.assertTrue(data.startswith(b"\xef\xbb\xbf"), "windows-installer.nsi precisa do BOM UTF-8")
+        # BOM duplicado quebra o makensis ("Invalid command") — já aconteceu.
+        self.assertFalse(data.startswith(b"\xef\xbb\xbf\xef\xbb\xbf"))
+        self.assertFalse(data.decode("utf-8-sig").startswith("\ufeff"))
 
     def test_installer_pre_checks_pi_and_holds_dish_back(self):
         nsi = (ROOT / "scripts/windows-installer.nsi").read_text(encoding="utf-8")
