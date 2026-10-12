@@ -1,7 +1,9 @@
 """Unit and installation tests for the Linux release tooling; no network or sudo."""
+import hashlib
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -17,6 +19,9 @@ spec.loader.exec_module(package)
 deb_spec = importlib.util.spec_from_file_location("package_deb", ROOT / "scripts/package-deb.py")
 deb = importlib.util.module_from_spec(deb_spec)
 deb_spec.loader.exec_module(deb)
+win_spec = importlib.util.spec_from_file_location("package_windows", ROOT / "scripts/package-windows.py")
+windows = importlib.util.module_from_spec(win_spec)
+win_spec.loader.exec_module(windows)
 
 
 class ReleaseToolTests(unittest.TestCase):
@@ -165,6 +170,96 @@ class CandidateArchiveTests(unittest.TestCase):
             self.assertTrue((data / "dish/licenses/sources" / mpl["source_archive"]).is_file())
             subprocess.run(["bash", str(app / "uninstall.sh")], env=env, check=True, capture_output=True)
             self.assertFalse((home / ".local/bin/dish").exists())
+
+
+class WindowsPackagingTests(unittest.TestCase):
+    def test_numeric_version_for_viproductversion(self):
+        self.assertEqual(windows.numeric_version("0.1.0-alpha.3"), "0.1.0.3")
+        self.assertEqual(windows.numeric_version("0.1.0"), "0.1.0.0")
+        self.assertEqual(windows.numeric_version("1.2.3-beta.4"), "1.2.3.4")
+
+    def test_release_label_comes_from_ci_then_cargo(self):
+        self.assertEqual(windows.release_version("9.9.9"), "9.9.9")
+        expected = re.search(r"--version ([0-9][^\s'\"]*)",
+                             (ROOT / ".github/workflows/ci.yml").read_text()).group(1)
+        self.assertEqual(windows.release_version(None), expected)
+
+    def test_installer_ships_the_shared_license_bundle(self):
+        nsi = (ROOT / "scripts/windows-installer.nsi").read_text()
+        self.assertIn('File /r "${SRCDIR}\\dist\\windows-payload\\licenses"', nsi)
+        self.assertIn('RMDir /r "$INSTDIR\\licenses"', nsi)
+
+    def test_published_crate_without_license_files_uses_standard_texts(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "licenses/standard").mkdir(parents=True)
+            shutil.copyfile(ROOT / "licenses/standard/MIT.txt", root / "licenses/standard/MIT.txt")
+            (root / "LICENSE").write_text("apache", encoding="utf-8")
+            (root / "licenses/overrides.json").write_text("[]", encoding="utf-8")
+            crate = root / "registry/src/index/plain-1.0.0"
+            crate.mkdir(parents=True)
+            (crate / "Cargo.toml").touch()
+            archive = root / "registry/cache/index/plain-1.0.0.crate"
+            archive.parent.mkdir(parents=True)
+            archive.write_bytes(b"published crate")
+            lock = {"package": [{"name": "plain", "version": "1.0.0", "source": "registry+test",
+                                 "checksum": hashlib.sha256(archive.read_bytes()).hexdigest()}]}
+            (root / "Cargo.lock").write_text("package = []", encoding="utf-8")
+            metadata = {"resolve": {"root": "dish"}, "packages": [
+                {"id": "plain", "name": "plain", "version": "1.0.0", "license": "MIT OR Apache-2.0",
+                 "source": "registry+test", "manifest_path": str(crate / "Cargo.toml")}]}
+            import license_bundle
+            with patch.object(license_bundle, "tomllib") as tomllib_mock:
+                tomllib_mock.loads.return_value = lock
+                count = license_bundle.collect_licenses(metadata, root / "out", root)
+            self.assertEqual(count, 1)
+            files = sorted(p.name for p in (root / "out/dependencies/plain-1.0.0").iterdir())
+            self.assertEqual(files, ["0-MIT.txt", "1-LICENSE"])
+            record = json.loads((root / "out/dependencies.json").read_text(encoding="utf-8"))[0]
+            self.assertIn("standard_texts", record["override"])
+            # A crate completa acompanha os textos padrão, preservando os avisos.
+            self.assertTrue((root / "out/sources/plain-1.0.0.crate").is_file())
+
+    def test_unknown_license_without_files_still_fails_closed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "licenses").mkdir(parents=True)
+            (root / "licenses/overrides.json").write_text("[]", encoding="utf-8")
+            (root / "Cargo.lock").write_text("package = []", encoding="utf-8")
+            crate = root / "registry/src/index/weird-1.0.0"
+            crate.mkdir(parents=True)
+            (crate / "Cargo.toml").touch()
+            metadata = {"resolve": {"root": "dish"}, "packages": [
+                {"id": "weird", "name": "weird", "version": "1.0.0", "license": "LicenseRef-Proprietary",
+                 "source": "registry+test", "manifest_path": str(crate / "Cargo.toml")}]}
+            import license_bundle
+            with self.assertRaisesRegex(RuntimeError, "Missing license texts"):
+                license_bundle.collect_licenses(metadata, root / "out", root)
+
+    def test_installer_script_keeps_the_utf8_bom(self):
+        # Sem BOM o NSIS interpreta o script como ANSI e os acentos das telas
+        # saem corrompidos ("Ã¡rea de trabalho").
+        data = (ROOT / "scripts/windows-installer.nsi").read_bytes()
+        self.assertTrue(data.startswith(b"\xef\xbb\xbf"), "windows-installer.nsi precisa do BOM UTF-8")
+        # BOM duplicado quebra o makensis ("Invalid command") — já aconteceu.
+        self.assertFalse(data.startswith(b"\xef\xbb\xbf\xef\xbb\xbf"))
+        self.assertFalse(data.decode("utf-8-sig").startswith("\ufeff"))
+
+    def test_installer_pre_checks_pi_and_holds_dish_back(self):
+        nsi = (ROOT / "scripts/windows-installer.nsi").read_text(encoding="utf-8")
+        # Sem Pi, a instalação já vem marcada; e o Dish não abre junto com o
+        # instalador do Pi (evita duas instalações ao mesmo tempo).
+        self.assertIn("${NSD_Check} $PiCheckbox", nsi)
+        self.assertIn("ExecShell \"open\" \"$INSTDIR\\${APP_EXE}\"", nsi)
+        # O "Executar o Dish" fica desmarcado, mas nunca desabilitado.
+        self.assertIn("${NSD_Uncheck} $DishCheckbox", nsi)
+        self.assertNotIn("EnableWindow $DishCheckbox", nsi)
+
+    def test_shared_bundle_module_is_used_by_both_packagers(self):
+        for script in ["package-linux.py", "package-windows.py"]:
+            text = (ROOT / "scripts" / script).read_text()
+            self.assertIn("license_bundle", text, script)
+        self.assertTrue((ROOT / "scripts/license_bundle.py").is_file())
 
 
 @unittest.skipUnless(shutil.which("dpkg-deb") and shutil.which("dpkg-query") and shutil.which("readelf"),

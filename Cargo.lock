@@ -1309,6 +1309,7 @@ dependencies = [
  "serde_json",
  "unicode-segmentation",
  "url",
+ "winresource",
 ]
 
 [[package]]
@@ -6650,6 +6651,16 @@ checksum = "cb5a765337c50e9ec252c2069be9bf91c7df47afb103b642ba3a53bf8101be97"
 dependencies = [
  "cfg-if",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "winresource"
+version = "0.1.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af0372eb558f476d9cb0b557558a2dae35953af999ec5f0e9fd115e0e89b5cb1"
+dependencies = [
+ "toml 1.1.6+spec-1.1.0",
+ "version_check",
 ]
 
 [[package]]

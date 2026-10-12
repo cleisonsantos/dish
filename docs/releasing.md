@@ -85,6 +85,32 @@ hosts also need Mesa/EGL software graphics (`libegl1`, `libgl1-mesa-dri`,
 `mesa-vulkan-drivers`); CI sets `LIBGL_ALWAYS_SOFTWARE=1` and creates a private
 `XDG_RUNTIME_DIR` for its virtual displays.
 
+## Windows installer
+
+```sh
+python3 scripts/package-windows.py            # requires cargo build --release first
+python3 scripts/package-windows.py --bundle-only --target x86_64-unknown-linux-gnu
+```
+
+The script stages `dist/windows-payload/` (executable, `LICENSE`,
+`THIRD_PARTY_NOTICES.md`, `BUILD.json` and the shared license bundle) and then
+runs NSIS to produce `dish-<version>-windows-x86_64-setup.exe` plus its SHA-256
+sidecar. `--bundle-only` is for checking the license collection without NSIS.
+The version label comes from `ci.yml` (single source), with `Cargo.toml` as the
+fallback, and `makensis` is looked up on `PATH` and in the common Chocolatey and
+NSIS install directories.
+
+The installer is per-user (no administrator), adds Start Menu and optional
+desktop shortcuts, registers an uninstaller in Add/Remove Programs, and offers
+the official Pi installer when `where pi` finds nothing. Uninstalling removes
+only Dish.
+
+**Licenses are not optional.** The Windows payload must carry the same bundle as
+the Linux archive (issue #63): `scripts/license_bundle.py` collects the
+dependency texts, the hash-pinned overrides and native notices, the Rust
+toolchain notices and the MPL source archive. A missing license entry stops the
+build, on every platform. macOS packaging must use the same module.
+
 ## GitHub CI
 
 `.github/workflows/ci.yml` builds on Ubuntu 24.04, runs strict Clippy and unit

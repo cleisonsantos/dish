@@ -59,22 +59,9 @@ jobs:
           export XDG_RUNTIME_DIR="$(mktemp -d)"
           chmod 700 "$XDG_RUNTIME_DIR"
           test -n "$DISH_TEST_BIN"
-          # Testes de UI em Xvfb são sensíveis a OCR e a tempo de pintura. Uma
-          # nova tentativa explícita evita reprovar uma mudança por um frame
-          # perdido; uma falha determinística falha nas duas vezes.
-          run_ui() {
-            local test="$1"
-            if ! xvfb-run -a -s '-screen 0 1280x960x24' python3 "$test"; then
-              echo "::warning::$test falhou; tentando mais uma vez"
-              sleep 5
-              xvfb-run -a -s '-screen 0 1280x960x24' python3 "$test"
-            fi
-          }
-          run_ui tests/desktop_smoke.py
-          run_ui tests/search_stability_smoke.py
-          run_ui tests/startup_smoke.py
-          run_ui tests/settings_smoke.py
-          run_ui tests/session_activity_smoke.py
+          bash tests/run_ui.sh tests/desktop_smoke.py tests/search_stability_smoke.py \
+                             tests/startup_smoke.py tests/settings_smoke.py \
+                             tests/session_activity_smoke.py
       - name: Install the Debian package and smoke-test /usr/bin/dish
         run: |
           sudo apt-get install -y ./dist/dish_*_amd64.deb
@@ -84,7 +71,7 @@ jobs:
           export DISH_TEST_BIN=/usr/bin/dish LIBGL_ALWAYS_SOFTWARE=1
           export XDG_RUNTIME_DIR="$(mktemp -d)"
           chmod 700 "$XDG_RUNTIME_DIR"
-          xvfb-run -a -s '-screen 0 1280x960x24' python3 tests/desktop_smoke.py
+          bash tests/run_ui.sh tests/desktop_smoke.py
           sudo apt-get remove -y dish
           test ! -e /usr/bin/dish
       - name: Save synthetic UI failure screenshots

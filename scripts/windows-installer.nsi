@@ -1,4 +1,4 @@
-; Instalador do Dish para Windows (NSIS).
+﻿; Instalador do Dish para Windows (NSIS).
 ;
 ; Escolha por um EXE/NSIS em vez de MSI: o fluxo pedido na issue #13 é um
 ; assistente (avançar/avançar/concluir) com detecção do Pi, e o NSIS faz isso
@@ -58,9 +58,7 @@ Page custom PiCheckPage PiCheckLeave
 !insertmacro MUI_PAGE_COMPONENTS
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
-!define MUI_FINISHPAGE_RUN "$INSTDIR\${APP_EXE}"
-!define MUI_FINISHPAGE_RUN_TEXT "Executar o Dish"
-!insertmacro MUI_PAGE_FINISH
+Page custom FinishPage FinishLeave
 
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
@@ -99,6 +97,9 @@ Function PiCheckPage
     Pop $0
     ${NSD_CreateCheckbox} 0 76u 100% 12u "Executar o instalador oficial do Pi agora"
     Pop $PiCheckbox
+    ; Marcado por padrão: sem Pi o Dish não faz nada, e o assistente já mostra
+    ; o que será executado. Quem não quiser, desmarca.
+    ${NSD_Check} $PiCheckbox
   ${Else}
     ${NSD_CreateLabel} 0 30u 100% 24u "Pi encontrado neste computador."
     Pop $0
@@ -115,11 +116,42 @@ Function PiCheckLeave
   ${EndIf}
 FunctionEnd
 
-Function .onInstSuccess
+var DishCheckbox
+var RunDish
+
+; Página final própria: com o instalador do Pi em execução, abrir o Dish junto
+; confundiria (ele ainda não encontraria o Pi e poderia iniciar outra
+; instalação), então o "Executar o Dish" fica desmarcado e desabilitado.
+Function FinishPage
+  nsDialogs::Create 1018
+  Pop $0
+  ${If} $0 == error
+    Abort
+  ${EndIf}
+  ${NSD_CreateLabel} 0 0 100% 24u "A instalação do Dish terminou."
+  Pop $0
+  ${NSD_CreateCheckbox} 0 32u 100% 12u "Executar o Dish agora"
+  Pop $DishCheckbox
+  ${NSD_Check} $DishCheckbox
+  ${If} $RunPiInstaller == ${BST_CHECKED}
+    ; Desmarcado, mas utilizável: abrir o Dish com o instalador do Pi ainda
+    ; rodando mostra o assistente sem achar o Pi. Quem quiser, marca.
+    ${NSD_Uncheck} $DishCheckbox
+    ${NSD_CreateLabel} 0 52u 100% 24u "O instalador do Pi abre em outra janela; conclua-o antes de abrir o Dish."
+    Pop $0
+  ${EndIf}
+  nsDialogs::Show
+FunctionEnd
+
+Function FinishLeave
+  ${NSD_GetState} $DishCheckbox $RunDish
   ${If} $RunPiInstaller == ${BST_CHECKED}
     ; Instalador oficial do Pi, como no assistente do Linux: nada é escondido
     ; da pessoa e o Dish não reimplementa a instalação.
     ExecShell "open" "powershell.exe" "-NoProfile -ExecutionPolicy Bypass -Command $\"irm https://pi.dev/install.ps1 | iex$\""
+  ${EndIf}
+  ${If} $RunDish == ${BST_CHECKED}
+    ExecShell "open" "$INSTDIR\${APP_EXE}"
   ${EndIf}
 FunctionEnd
 
@@ -128,9 +160,13 @@ FunctionEnd
 Section "Dish" SEC_MAIN
   SectionIn RO
   SetOutPath "$INSTDIR"
-  File "${SRCDIR}\target\release\${APP_EXE}"
-  File "${SRCDIR}\LICENSE"
-  File "${SRCDIR}\THIRD_PARTY_NOTICES.md"
+  File "${SRCDIR}\dist\windows-payload\${APP_EXE}"
+  File "${SRCDIR}\dist\windows-payload\LICENSE"
+  File "${SRCDIR}\dist\windows-payload\THIRD_PARTY_NOTICES.md"
+  ; O pacote completo de licenças (dependências, nativas e do Rust), igual ao
+  ; que o .tar.gz/.deb do Linux carrega — issue #63.
+  File /r "${SRCDIR}\dist\windows-payload\licenses"
+  File "${SRCDIR}\dist\windows-payload\BUILD.json"
 
   WriteUninstaller "$INSTDIR\uninstall.exe"
   WriteRegStr HKCU "Software\Dish" "InstallDir" "$INSTDIR"
@@ -159,7 +195,7 @@ Section /o "Atalho na área de trabalho" SEC_DESKTOP
 SectionEnd
 
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
-  !insertmacro MUI_DESCRIPTION_TEXT ${SEC_MAIN} "O aplicativo, a licença e o aviso de terceiros."
+  !insertmacro MUI_DESCRIPTION_TEXT ${SEC_MAIN} "O aplicativo, a licença, o aviso de terceiros e o pacote de licenças das dependências."
   !insertmacro MUI_DESCRIPTION_TEXT ${SEC_STARTMENU} "Atalhos no menu Iniciar, incluindo o desinstalador."
   !insertmacro MUI_DESCRIPTION_TEXT ${SEC_DESKTOP} "Um atalho na área de trabalho."
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
@@ -168,7 +204,9 @@ Section "Uninstall"
   Delete "$INSTDIR\${APP_EXE}"
   Delete "$INSTDIR\LICENSE"
   Delete "$INSTDIR\THIRD_PARTY_NOTICES.md"
+  Delete "$INSTDIR\BUILD.json"
   Delete "$INSTDIR\uninstall.exe"
+  RMDir /r "$INSTDIR\licenses"
   RMDir "$INSTDIR"
 
   Delete "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk"

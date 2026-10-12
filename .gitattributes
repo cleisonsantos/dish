@@ -1,0 +1,10 @@
+# Arquivos com hash fixado em licenses/overrides.json precisam sair do Git
+# exatamente como foram commitados. No Windows o Git converte fim de linha por
+# padrão (core.autocrlf) e isso muda os bytes, quebrando a verificação de
+# integridade do pacote de licenças.
+/LICENSE -text
+licenses/** -text
+
+# Binários já são detectados como tal; declarar evita surpresas.
+assets/*.png -text
+assets/*.ico -text

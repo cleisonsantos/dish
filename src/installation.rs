@@ -23,12 +23,14 @@ pub fn remember(program: &str) {
 }
 
 /// Dish's data directory (`$XDG_DATA_HOME/dish`, default `~/.local/share/dish`).
+/// Raiz de dados: XDG no Unix, `%LOCALAPPDATA%` no Windows.
+fn data_root(xdg: Option<PathBuf>, local_app_data: Option<PathBuf>, home: Option<PathBuf>) -> Option<PathBuf> {
+    xdg.or(local_app_data).or_else(|| home.map(|home| home.join(".local/share")))
+}
+
 pub fn data_dir() -> Option<PathBuf> {
-    std::env::var_os("XDG_DATA_HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".local/share")))
-        .map(|p| p.join("dish"))
+    let local_app_data = if cfg!(windows) { env_path("LOCALAPPDATA") } else { None };
+    data_root(env_path("XDG_DATA_HOME"), local_app_data, env_path("HOME")).map(|root| root.join("dish"))
 }
 
 pub fn prefix() -> Option<PathBuf> {
@@ -78,16 +80,41 @@ fn find_on_path(name: &str) -> Option<PathBuf> {
     })
 }
 
-fn find_installed() -> Option<PathBuf> {
-    let home = PathBuf::from(std::env::var_os("HOME")?);
-    [
-        home.join(".local/bin/pi"),
-        home.join(".npm-global/bin/pi"),
+/// Diretórios onde o Pi costuma ficar, além do `PATH`. Inclui o destino do
+/// instalador oficial no Windows (`%USERPROFILE%\.pi\agent\bin`), que ele
+/// adiciona ao `PATH` do usuário — mas só para processos abertos depois disso,
+/// e é por isso que "já instalei, verificar" precisa procurar aqui também.
+fn pi_candidates(home: Option<PathBuf>, local_app_data: Option<PathBuf>, app_data: Option<PathBuf>) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(home) = home {
+        for relative in [".local/bin/pi", ".npm-global/bin/pi", ".pi/agent/bin/pi.cmd", ".pi/agent/bin/pi.exe", ".pi/agent/bin/pi"] {
+            candidates.push(home.join(relative));
+        }
+    }
+    if let Some(app_data) = app_data {
+        candidates.push(app_data.join("npm/pi.cmd"));
+    }
+    if let Some(local) = local_app_data {
+        candidates.push(local.join("Programs/pi/pi.cmd"));
+        candidates.push(local.join("pi/pi.cmd"));
+    }
+    candidates.extend([
         PathBuf::from("/usr/local/bin/pi"),
         PathBuf::from("/opt/homebrew/bin/pi"),
-    ]
-    .into_iter()
-    .find(|path| path.is_file())
+    ]);
+    candidates
+}
+
+fn env_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name).filter(|value| !value.is_empty()).map(PathBuf::from)
+}
+
+fn find_installed() -> Option<PathBuf> {
+    // No Windows `HOME` não existe; `USERPROFILE` é o equivalente.
+    let home = env_path("HOME").or_else(|| env_path("USERPROFILE"));
+    pi_candidates(home, env_path("LOCALAPPDATA"), env_path("APPDATA"))
+        .into_iter()
+        .find(|path| path.is_file())
 }
 
 // Fixed script: no project path, credentials or user input is interpolated.
@@ -303,6 +330,34 @@ mod tests {
         assert_eq!(attempts, 1);
         let result: std::io::Result<()> = retry_text_busy(|| Err(std::io::Error::from_raw_os_error(libc::ETXTBSY)), Duration::ZERO);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn data_root_follows_the_platform_convention() {
+        let xdg = Some(PathBuf::from("/xdg"));
+        let local = Some(PathBuf::from("C:/Users/dish/AppData/Local"));
+        let home = Some(PathBuf::from("/home/dish"));
+        assert_eq!(data_root(xdg.clone(), local.clone(), home.clone()), xdg);
+        assert_eq!(data_root(None, local.clone(), home.clone()), local);
+        assert_eq!(data_root(None, None, home), Some(PathBuf::from("/home/dish/.local/share")));
+        assert_eq!(data_root(None, None, None), None);
+    }
+
+    #[test]
+    fn windows_install_locations_are_searched_without_path() {
+        let home = PathBuf::from("C:/Users/dish");
+        let candidates = pi_candidates(
+            Some(home.clone()),
+            Some(PathBuf::from("C:/Users/dish/AppData/Local")),
+            Some(PathBuf::from("C:/Users/dish/AppData/Roaming")),
+        );
+        // Destino do instalador oficial do Pi no Windows.
+        assert!(candidates.contains(&home.join(".pi/agent/bin/pi.cmd")), "{candidates:?}");
+        assert!(candidates.iter().any(|path| path.ends_with("npm/pi.cmd")));
+        assert!(candidates.iter().any(|path| path.ends_with("Programs/pi/pi.cmd")));
+        // Sem perfil de usuário ainda restam os caminhos de sistema.
+        let system = pi_candidates(None, None, None);
+        assert!(system.contains(&PathBuf::from("/usr/local/bin/pi")));
     }
 
     #[test]
