@@ -17,6 +17,26 @@ pub fn hide_console(command: &mut std::process::Command) {
     }
 }
 
+/// Abre uma pasta no gerenciador de arquivos do sistema. Fire-and-forget:
+/// falhar em abrir não pode derrubar a interface.
+pub fn open_directory(directory: &std::path::Path) {
+    #[cfg(target_os = "windows")]
+    let program = "explorer";
+    #[cfg(target_os = "macos")]
+    let program = "open";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let program = "xdg-open";
+    let mut command = std::process::Command::new(program);
+    command.arg(directory);
+    hide_console(&mut command);
+    if let Err(error) = command.spawn() {
+        crate::logging::warn(format_args!(
+            "Dish: cannot open {program} for {}: {error}",
+            directory.display()
+        ));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

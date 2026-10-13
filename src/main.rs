@@ -285,6 +285,7 @@ fn main() {
         // A preferência de aparência vale desde a primeira pintura; o render
         // resolve o modo Sistema a cada quadro.
         theme::set_mode(preferences.appearance);
+        theme::set_theme(preferences.theme.clone());
 
         let [width, height] = preferences.window_size
             .filter(|s| s.iter().all(|v| v.is_finite()) && s[0] >= 720. && s[1] >= 520.)

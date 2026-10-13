@@ -1,0 +1,57 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/cleisonsantos/dish/main/docs/theme-v1.schema.json",
+  "title": "Dish theme",
+  "description": "Um tema do Dish: um arquivo JSON em $XDG_CONFIG_HOME/dish/themes/.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Opcional. Ajuda editores a validar e completar o arquivo."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Nome exibido na tela de Aparência. Sem ele, o nome do arquivo é usado."
+    },
+    "appearance": {
+      "enum": ["dark", "light"],
+      "default": "dark",
+      "description": "De qual tema embutido vêm as cores que faltarem: dish-dark ou dish-light."
+    },
+    "colors": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Cada chave ausente cai no valor do tema base da aparência.",
+      "properties": {
+        "bg": { "$ref": "#/definitions/color" },
+        "surface": { "$ref": "#/definitions/color" },
+        "surface2": { "$ref": "#/definitions/color" },
+        "inset": { "$ref": "#/definitions/color" },
+        "hover": { "$ref": "#/definitions/color" },
+        "line": { "$ref": "#/definitions/color" },
+        "lineSoft": { "$ref": "#/definitions/color" },
+        "lineStrong": { "$ref": "#/definitions/color" },
+        "text": { "$ref": "#/definitions/color" },
+        "dim": { "$ref": "#/definitions/color" },
+        "faint": { "$ref": "#/definitions/color" },
+        "onAccent": { "$ref": "#/definitions/color" },
+        "running": { "$ref": "#/definitions/color" },
+        "failure": { "$ref": "#/definitions/color" },
+        "warn": { "$ref": "#/definitions/color" },
+        "attention": { "$ref": "#/definitions/color" },
+        "ok": { "$ref": "#/definitions/color" },
+        "gitAdded": { "$ref": "#/definitions/color" },
+        "gitRemoved": { "$ref": "#/definitions/color" }
+      }
+    }
+  },
+  "definitions": {
+    "color": {
+      "type": "string",
+      "pattern": "^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$",
+      "description": "#rrggbb ou #rrggbbaa."
+    }
+  }
+}

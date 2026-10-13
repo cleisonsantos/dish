@@ -27,6 +27,9 @@ pub struct Preferences {
     pub session_filter: crate::session_activity::SessionFilter,
     /// Aparência escolhida: escuro, claro ou seguindo o desktop.
     pub appearance: crate::theme::AppearanceMode,
+    /// Tema fixado pelo usuário, por id (`dish-paper`, `user:meu-tema`…).
+    /// `None` usa o tema padrão da aparência resolvida.
+    pub theme: Option<String>,
 }
 
 fn env_path(name: &str) -> Option<PathBuf> {
@@ -40,10 +43,20 @@ fn config_root(xdg: Option<PathBuf>, appdata: Option<PathBuf>, home: Option<Path
     xdg.or(appdata).or_else(|| home.map(|home| home.join(".config")))
 }
 
-fn path() -> Option<PathBuf> {
+/// Diretório de configuração do Dish (`~/.config/dish`, `%APPDATA%/dish`).
+fn config_dir() -> Option<PathBuf> {
     let appdata = if cfg!(windows) { env_path("APPDATA") } else { None };
     config_root(env_path("XDG_CONFIG_HOME"), appdata, env_path("HOME"))
-        .map(|root| root.join("dish/state.json"))
+        .map(|root| root.join("dish"))
+}
+
+fn path() -> Option<PathBuf> {
+    config_dir().map(|directory| directory.join("state.json"))
+}
+
+/// Onde ficam os temas do usuário, lidos na inicialização.
+pub fn themes_dir() -> Option<PathBuf> {
+    config_dir().map(|directory| directory.join("themes"))
 }
 
 pub fn load() -> Preferences {
@@ -101,6 +114,7 @@ mod tests {
         assert_eq!(preferences.navigation_open, None);
         assert!(preferences.collapsed_projects.is_empty());
         assert_eq!(preferences.appearance, crate::theme::AppearanceMode::System);
+        assert_eq!(preferences.theme, None);
     }
     #[test]
     fn atomic_write_creates_directory_and_replaces_file() {
@@ -129,6 +143,7 @@ mod tests {
             unread_sessions: [(PathBuf::from("/tmp/session.jsonl"), 123456)].into(),
             session_filter: crate::session_activity::SessionFilter::Unread,
             appearance: crate::theme::AppearanceMode::Dark,
+            theme: Some("user:meu-tema".to_string()),
         };
         let bytes = serde_json::to_vec(&preferences).unwrap();
         assert_eq!(serde_json::from_slice::<Preferences>(&bytes).unwrap(), preferences);

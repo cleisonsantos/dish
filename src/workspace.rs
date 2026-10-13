@@ -194,6 +194,15 @@ impl Workspace {
         }
         state.update(cx, |state, _| state.generated_titles = preferences.generated_titles);
         state.update(cx, |state, _| state.hidden_models = preferences.hidden_models.clone());
+        // Temas do usuário: um arquivo malformado vira aviso, nunca derruba o app.
+        let theme_errors = crate::theme::preload();
+        if !theme_errors.is_empty() {
+            state.update(cx, |state, cx| {
+                for error in theme_errors {
+                    state.push_toast(error.clone(), crate::state::Tone::Error, cx);
+                }
+            });
+        }
         cx.observe(&query, |_, _, cx| cx.notify()).detach();
         let mut roots = sessions::roots(&state.read(cx).cwd, &flags);
         let cwd = state.read(cx).cwd.clone();
@@ -341,9 +350,39 @@ impl Workspace {
                         }
                     }
                     SettingsEvent::Appearance(mode) => {
+                        // Escolher o modo solta o tema fixado: cada aparência
+                        // volta ao seu tema padrão.
                         this.preferences.appearance = *mode;
+                        this.preferences.theme = None;
                         theme::set_mode(*mode);
+                        theme::set_theme(None);
                         crate::preferences::save(this.preferences.clone());
+                    }
+                    SettingsEvent::Theme(id) => {
+                        this.preferences.theme = Some(id.clone());
+                        if let Some(chosen) = theme::theme_by_id(id) {
+                            // Fixar um tema também fixa a sua aparência, para o
+                            // desktop não trocar por baixo.
+                            let mode = if chosen.dark {
+                                crate::theme::AppearanceMode::Dark
+                            } else {
+                                crate::theme::AppearanceMode::Light
+                            };
+                            this.preferences.appearance = mode;
+                            theme::set_mode(mode);
+                        }
+                        theme::set_theme(Some(id.clone()));
+                        crate::preferences::save(this.preferences.clone());
+                    }
+                    SettingsEvent::OpenThemes => {
+                        if let Some(directory) = crate::preferences::themes_dir() {
+                            if let Err(error) = std::fs::create_dir_all(&directory) {
+                                crate::logging::warn(format_args!(
+                                    "Dish: cannot create themes directory: {error}"
+                                ));
+                            }
+                            crate::platform::open_directory(&directory);
+                        }
                     }
                     SettingsEvent::ModelVisibility(key, visible) => {
                         if *visible {
@@ -427,6 +466,7 @@ impl Workspace {
         let view = crate::settings::SettingsView {
             options: [state.sidebar, self.visible, state.show_thinking, state.generated_titles],
             appearance: self.preferences.appearance,
+            theme: self.preferences.theme.clone(),
             models: state
                 .models
                 .iter()
