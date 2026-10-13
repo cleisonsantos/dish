@@ -66,7 +66,7 @@ For the current reviewed main commit `710ec78373605736ac37a075b842aaf3d211f31b`
   completed successfully: locked checks/tests, strict Clippy, release-tool
   tests, remapped build, license checks, archive and Debian packaging, tests of
   the real archive, the packaged-executable smoke tests (including the session
-  activity and metadata passes) and the installed `/usr/bin/dish` smoke.
+  activity and metadata passes) and the installed `/usr/bin/dish-pi` smoke.
 - [Windows run 37987496161](https://github.com/cleisonsantos/dish/actions/runs/37987496161)
   compiled and uploaded an executable. The Windows workflow does not run the
   Linux-equivalent interaction, packaging or installation tests.

@@ -22,6 +22,12 @@ import tomllib
 ROOT = Path(__file__).resolve().parent.parent
 TARGET = "x86_64-unknown-linux-gnu"
 DEB_ARCH = "amd64"
+# O pacote `dish` do Debian é outra ferramenta (diligence/distributed shell) e
+# tem versões mais altas que as nossas: com o mesmo nome e os mesmos caminhos,
+# um `apt full-upgrade` substituía o cliente Pi por ela. O .deb do app usa
+# `dish-pi` no nome do pacote e nos caminhos instalados, para os dois
+# coexistirem; o nome visual continua Dish.
+PACKAGE = "dish-pi"
 MAINTAINER = "Cleison Santos <33238294+cleisonsantos@users.noreply.github.com>"
 HOMEPAGE = "https://github.com/cleisonsantos/dish"
 # Libraries loaded with dlopen at runtime; without at least one graphics stack
@@ -116,7 +122,7 @@ def control_text(version: str, glibc: str, dependencies: list[str], installed_kb
     if "libc6" not in dependencies:
         packages.insert(0, f"libc6 (>= {glibc})")
     lines = [
-        "Package: dish",
+        f"Package: {PACKAGE}",
         f"Version: {version}",
         f"Architecture: {DEB_ARCH}",
         f"Maintainer: {MAINTAINER}",
@@ -139,13 +145,16 @@ def control_text(version: str, glibc: str, dependencies: list[str], installed_kb
 
 
 def desktop_entry() -> str:
+    # `StartupWMClass` continua `dish` porque é o app_id da janela (src/main.rs);
+    # é ele que faz o GNOME casar a janela com este atalho. Só o nome do pacote,
+    # o rótulo do Exec e o ícone instalado usam `dish-pi`.
     return (
         "[Desktop Entry]\n"
         "Type=Application\n"
         "Name=Dish\n"
         "Comment=Desktop interface for the Pi coding agent\n"
-        "Exec=dish\n"
-        "Icon=dish\n"
+        f"Exec={PACKAGE}\n"
+        f"Icon={PACKAGE}\n"
         "StartupWMClass=dish\n"
         "Terminal=false\n"
         "Categories=Development;\n"
@@ -171,14 +180,14 @@ def stage_tree(package: Path, staging: Path, version: str, glibc: str, dependenc
         raise RuntimeError(f'Missing executable in {package}')
     (staging / "DEBIAN").mkdir(parents=True)
     (staging / "usr/bin").mkdir(parents=True)
-    shutil.copyfile(package / "bin/dish", staging / "usr/bin/dish")
-    (staging / "usr/bin/dish").chmod(0o755)
+    shutil.copyfile(package / "bin/dish", staging / "usr/bin" / PACKAGE)
+    (staging / "usr/bin" / PACKAGE).chmod(0o755)
     (staging / "usr/share/applications").mkdir(parents=True)
-    (staging / "usr/share/applications/dish.desktop").write_text(desktop_entry(), encoding="utf-8")
+    (staging / "usr/share/applications" / f"{PACKAGE}.desktop").write_text(desktop_entry(), encoding="utf-8")
     icon_dir = staging / "usr/share/icons/hicolor/512x512/apps"
     icon_dir.mkdir(parents=True)
-    shutil.copyfile(package / "share/icons/dish.png", icon_dir / "dish.png")
-    docs = staging / "usr/share/doc/dish"
+    shutil.copyfile(package / "share/icons/dish.png", icon_dir / f"{PACKAGE}.png")
+    docs = staging / "usr/share/doc" / PACKAGE
     (docs / "licenses").mkdir(parents=True)
     for name in ["LICENSE", "THIRD_PARTY_NOTICES.md"]:
         shutil.copyfile(package / f"share/licenses/{name}", docs / name)
@@ -193,7 +202,7 @@ def stage_tree(package: Path, staging: Path, version: str, glibc: str, dependenc
     shutil.copyfile(package / "README.md", docs / "README.md")
     (docs / "copyright").write_text(copyright_text(), encoding="utf-8")
     changelog = (
-        f"dish ({version}) unstable; urgency=medium\n\n"
+        f"{PACKAGE} ({version}) unstable; urgency=medium\n\n"
         "  * Linux preview release.\n\n"
         f" -- {MAINTAINER}  {email.utils.formatdate(localtime=False)}\n"
     )
@@ -231,11 +240,11 @@ def build(archive: Path, output_dir: Path) -> Path:
         stage_tree(package, staging, version, glibc, dependencies)
         # GitHub normalizes "~" in asset names, so the file keeps the release
         # spelling; the package's own Version field carries Debian ordering.
-        output = output_dir / f"dish_{release_version}_{DEB_ARCH}.deb"
+        output = output_dir / f"{PACKAGE}_{release_version}_{DEB_ARCH}.deb"
         subprocess.run(["dpkg-deb", "--build", "--root-owner-group", str(staging), str(output)],
                        check=True, cwd=ROOT)
     info = run("dpkg-deb", "--info", str(output))
-    for expected in ["Package: dish", f"Version: {version}", f"Architecture: {DEB_ARCH}"]:
+    for expected in [f"Package: {PACKAGE}", f"Version: {version}", f"Architecture: {DEB_ARCH}"]:
         if expected not in info:
             raise RuntimeError(f"Built package is missing {expected!r}")
     Path(str(output) + ".sha256").write_text(f"{sha256(output)}  {output.name}\n", encoding="utf-8")

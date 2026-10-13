@@ -41,7 +41,7 @@ The version label must match the base version in Cargo.toml. The script:
 python3 scripts/package-deb.py --version 0.1.0-alpha.1
 ```
 
-`package-deb.py` converts that verified archive into `dish_0.1.0-alpha.1_amd64.deb`
+`package-deb.py` converts that verified archive into `dish-pi_0.1.0-alpha.1_amd64.deb`
 (plus a SHA-256 sidecar). It reuses the archive's payload and license bundle
 unchanged, derives `Depends:` from the binary's real `NEEDED` entries and the
 runner's package database, and declares dlopen-only libraries (EGL, Vulkan,
@@ -77,7 +77,7 @@ xvfb-run -a -s '-screen 0 1280x960x24' python3 tests/settings_smoke.py
 ```
 
 The same variable can point at the system-wide executable from an installed
-`.deb` (`DISH_TEST_BIN=/usr/bin/dish`) to smoke-test the installed package.
+`.deb` (`DISH_TEST_BIN=/usr/bin/dish-pi`) to smoke-test the installed package.
 
 These use a synthetic Pi and isolated configuration. Install the Xvfb, XTest,
 xclip, Tesseract and ImageMagick dependencies described in the README. Headless
@@ -115,8 +115,9 @@ build, on every platform. macOS packaging must use the same module.
 
 `.github/workflows/ci.yml` builds on Ubuntu 24.04, runs strict Clippy and unit
 checks, produces a candidate plus a Debian package, installs the package with
-`apt` and smoke-tests the installed `/usr/bin/dish`, then saves both as
-short-lived Actions artifacts. It has read-only
+`apt` and smoke-tests the installed `/usr/bin/dish-pi` (the Debian package is
+named `dish-pi` so it never disputes the `dish` package Debian ships), then
+saves both as short-lived Actions artifacts. It has read-only
 repository permissions and no release-publication step. The configured alpha
 version label must be updated when Cargo.toml's base version changes.
 
