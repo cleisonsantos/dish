@@ -10,6 +10,10 @@ pub enum SettingsEvent {
     Preference(&'static str, bool),
     /// O usuário escolheu escuro, claro ou seguir o desktop.
     Appearance(AppearanceMode),
+    /// O usuário escolheu um tema do catálogo, por id.
+    Theme(String),
+    /// Abrir a pasta de temas do usuário no gerenciador de arquivos.
+    OpenThemes,
     /// Um modelo passou a visível (`true`) ou oculto (`false`) no seletor.
     ModelVisibility(String, bool),
     /// Vários modelos de uma vez (toggle de provedor, ocultar todos).
@@ -32,6 +36,8 @@ pub struct Settings {
     thinking: bool,
     titles: bool,
     appearance: AppearanceMode,
+    /// Id do tema fixado, ou `None` para o padrão da aparência.
+    theme: Option<String>,
     /// `(provider, id)` de cada modelo que o Pi reportou.
     models: Vec<(String, String)>,
     hidden: BTreeSet<String>,
@@ -42,6 +48,8 @@ pub struct SettingsView {
     /// `[detalhes, navegação, raciocínio, títulos]`.
     pub options: [bool; 4],
     pub appearance: AppearanceMode,
+    /// Tema fixado pelo usuário, se houver.
+    pub theme: Option<String>,
     /// `(provider, id)` de cada modelo que o Pi reportou.
     pub models: Vec<(String, String)>,
     pub hidden: BTreeSet<String>,
@@ -56,6 +64,7 @@ impl Settings {
             previous_focus: None, search,
             details: true, navigation: true, thinking: true, titles: false,
             appearance: AppearanceMode::System,
+            theme: None,
             models: Vec::new(), hidden: BTreeSet::new(),
         }
     }
@@ -72,6 +81,7 @@ impl Settings {
         self.section = section;
         [self.details, self.navigation, self.thinking, self.titles] = view.options;
         self.appearance = view.appearance;
+        self.theme = view.theme;
         self.models = view.models;
         self.hidden = view.hidden;
         self.focus.focus(window, cx);
@@ -193,6 +203,69 @@ fn control(id: impl Into<ElementId>, label: impl Into<SharedString>, click: impl
         .cursor_pointer().hover(|s| s.bg(theme::hover()).text_color(theme::text()))
         .on_click(click).child(label.into())
 }
+/// Uma linha do catálogo de temas: amostras, nome, aparência e a escolha.
+fn theme_row(item: &theme::Theme, selected: bool, cx: &mut Context<Settings>) -> AnyElement {
+    let mut swatches = div().flex().flex_row().gap(px(2.)).flex_none();
+    for color in [item.bg, item.surface_2, item.text, item.effort[3]] {
+        swatches = swatches.child(
+            div()
+                .size(px(14.))
+                .rounded(px(3.))
+                .bg(color)
+                .border_1()
+                .border_color(item.line),
+        );
+    }
+    let appearance = if item.dark { "Escuro" } else { "Claro" };
+    let detail = if item.user {
+        format!("{appearance} · {}.json", item.id.trim_start_matches("user:"))
+    } else {
+        appearance.to_string()
+    };
+    let id = item.id.clone();
+    div()
+        .id(SharedString::from(format!("theme-{id}")))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(12.))
+        .px(px(12.))
+        .py(px(8.))
+        .rounded(theme::r_control())
+        .border_1()
+        .cursor_pointer()
+        .when(selected, |el| {
+            el.bg(theme::surface_2()).border_color(theme::line())
+        })
+        .when(!selected, |el| {
+            el.border_color(theme::line_soft())
+                .hover(|style| style.bg(theme::surface_2()))
+        })
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.theme = Some(id.clone());
+            cx.emit(SettingsEvent::Theme(id.clone()));
+            cx.notify();
+        }))
+        .child(swatches)
+        .child(
+            div().flex_1().min_w(px(0.)).flex().flex_col().gap(px(2.))
+                .child(
+                    div().text_size(px(theme::TEXT_SM)).text_color(theme::text())
+                        .truncate().child(SharedString::from(item.name.clone())),
+                )
+                .child(
+                    div().text_size(px(theme::TEXT_XS)).text_color(theme::faint())
+                        .truncate().child(SharedString::from(detail)),
+                ),
+        )
+        .when(selected, |el| el.child(crate::ui::icons::icon(
+            crate::ui::icons::Icon::Check,
+            13.,
+            theme::accent(),
+        )))
+        .into_any_element()
+}
+
 /// Um cursor do controle segmentado da Aparência, na mesma linguagem dos
 /// filtros da navegação: poço escuro com o item ativo em superfície clara.
 fn appearance_segment(
@@ -310,7 +383,7 @@ impl Render for Settings {
                 page.into_any_element()
             }
             Section::Appearance => {
-                let page = column().child(page_title("Aparência")).child(note(
+                let mut page = column().child(page_title("Aparência")).child(note(
                     "Vale para todas as janelas e é salva entre execuções. O modo Sistema acompanha o tema do desktop; sem preferência do sistema, o Dish fica claro.",
                 ));
                 let mut segments = div()
@@ -328,25 +401,48 @@ impl Render for Settings {
                     (AppearanceMode::Dark, "Escuro", "appearance-dark"),
                     (AppearanceMode::Light, "Claro", "appearance-light"),
                 ] {
+                    // O segmento mostra a aparência em vigor; a lista mostra
+                    // o tema fixado (ou o padrão dela, quando não há fixado).
+                    let active = self.appearance == mode;
                     segments = segments.child(appearance_segment(
                         id,
                         label,
-                        self.appearance == mode,
+                        active,
                         cx,
                         move |this, cx| {
                             this.appearance = mode;
+                            this.theme = None;
                             cx.emit(SettingsEvent::Appearance(mode));
                             cx.notify();
                         },
                     ));
                 }
-                page.child(
+                page = page.child(
                     div().flex().flex_row().items_center().gap(px(12.))
                         .px(px(12.)).py(px(8.)).rounded(theme::r_control())
                         .bg(theme::surface_2()).border_1().border_color(theme::line_soft())
-                        .child(div().flex_1().min_w(px(0.)).text_size(px(theme::TEXT_SM)).text_color(theme::dim()).child("Tema"))
+                        .child(div().flex_1().min_w(px(0.)).text_size(px(theme::TEXT_SM)).text_color(theme::dim()).child("Tema padrão"))
                         .child(segments),
-                ).into_any_element()
+                );
+                let mut themes = div().flex().flex_col().gap(px(6.))
+                    .child(div().text_size(px(theme::TEXT_SM)).text_color(theme::dim()).child("Temas"));
+                for item in theme::themes() {
+                    // Sem tema fixado, o marcado é o que está em uso agora —
+                    // inclusive quando `Sistema` escolheu pelo desktop.
+                    let selected = self
+                        .theme
+                        .as_deref()
+                        .map_or(theme::active().id == item.id, |id| id == item.id);
+                    themes = themes.child(theme_row(item, selected, cx));
+                }
+                page = page.child(themes).child(
+                    div().flex().flex_row().items_center().gap(px(12.)).flex_wrap()
+                        .child(control("themes-open", "Abrir pasta de temas", cx.listener(
+                            |_, _, _, cx| cx.emit(SettingsEvent::OpenThemes),
+                        )))
+                        .child(note("Um arquivo .json por tema, lido quando o Dish abre (docs/themes.md).")),
+                );
+                page.into_any_element()
             }
             Section::Models => {
                 let mut page = column().child("Modelos").child(note(

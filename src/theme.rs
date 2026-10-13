@@ -14,12 +14,14 @@
 //!    the tests at the bottom of this file, not by opinion.
 //!
 //! The palette is a [`Theme`] value. `dish-dark` is the original look and
-//! `dish-light` is its light counterpart; the active one is resolved at render
-//! time from the user's [`AppearanceMode`], so switching themes — including
-//! following the desktop — never needs a restart.
+//! `dish-light` is its light counterpart; `dish-paper` and `dish-dim` are
+//! presets, and `$XDG_CONFIG_HOME/dish/themes/*.json` adds user themes (see
+//! `docs/themes.md`). The active one is resolved at render time from the
+//! user's choice and the desktop, so switching never needs a restart.
 
 use gpui::{BoxShadow, Hsla, Pixels, WindowAppearance, point, px, rgb_to_hsla, rgba};
 use serde::{Deserialize, Serialize};
+use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU8, AtomicU32, AtomicUsize, Ordering};
 
@@ -103,10 +105,16 @@ pub enum AppearanceMode {
 
 /// Um esquema de cores completo. `effort` guarda a rampa na ordem
 /// `off, minimal, low, medium, high, xhigh, max`.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct Theme {
-    pub name: &'static str,
+    /// Identificador estável: `dish-dark`, `dish-light`, `dish-paper`,
+    /// `dish-dim` ou `user:<arquivo>` para temas do usuário.
+    pub id: String,
+    /// Nome exibido na tela de Aparência.
+    pub name: String,
     pub dark: bool,
+    /// Veio de `themes/*.json`, e não do catálogo embutido.
+    pub user: bool,
     pub bg: Hsla,
     pub surface: Hsla,
     pub surface_2: Hsla,
@@ -132,11 +140,38 @@ pub struct Theme {
 /// Níveis de raciocínio, na ordem da rampa de esforço.
 pub const LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
+fn base_theme(id: &str, name: &str, dark: bool) -> Theme {
+    Theme {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        dark,
+        user: false,
+        bg: c(0x000000ff),
+        surface: c(0x000000ff),
+        surface_2: c(0x000000ff),
+        inset: c(0x000000ff),
+        hover: c(0x000000ff),
+        line: c(0x000000ff),
+        line_soft: c(0x000000ff),
+        line_strong: c(0x000000ff),
+        text: c(0x000000ff),
+        dim: c(0x000000ff),
+        faint: c(0x000000ff),
+        on_accent: c(0x000000ff),
+        running: c(0x000000ff),
+        failure: c(0x000000ff),
+        warn: c(0x000000ff),
+        attention: c(0x000000ff),
+        ok: c(0x000000ff),
+        git_added: c(0x000000ff),
+        git_removed: c(0x000000ff),
+        effort: [c(0x000000ff); 7],
+    }
+}
+
 /// O visual original do Dish: grafite com separação.
 fn dark_theme() -> Theme {
     Theme {
-        name: "dish-dark",
-        dark: true,
         bg: c(0x0b0e13ff),
         surface: c(0x11151cff),
         surface_2: c(0x191e26ff),
@@ -165,6 +200,7 @@ fn dark_theme() -> Theme {
             c(0xde54c1ff),
             c(0xfe5462ff),
         ],
+        ..base_theme("dish-dark", "Grafite", true)
     }
 }
 
@@ -174,8 +210,6 @@ fn dark_theme() -> Theme {
 /// sobre o branco — é a derivação documentada de `effort` para o tema claro.
 fn light_theme() -> Theme {
     Theme {
-        name: "dish-light",
-        dark: false,
         bg: c(0xeef1f5ff),
         surface: c(0xf8f9fbff),
         surface_2: c(0xffffffff),
@@ -204,16 +238,287 @@ fn light_theme() -> Theme {
             c(0xca27a8ff),
             c(0xe50c1eff),
         ],
+        ..base_theme("dish-light", "Papel frio", false)
     }
 }
 
-fn themes() -> &'static [Theme; 2] {
-    static THEMES: OnceLock<[Theme; 2]> = OnceLock::new();
-    THEMES.get_or_init(|| [dark_theme(), light_theme()])
+/// Preset claro e quente: papel porcelana, para salas claras.
+///
+/// Reusa os semânticos e a rampa do `dish-light` — validados sobre as
+/// superfícies claras — e aquece só os neutros.
+fn paper_theme() -> Theme {
+    let light = light_theme();
+    Theme {
+        bg: c(0xf5f1e7ff),
+        surface: c(0xfaf7f0ff),
+        surface_2: c(0xfffdf9ff),
+        inset: c(0xeae4d6ff),
+        hover: c(0xefeaddff),
+        line: c(0xddd5c3ff),
+        line_soft: c(0xe8e1d2ff),
+        line_strong: c(0xccc3aeff),
+        text: c(0x27231aff),
+        dim: c(0x47402fff),
+        faint: c(0x625a47ff),
+        ok: c(0x47402fff),
+        ..base_theme("dish-paper", "Papel quente", false)
+    }
+    .inherit(&light)
+}
+
+/// Preset escuro de baixo contraste: o grafite sobe um degrau e o texto
+/// desce, sempre acima do piso de 4,5:1 dos testes.
+fn dim_theme() -> Theme {
+    let dark = dark_theme();
+    Theme {
+        bg: c(0x17191eff),
+        surface: c(0x1c1f25ff),
+        surface_2: c(0x23272eff),
+        inset: c(0x131519ff),
+        hover: c(0x282d35ff),
+        line: c(0x2e333cff),
+        line_soft: c(0x262a32ff),
+        line_strong: c(0x3b414cff),
+        text: c(0xd3d7ddff),
+        dim: c(0xa4acb8ff),
+        faint: c(0x8b929eff),
+        ok: c(0xa4acb8ff),
+        ..base_theme("dish-dim", "Grafite baixo", true)
+    }
+    .inherit(&dark)
+}
+
+impl Theme {
+    /// Completa com os semânticos, a rampa e o `on-accent` do tema base.
+    fn inherit(mut self, base: &Theme) -> Theme {
+        self.on_accent = base.on_accent;
+        self.running = base.running;
+        self.failure = base.failure;
+        self.warn = base.warn;
+        self.attention = base.attention;
+        self.git_added = base.git_added;
+        self.git_removed = base.git_removed;
+        self.effort = base.effort;
+        self
+    }
+}
+
+/// Os temas embutidos, na ordem em que a tela de Aparência os mostra.
+pub fn built_in_themes() -> Vec<Theme> {
+    vec![dark_theme(), light_theme(), paper_theme(), dim_theme()]
+}
+
+// ------------------------------------------------------------------- catálogo
+
+static THEMES: OnceLock<Vec<Theme>> = OnceLock::new();
+static THEME_ERRORS: OnceLock<Vec<String>> = OnceLock::new();
+
+/// O catálogo em uso: embutidos e temas do usuário, nessa ordem.
+pub fn themes() -> &'static [Theme] {
+    THEMES.get_or_init(|| {
+        let (list, errors) = build_themes();
+        let _ = THEME_ERRORS.set(errors);
+        list
+    })
+}
+
+/// Garante o catálogo carregado e devolve os erros dos arquivos de tema.
+///
+/// Um arquivo malformado nunca impede a inicialização: o tema é ignorado e o
+/// aviso vira um toast, com o nome do arquivo e o erro.
+pub fn preload() -> &'static [String] {
+    let _ = themes();
+    THEME_ERRORS.get().map(Vec::as_slice).unwrap_or(&[])
+}
+
+/// O tema do catálogo com essa id, se existir.
+pub fn theme_by_id(id: &str) -> Option<&'static Theme> {
+    themes().iter().find(|theme| theme.id == id)
+}
+
+/// Lê os temas do usuário do diretório de configuração. Em testes o diretório
+/// real não é tocado: os testes de carregamento usam um diretório próprio.
+#[cfg(not(test))]
+fn user_themes_dir() -> Option<std::path::PathBuf> {
+    crate::preferences::themes_dir()
+}
+#[cfg(test)]
+fn user_themes_dir() -> Option<std::path::PathBuf> {
+    None
+}
+
+fn build_themes() -> (Vec<Theme>, Vec<String>) {
+    match user_themes_dir() {
+        Some(directory) => build_themes_from(&directory),
+        None => (built_in_themes(), Vec::new()),
+    }
+}
+
+/// Lê o diretório em ordem de nome de arquivo, para o catálogo ser estável.
+fn build_themes_from(directory: &std::path::Path) -> (Vec<Theme>, Vec<String>) {
+    let mut list = built_in_themes();
+    let mut errors = Vec::new();
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return (list, errors);
+    };
+    let mut paths: Vec<std::path::PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "json"))
+        .collect();
+    paths.sort();
+    for path in paths {
+        match load_theme(&path) {
+            Ok(theme) => list.push(theme),
+            Err(error) => errors.push(error),
+        }
+    }
+    (list, errors)
+}
+
+/// Um arquivo de tema, no formato de `docs/themes.md`.
+#[derive(Deserialize)]
+struct ThemeFile {
+    #[serde(default, rename = "$schema")]
+    #[allow(dead_code)]
+    schema: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    appearance: Option<String>,
+    #[serde(default)]
+    colors: ThemeColors,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ThemeColors {
+    bg: Option<String>,
+    surface: Option<String>,
+    surface2: Option<String>,
+    inset: Option<String>,
+    hover: Option<String>,
+    line: Option<String>,
+    line_soft: Option<String>,
+    line_strong: Option<String>,
+    text: Option<String>,
+    dim: Option<String>,
+    faint: Option<String>,
+    on_accent: Option<String>,
+    running: Option<String>,
+    failure: Option<String>,
+    warn: Option<String>,
+    attention: Option<String>,
+    ok: Option<String>,
+    git_added: Option<String>,
+    git_removed: Option<String>,
+}
+
+/// `#rrggbb` ou `#rrggbbaa`.
+fn parse_hex(value: &str) -> Option<Hsla> {
+    let digits = value.trim().trim_start_matches('#');
+    let full = match digits.len() {
+        6 => format!("{digits}ff"),
+        8 => digits.to_owned(),
+        _ => return None,
+    };
+    u32::from_str_radix(&full, 16).ok().map(c)
+}
+
+fn load_theme(path: &std::path::Path) -> Result<Theme, String> {
+    let label = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string());
+    let bytes = std::fs::read(path)
+        .map_err(|error| format!("Tema {label}: não foi possível ler o arquivo ({error})"))?;
+    let file: ThemeFile = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("Tema {label}: JSON inválido ({error})"))?;
+    let dark = match file.appearance.as_deref() {
+        None | Some("dark") => true,
+        Some("light") => false,
+        Some(other) => {
+            return Err(format!(
+                "Tema {label}: aparência desconhecida `{other}` (use `dark` ou `light`)"
+            ))
+        }
+    };
+    let base = if dark { dark_theme() } else { light_theme() };
+    let colors = file.colors;
+    let pick = |value: Option<String>, key: &str, fallback: Hsla| -> Result<Hsla, String> {
+        match value {
+            None => Ok(fallback),
+            Some(text) => parse_hex(&text).ok_or_else(|| {
+                format!("Tema {label}: cor inválida em `{key}`: {text} (use #rrggbb)")
+            }),
+        }
+    };
+    let stem = path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_else(|| label.clone());
+    let name = file
+        .name
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| stem.clone());
+    let theme = Theme {
+        id: format!("user:{stem}"),
+        name,
+        dark,
+        user: true,
+        bg: pick(colors.bg, "bg", base.bg)?,
+        surface: pick(colors.surface, "surface", base.surface)?,
+        surface_2: pick(colors.surface2, "surface2", base.surface_2)?,
+        inset: pick(colors.inset, "inset", base.inset)?,
+        hover: pick(colors.hover, "hover", base.hover)?,
+        line: pick(colors.line, "line", base.line)?,
+        line_soft: pick(colors.line_soft, "lineSoft", base.line_soft)?,
+        line_strong: pick(colors.line_strong, "lineStrong", base.line_strong)?,
+        text: pick(colors.text, "text", base.text)?,
+        dim: pick(colors.dim, "dim", base.dim)?,
+        faint: pick(colors.faint, "faint", base.faint)?,
+        on_accent: pick(colors.on_accent, "onAccent", base.on_accent)?,
+        running: pick(colors.running, "running", base.running)?,
+        failure: pick(colors.failure, "failure", base.failure)?,
+        warn: pick(colors.warn, "warn", base.warn)?,
+        attention: pick(colors.attention, "attention", base.attention)?,
+        ok: pick(colors.ok, "ok", base.ok)?,
+        git_added: pick(colors.git_added, "gitAdded", base.git_added)?,
+        git_removed: pick(colors.git_removed, "gitRemoved", base.git_removed)?,
+        effort: base.effort,
+    };
+    Ok(theme)
 }
 
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 static MODE: AtomicU8 = AtomicU8::new(0);
+static PINNED: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+fn selection() -> &'static Mutex<Option<String>> {
+    PINNED.get_or_init(|| Mutex::new(None))
+}
+
+/// Fixa (ou solta) um tema do catálogo pela id escolhida pelo usuário.
+pub fn set_theme(id: Option<String>) {
+    let mut slot = match selection().lock() {
+        Ok(guard) => guard,
+        // Um pânico alheio não invalida a escolha guardada.
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    *slot = id;
+}
+
+/// O tema fixado pela preferência, se ainda existir no catálogo.
+pub fn pinned_theme() -> Option<&'static Theme> {
+    let id = {
+        let slot = match selection().lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        slot.clone()?
+    };
+    theme_by_id(&id)
+}
 
 /// Guarda a preferência do usuário; [`apply`] resolve a aparência efetiva.
 pub fn set_mode(mode: AppearanceMode) {
@@ -249,18 +554,29 @@ pub fn prefers_dark(mode: AppearanceMode, system: WindowAppearance) -> bool {
     }
 }
 
-/// Resolve a aparência efetiva a partir da preferência e do tema do desktop.
-///
-/// Chamado a cada render, como o esforço: a troca é imediata e o modo
-/// `System` acompanha o desktop sem reiniciar.
+/// Resolve o tema efetivo a partir da preferência, do tema fixado e do
+/// desktop. Chamado a cada render, como o esforço: a troca é imediata.
 pub fn apply(system: WindowAppearance) {
-    let dark = prefers_dark(mode(), system);
-    ACTIVE.store(if dark { 0 } else { 1 }, Ordering::Relaxed);
+    let list = themes();
+    let index = pinned_theme()
+        .and_then(|pinned| list.iter().position(|theme| theme.id == pinned.id))
+        .or_else(|| {
+            let wanted = if prefers_dark(mode(), system) {
+                "dish-dark"
+            } else {
+                "dish-light"
+            };
+            list.iter().position(|theme| theme.id == wanted)
+        })
+        .unwrap_or(0);
+    ACTIVE.store(index, Ordering::Relaxed);
 }
 
 /// O tema em uso agora.
-pub fn active() -> Theme {
-    themes()[ACTIVE.load(Ordering::Relaxed)]
+pub fn active() -> &'static Theme {
+    let list = themes();
+    let index = ACTIVE.load(Ordering::Relaxed).min(list.len().saturating_sub(1));
+    &list[index]
 }
 
 /// Se a aparência efetiva é escura.
@@ -481,8 +797,15 @@ pub fn shadow_overlay() -> Vec<BoxShadow> {
 mod tests {
     use super::*;
 
-    fn built_ins() -> [Theme; 2] {
-        [dark_theme(), light_theme()]
+    fn built_ins() -> Vec<Theme> {
+        built_in_themes()
+    }
+
+    fn built_in(id: &str) -> Theme {
+        built_in_themes()
+            .into_iter()
+            .find(|theme| theme.id == id)
+            .expect("tema embutido") // ids fixos do catálogo
     }
 
     fn luminance(color: Hsla) -> f32 {
@@ -538,7 +861,7 @@ mod tests {
     #[test]
     fn delta_e_anchors_are_sane() {
         assert!(delta_e(c(0x000000ff), c(0xffffffff)) > 99.);
-        let text = dark_theme().text;
+        let text = built_in("dish-dark").text;
         assert!(delta_e(text, text) < 0.01);
     }
 
@@ -645,17 +968,12 @@ mod tests {
 
     #[test]
     fn effort_colors_match_pi_dark_theme() {
-        for (level, hex) in [
-            ("off", 0x6c767bff),
-            ("minimal", 0x68808dff),
-            ("low", 0x5489a4ff),
-            ("medium", 0x6185ccff),
-            ("high", 0x9776e5ff),
-            ("xhigh", 0xde54c1ff),
-            ("max", 0xfe5462ff),
-            ("unknown", 0x6c767bff),
-        ] {
-            let actual = effort_color(level, &[]).color;
+        let dark = dark_theme();
+        for (index, level) in LEVELS.iter().enumerate() {
+            let actual = dark.effort[index].color;
+            let hex = [
+                0x6c767bff, 0x68808dff, 0x5489a4ff, 0x6185ccff, 0x9776e5ff, 0xde54c1ff, 0xfe5462ff,
+            ][index];
             let expected = c(hex).color;
             assert!(
                 (actual.hue.into_positive_degrees() - expected.hue.into_positive_degrees()).abs()
@@ -665,14 +983,16 @@ mod tests {
             assert!((actual.saturation - expected.saturation).abs() < 0.00001, "{level}");
             assert!((actual.lightness - expected.lightness).abs() < 0.00001, "{level}");
         }
+        // Nível desconhecido cai no `off`, como no Pi.
+        assert_eq!(effort_index("desconhecido"), effort_index("off"));
     }
 
     /// A rampa clara é a mesma progressão do Pi com a luminosidade baixada: os
     /// matizes seguem o tema escuro e cada nível lê sobre o branco.
     #[test]
     fn light_effort_ramp_keeps_the_dark_hues_and_stays_readable() {
-        let dark = dark_theme();
-        let light = light_theme();
+        let dark = built_in("dish-dark");
+        let light = built_in("dish-light");
         for (index, level) in LEVELS.iter().enumerate() {
             let a = dark.effort[index].color.hue.into_positive_degrees();
             let b = light.effort[index].color.hue.into_positive_degrees();
@@ -705,5 +1025,126 @@ mod tests {
         assert!(prefers_dark(AppearanceMode::System, VibrantDark));
         assert!(!prefers_dark(AppearanceMode::System, Light));
         assert!(!prefers_dark(AppearanceMode::System, VibrantLight));
+    }
+
+    fn theme_dir(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("dish-themes-{}-{label}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap(); // raiz própria do teste
+        dir
+    }
+
+    /// Um arquivo completo vira tema com id próprio e as cores pedidas.
+    #[test]
+    fn user_theme_file_loads_with_its_colors() {
+        let dir = theme_dir("completo");
+        let path = dir.join("meu-tema.json");
+        std::fs::write(
+            &path,
+            r##"{
+                "$schema": "https://dish.dev/schemas/theme-v1.json",
+                "name": "Meu tema",
+                "appearance": "light",
+                "colors": { "bg": "#101010", "surface2": "#202020", "lineSoft": "#303030",
+                            "lineStrong": "#404040", "onAccent": "#ffffff", "attention": "#118844" }
+            }"##,
+        )
+        .unwrap();
+        let theme = load_theme(&path).unwrap();
+        assert_eq!(theme.id, "user:meu-tema");
+        assert_eq!(theme.name, "Meu tema");
+        assert!(!theme.dark);
+        assert!(theme.user);
+        assert_eq!(theme.bg, c(0x101010ff));
+        assert_eq!(theme.surface_2, c(0x202020ff));
+        assert_eq!(theme.line_soft, c(0x303030ff));
+        assert_eq!(theme.attention, c(0x118844ff));
+        // O que falta vem do base claro, não do tema ativo.
+        assert_eq!(theme.text, light_theme().text);
+        assert_eq!(theme.effort, light_theme().effort);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Arquivo sem nome usa o nome do arquivo; sem aparência é escuro.
+    #[test]
+    fn user_theme_defaults_name_and_appearance() {
+        let dir = theme_dir("minimo");
+        let path = dir.join("so-um.json");
+        std::fs::write(&path, r##"{ "colors": { "bg": "#010203" } }"##).unwrap();
+        let theme = load_theme(&path).unwrap();
+        assert_eq!(theme.id, "user:so-um");
+        assert_eq!(theme.name, "so-um");
+        assert!(theme.dark);
+        assert_eq!(theme.bg, c(0x010203ff));
+        assert_eq!(theme.text, dark_theme().text);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Arquivo malformado nomeia o arquivo e o problema, e nunca derruba nada.
+    #[test]
+    fn malformed_user_themes_report_the_file() {
+        let dir = theme_dir("erros");
+        let invalid_json = dir.join("quebrado.json");
+        std::fs::write(&invalid_json, "{ not json }").unwrap();
+        let error = load_theme(&invalid_json).unwrap_err();
+        assert!(error.contains("quebrado.json"), "{error}");
+        assert!(error.contains("JSON"), "{error}");
+
+        let bad_color = dir.join("cor-ruim.json");
+        std::fs::write(&bad_color, r#"{ "colors": { "bg": "roxo" } }"#).unwrap();
+        let error = load_theme(&bad_color).unwrap_err();
+        assert!(error.contains("cor-ruim.json"), "{error}");
+        assert!(error.contains("bg"), "{error}");
+        assert!(error.contains("#rrggbb"), "{error}");
+
+        let bad_appearance = dir.join("meio.json");
+        std::fs::write(&bad_appearance, r#"{ "appearance": "meio" }"#).unwrap();
+        let error = load_theme(&bad_appearance).unwrap_err();
+        assert!(error.contains("meio.json") && error.contains("dark"), "{error}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn hex_parser_accepts_six_or_eight_digits_only() {
+        assert_eq!(parse_hex("#0b0e13"), Some(c(0x0b0e13ff)));
+        assert_eq!(parse_hex("0b0e13aa"), Some(c(0x0b0e13aa)));
+        assert_eq!(parse_hex("#abc"), None);
+        assert_eq!(parse_hex("#gggggg"), None);
+        assert_eq!(parse_hex(""), None);
+    }
+
+    /// A varredura do diretório ordena por arquivo, ignora o que não é JSON e
+    /// devolve os erros sem impedir os temas válidos de entrar no catálogo.
+    #[test]
+    fn directory_scan_orders_filters_and_reports() {
+        let dir = theme_dir("varredura");
+        std::fs::write(dir.join("zulu.json"), r#"{ "name": "Zulu" }"#).unwrap();
+        std::fs::write(dir.join("alfa.json"), r#"{ "name": "Alfa" }"#).unwrap();
+        std::fs::write(dir.join("notas.txt"), "não é tema").unwrap();
+        std::fs::write(dir.join("quebrado.json"), "{ nope }").unwrap();
+        let (list, errors) = build_themes_from(&dir);
+        assert_eq!(list.len(), built_in_themes().len() + 2, "só os .json válidos");
+        assert_eq!(list[built_in_themes().len()].name, "Alfa", "ordem por arquivo");
+        assert_eq!(list[built_in_themes().len() + 1].name, "Zulu");
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("quebrado.json"), "{}", errors[0]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Nenhum tema do catálogo divide id ou nome, e os embutidos vêm primeiro.
+    #[test]
+    fn built_in_catalog_is_unique_and_ordered() {
+        let themes = built_in_themes();
+        let ids: Vec<&str> = themes.iter().map(|theme| theme.id.as_str()).collect();
+        assert_eq!(ids, vec!["dish-dark", "dish-light", "dish-paper", "dish-dim"]);
+        for (index, theme) in themes.iter().enumerate() {
+            assert!(!theme.user);
+            assert!(!theme.name.trim().is_empty());
+            assert!(
+                !themes[..index].iter().any(|other| other.id == theme.id),
+                "id repetida: {}",
+                theme.id
+            );
+        }
     }
 }

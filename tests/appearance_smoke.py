@@ -21,6 +21,19 @@ with tempfile.TemporaryDirectory(prefix="dish-appearance-") as temporary:
     config.mkdir(parents=True)
     state = config / "state.json"
     state.write_text(json.dumps({"appearance": "dark"}))
+    # Tema do usuário: lido do diretório de configuração na inicialização.
+    themes_dir = config / "themes"
+    themes_dir.mkdir()
+    (themes_dir / "meu-tema.json").write_text(json.dumps({
+        "$schema": "https://raw.githubusercontent.com/cleisonsantos/dish/main/docs/theme-v1.schema.json",
+        "name": "Meu tema",
+        "appearance": "light",
+        "colors": {
+            "bg": "#f5f1e7", "surface": "#faf7f0", "surface2": "#fffdf9", "inset": "#eae4d6",
+            "hover": "#efeadd", "line": "#ddd5c3", "lineSoft": "#e8e1d2", "lineStrong": "#ccc3ae",
+            "text": "#27231a", "dim": "#47402f", "faint": "#625a47", "onAccent": "#ffffff",
+        },
+    }))
     env = dict(os.environ, DISH_PI_BIN=str(wrapper), PI_CODING_AGENT_DIR=str(temp / "agent"),
                XDG_CONFIG_HOME=str(temp / "config"), XDG_DATA_HOME=str(temp / "data"),
                DISH_FAKE_PI_LOG=str(log_path), XDG_SESSION_TYPE="x11")
@@ -77,23 +90,23 @@ with tempfile.TemporaryDirectory(prefix="dish-appearance-") as temporary:
     def click_segment(label):
         """Clica no cursor certo do controle segmentado (Sistema/Escuro/Claro).
 
-        Em modo claro a OCR degrada os rótulos ("Claro" vira "claw", "Escuro"
-        vira "esco"), então as âncoras são o começo das palavras, não o texto
-        exato — e a linha ainda é identificada por reunir os três rótulos.
+        Os rótulos ficam à direita do cartão (x ≥ 840 numa janela de 1240); a
+        OCR agrupa as palavras em linhas diferentes conforme a fonte, então a
+        âncora é a posição e o começo do rótulo, não a linha inteira. Em modo
+        claro a OCR degrada ("Claro" vira "claw", "Escuro" vira "esco").
         """
         wanted = label.casefold()
-        for line in ocr_lines():
-            words = [fields[11].strip().casefold() for fields in line]
-            anchors = all(any(word.startswith(prefix) for word in words)
-                          for prefix in ("sistema", "esc", "cla"))
-            if not anchors:
-                continue
-            for fields in line:
-                text = fields[11].strip().casefold()
-                if text[:3] == wanted[:3]:
-                    click(window, int(fields[6]) + int(fields[8]) // 2,
-                          int(fields[7]) + int(fields[9]) // 2)
-                    return True
+        for _ in range(4):
+            for line in ocr_lines():
+                for fields in line:
+                    text = fields[11].strip().casefold()
+                    # 4+ letras: o "Esc" do botão Fechar · Esc também começa
+                    # com "esc" e ficaria no lugar do segmento Escuro.
+                    if int(fields[6]) >= 840 and len(text) >= 4 and text[:3] == wanted[:3]:
+                        click(window, int(fields[6]) + int(fields[8]) // 2,
+                              int(fields[7]) + int(fields[9]) // 2)
+                        return True
+            time.sleep(0.4)  # a pintura/OCR pode estar um quadro atrás
         return False
 
     def switch_to(label, dark):
@@ -102,6 +115,7 @@ with tempfile.TemporaryDirectory(prefix="dish-appearance-") as temporary:
             if click_segment(label):
                 try:
                     wait_for(lambda: (luminance() < 90) == dark, f"tema {label}", timeout=6)
+                    time.sleep(0.5)  # deixa a lista de temas assentar
                     return
                 except AssertionError:
                     continue
@@ -131,6 +145,24 @@ with tempfile.TemporaryDirectory(prefix="dish-appearance-") as temporary:
         # E precisa persistir: o evento salva o state.json na hora.
         wait_for(lambda: json.loads(state.read_text()).get("appearance") == "dark",
                  "preferência não foi salva")
+
+        # Um tema do usuário aparece na lista, é escolhido e vale na hora:
+        # fixar o tema também fixa a aparência dele (aqui, clara).
+        assert any("meu tema" in " ".join(word[11].casefold() for word in line)
+                   for line in ocr_lines()), "tema do usuário não apareceu na lista"
+        clicked = False
+        for line in ocr_lines():
+            if "meu tema" in " ".join(word[11].casefold() for word in line):
+                first = line[0]
+                click(window, int(first[6]) + int(first[8]) // 2,
+                      int(first[7]) + int(first[9]) // 2)
+                clicked = True
+                break
+        assert clicked, "linha do tema do usuário não encontrada"
+        wait_for(lambda: json.loads(state.read_text()).get("theme") == "user:meu-tema",
+                 "tema do usuário não foi salvo")
+        wait_for(lambda: luminance() > 160, "tema claro do usuário não aplicou")
+        assert json.loads(state.read_text()).get("appearance") == "light"
 
         # Nova execução lê a preferência salva antes da primeira pintura.
         state.write_text(json.dumps({"appearance": "light"}))
