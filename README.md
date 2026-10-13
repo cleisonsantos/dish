@@ -43,6 +43,25 @@ case-insensitively):
 Get-FileHash .\dish-<version>-windows-x86_64-setup.exe -Algorithm SHA256
 ```
 
+### Other Linux distributions
+
+The portable `.tar.gz` is the supported path on Arch, Fedora and other glibc
+distributions; there is no package for them yet. Download the archive and its
+`.sha256` sidecar, verify, extract and run the installer:
+
+```bash
+sha256sum -c dish-<version>-linux-x86_64.tar.gz.sha256
+tar -xzf dish-<version>-linux-x86_64.tar.gz
+cd dish-<version>-linux-x86_64
+./install.sh          # menu: install, uninstall or quit
+```
+
+It installs per user into `~/.local/bin` and `$XDG_DATA_HOME` without sudo or a
+package manager, and `./install.sh uninstall` removes it while keeping
+preferences, the Pi installation, projects and sessions. The CI binary requires
+glibc 2.39 or newer (the Ubuntu 24.04 baseline); `BUILD.json` records the exact
+requirement of each archive.
+
 ## Quick start
 
 ```bash

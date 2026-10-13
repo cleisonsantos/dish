@@ -88,6 +88,10 @@ cd dish-VERSION-linux-x86_64
 ./install.sh
 ```
 
+In a terminal, `./install.sh` shows a short menu — install, uninstall or quit —
+and installs when you press Enter. Without a terminal it installs directly, as
+before; `./install.sh uninstall` removes the installation non-interactively.
+
 The installer runs without sudo. It writes the executable to `~/.local/bin/dish`,
 the desktop entry and icon under `$XDG_DATA_HOME` (default `~/.local/share`), and
 third-party licenses under the same data directory. It replaces an existing Dish
@@ -108,9 +112,10 @@ GNOME users can set `DISH_BACKEND=x11` to use XWayland and native window borders
 
 With the Debian package: `sudo apt remove dish-pi`.
 
-With the portable archive: run `./uninstall.sh` from the extracted directory. It
-removes the installed Dish executable, shortcut, icon and license files. Preferences, Pi installation,
-projects and conversation files are preserved.
+With the portable archive: run `./install.sh uninstall` (or `./uninstall.sh`)
+from the extracted directory. It removes the installed Dish executable,
+shortcut, icon and license files. Preferences, Pi installation, projects and
+conversation files are preserved.
 
 ## Licenses and source
 
