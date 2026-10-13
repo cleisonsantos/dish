@@ -28,15 +28,48 @@ Download the `.deb` and its `.sha256` sidecar, verify, then let apt resolve the
 runtime libraries and register the menu entry:
 
 ```sh
-sha256sum -c dish_VERSION_amd64.deb.sha256
-sudo apt install ./dish_VERSION_amd64.deb
+sha256sum -c dish-pi_VERSION_amd64.deb.sha256
+sudo apt install ./dish-pi_VERSION_amd64.deb
 ```
 
 Replace `VERSION` with the release version (`0.1.0-alpha.1` in the file name;
 the package's own `Version` uses Debian ordering, `0.1.0~alpha.1`).
-The package installs the executable to `/usr/bin/dish`, the menu entry and icon
-system-wide, and licenses under `/usr/share/doc/dish`. Remove it with
-`sudo apt remove dish`; preferences, Pi, projects and conversations are kept.
+The package installs the executable to `/usr/bin/dish-pi`, the menu entry and
+icon system-wide, and licenses under `/usr/share/doc/dish-pi`. Remove it with
+`sudo apt remove dish-pi`; preferences, Pi, projects and conversations are kept.
+The package name is `dish-pi` to avoid the collision described below.
+
+### The Debian `dish` package
+
+Debian already ships a package named `dish` (diligence/distributed shell) whose
+versions sort higher than ours. Until `0.1.0-alpha.3` our `.deb` used the same
+name and wrote to `/usr/bin/dish`, so an `apt full-upgrade` could replace the
+Pi client with it. From `0.1.0-alpha.4` the package is called `dish-pi`:
+
+- it installs `/usr/bin/dish-pi`, `/usr/share/applications/dish-pi.desktop`,
+  the `dish-pi` icon and its documentation under `/usr/share/doc/dish-pi`;
+- it declares no `Conflicts:`, `Replaces:`, `Breaks:` or `Provides: dish`, so
+  the legitimate Debian package stays installed and untouched next to it;
+- the menu entry is still named **Dish** and matches the window through
+  `StartupWMClass=dish`; only the package and the installed paths use `dish-pi`;
+- user data (`~/.config/dish`, the Pi install, projects and sessions) is not
+  touched.
+
+To migrate an older install, first check which `dish` is present:
+
+```sh
+dpkg-query -W -f='${Package} ${Version}\n' dish 2>/dev/null
+```
+
+- No output: no `dish` package; install `dish-pi` normally.
+- Version `0.1.0~alpha.*`: it is our old `.deb`. Remove it with
+  `sudo apt remove dish`, then install `dish-pi`.
+- Version `1.19.*` or similar: it is Debian's package. **Do not remove it**;
+  install `dish-pi` alongside.
+
+`sudo apt-mark hold dish` prevents the replacement if you want to postpone the
+switch, but it also freezes the legitimate Debian package; moving to `dish-pi`
+is the definitive fix.
 
 ### Portable archive (no sudo)
 
@@ -62,17 +95,18 @@ installation at those paths. It does not download Pi or run its installer.
 
 ### Running Dish
 
-Open Dish through your application menu, or run `dish` / `~/.local/bin/dish`. If
-Pi is missing, follow the first-run setup. Set `DISH_PI_BIN` to select a custom
-Pi executable when launching from a terminal. Projects and conversations can
-modify files; this is not a sandbox.
+Open Dish through your application menu, or run `dish-pi` (Debian package) or
+`dish` / `~/.local/bin/dish` (portable archive). If Pi is missing, follow the
+first-run setup. Set `DISH_PI_BIN` to select a custom Pi executable when
+launching from a terminal. Projects and conversations can modify files; this is
+not a sandbox.
 
 You may also run `./bin/dish /path/to/project` directly without installing.
 GNOME users can set `DISH_BACKEND=x11` to use XWayland and native window borders.
 
 ## Uninstall
 
-With the Debian package: `sudo apt remove dish`.
+With the Debian package: `sudo apt remove dish-pi`.
 
 With the portable archive: run `./uninstall.sh` from the extracted directory. It
 removes the installed Dish executable, shortcut, icon and license files. Preferences, Pi installation,

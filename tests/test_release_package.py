@@ -305,21 +305,44 @@ class DebianPackageTests(unittest.TestCase):
                 tar.add(staged, arcname=name)
             output = root / "dist"
             built = deb.build(archive, output)
-            self.assertEqual(built.name, "dish_0.1.0-alpha.1_amd64.deb")
+            self.assertEqual(built.name, "dish-pi_0.1.0-alpha.1_amd64.deb")
             self.assertEqual(built.parent, output)
             self.assertTrue(Path(str(built) + ".sha256").is_file())
             info = subprocess.check_output(["dpkg-deb", "--info", str(built)], text=True)
             self.assertIn("Version: 0.1.0~alpha.1", info)
-            self.assertIn("Package: dish", info)
+            self.assertIn("Package: dish-pi", info)
             listing = subprocess.check_output(["dpkg-deb", "--contents", str(built)], text=True)
-            for member in ["usr/bin/dish", "usr/share/applications/dish.desktop",
-                           "usr/share/icons/hicolor/512x512/apps/dish.png", "usr/share/doc/dish/copyright",
-                           "usr/share/doc/dish/changelog", "usr/share/doc/dish/licenses/dependencies/entry.txt"]:
-                self.assertIn(member, listing)
+            installed = [line.rsplit(" ", 1)[-1].removeprefix("./") for line in listing.splitlines()]
+            for member in ["usr/bin/dish-pi", "usr/share/applications/dish-pi.desktop",
+                           "usr/share/icons/hicolor/512x512/apps/dish-pi.png", "usr/share/doc/dish-pi/copyright",
+                           "usr/share/doc/dish-pi/changelog", "usr/share/doc/dish-pi/licenses/dependencies/entry.txt"]:
+                self.assertIn(member, installed)
+            # A colisão com o pacote `dish` do Debian: nem o binário, nem o
+            # atalho, nem a documentação disputam os caminhos dele.
+            self.assertNotIn("usr/bin/dish", installed)
+            self.assertNotIn("usr/share/applications/dish.desktop", installed)
+            self.assertNotIn("usr/share/doc/dish/copyright", installed)
             # A sidecar checksum that no longer matches must stop the build.
             Path(str(archive) + ".sha256").write_text("0" * 64 + f"  {archive.name}\n")
             with self.assertRaisesRegex(RuntimeError, "Checksum mismatch"):
                 deb.build(archive, output)
+
+    def test_package_does_not_dispute_the_debian_dish_name(self):
+        """O Debian também tem um pacote `dish` (diligence/distributed shell) e
+        as versões dele são maiores; o nosso não pode declarar conflito nem
+        instalar nos mesmos caminhos, senão o apt troca um pelo outro."""
+        control = deb.control_text("0.1.0~alpha.1", "2.39", ["libc6"], 0)
+        self.assertIn("Package: dish-pi", control)
+        # Nada de Conflicts/Replaces/Breaks/Provides: eles removeriam o pacote
+        # legítimo do Debian junto.
+        for field in ("Conflicts:", "Replaces:", "Breaks:", "Provides:"):
+            self.assertNotIn(field, control)
+        entry = deb.desktop_entry()
+        self.assertIn("Exec=dish-pi", entry)
+        self.assertIn("Icon=dish-pi", entry)
+        # O app_id da janela continua `dish`; sem isso o GNOME não casa a
+        # janela com o atalho.
+        self.assertIn("StartupWMClass=dish", entry)
 
     def test_rejects_a_candidate_for_another_target(self):
         with tempfile.TemporaryDirectory() as temp:

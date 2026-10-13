@@ -170,5 +170,5 @@ derived from the binary's real dynamic linkage (libc6 with the minimum glibc,
 libgcc-s1, libxcb1, libxkbcommon0, libxkbcommon-x11-0); dlopen-only libraries
 (EGL, Vulkan, Wayland) are `Recommends:`. The Debian version uses `~` ordering
 (`0.1.0~alpha.1`). CI installs the built package with `apt` and smoke-tests the
-installed `/usr/bin/dish` before removing it, and the package is attached to the
+installed `/usr/bin/dish-pi` before removing it, and the package is attached to the
 existing `v0.1.0-alpha.1` prerelease after download and checksum verification.

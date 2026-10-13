@@ -45,9 +45,9 @@ jobs:
       - name: Release tooling tests
         run: python3 -m unittest discover -s tests -p 'test_release_package.py' -v
       - name: Build and package candidate (with path remapping and license checks)
-        run: python3 scripts/package-linux.py --version 0.1.0-alpha.3
+        run: python3 scripts/package-linux.py --version 0.1.0-alpha.4
       - name: Build Debian package from the verified candidate
-        run: python3 scripts/package-deb.py --version 0.1.0-alpha.3
+        run: python3 scripts/package-deb.py --version 0.1.0-alpha.4
       - name: Test the real archive, installation and packaged executable
         run: |
           export DISH_TEST_ARCHIVE="$(realpath dist/dish-*-linux-x86_64.tar.gz)"
@@ -62,17 +62,37 @@ jobs:
           bash tests/run_ui.sh tests/desktop_smoke.py tests/search_stability_smoke.py \
                              tests/startup_smoke.py tests/settings_smoke.py \
                              tests/session_activity_smoke.py tests/appearance_smoke.py
-      - name: Install the Debian package and smoke-test /usr/bin/dish
+      - name: Install the Debian package and smoke-test /usr/bin/dish-pi
         run: |
-          sudo apt-get install -y ./dist/dish_*_amd64.deb
-          test -x /usr/bin/dish
-          test -f /usr/share/applications/dish.desktop
+          # Simula o pacote `dish` do Debian, que instala /usr/bin/dish: o nosso
+          # pacote não pode removê-lo, substituí-lo nem disputar o caminho.
+          fake="$(mktemp -d)"
+          mkdir -p "$fake/DEBIAN" "$fake/usr/bin"
+          printf 'Package: dish\nVersion: 1.19.1-2\nArchitecture: amd64\nMaintainer: Debian QA <qa@example.invalid>\nDescription: fake Debian dish for the coexistence test\n' > "$fake/DEBIAN/control"
+          printf '#!/bin/sh\necho debian-dish\n' > "$fake/usr/bin/dish"
+          chmod 755 "$fake/usr/bin/dish"
+          dpkg-deb --build --root-owner-group "$fake" "$fake/dish.deb"
+          sudo dpkg -i "$fake/dish.deb"
+          debian_dish="$(sha256sum /usr/bin/dish)"
+          sudo apt-get install -y ./dist/dish-pi_*_amd64.deb
+          test -x /usr/bin/dish-pi
+          test -f /usr/share/applications/dish-pi.desktop
+          dpkg-query -W -f='${Package} ${Version} ${Status}\n' dish-pi
           dpkg-query -W -f='${Package} ${Version} ${Status}\n' dish
-          export DISH_TEST_BIN=/usr/bin/dish LIBGL_ALWAYS_SOFTWARE=1
+          # Coexistência: o binário do Debian continua o mesmo, o nosso é
+          # registrado como nosso e /usr/bin/dish não pertence ao dish-pi.
+          test "$debian_dish" = "$(sha256sum /usr/bin/dish)"
+          dpkg-query -S /usr/bin/dish-pi | grep -q '^dish-pi'
+          ! dpkg-query -S /usr/bin/dish 2>/dev/null | grep -q '^dish-pi'
+          export DISH_TEST_BIN=/usr/bin/dish-pi LIBGL_ALWAYS_SOFTWARE=1
           export XDG_RUNTIME_DIR="$(mktemp -d)"
           chmod 700 "$XDG_RUNTIME_DIR"
           bash tests/run_ui.sh tests/desktop_smoke.py
-          sudo apt-get remove -y dish
+          # Remover o nosso não toca no pacote do Debian.
+          sudo apt-get remove -y dish-pi
+          test ! -e /usr/bin/dish-pi
+          test -x /usr/bin/dish
+          sudo dpkg -r dish
           test ! -e /usr/bin/dish
       - name: Save synthetic UI failure screenshots
         if: failure()
