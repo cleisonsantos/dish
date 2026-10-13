@@ -1,0 +1,865 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-12T23:42:10.532133+00:00",
+  "title": "Design System: Dish",
+  "extensions": {
+    "colorMeta": {
+      "bg": {
+        "role": "neutral",
+        "displayName": "Bg",
+        "tonalRamp": [
+          "oklch(15.000% 0.01168 260.613)",
+          "oklch(26.429% 0.01168 260.613)",
+          "oklch(37.857% 0.01168 260.613)",
+          "oklch(49.286% 0.01168 260.613)",
+          "oklch(60.714% 0.01168 260.613)",
+          "oklch(72.143% 0.01168 260.613)",
+          "oklch(83.571% 0.01168 260.613)",
+          "oklch(95.000% 0.01168 260.613)"
+        ]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "Surface",
+        "tonalRamp": [
+          "oklch(15.000% 0.01551 261.573)",
+          "oklch(26.429% 0.01551 261.573)",
+          "oklch(37.857% 0.01551 261.573)",
+          "oklch(49.286% 0.01551 261.573)",
+          "oklch(60.714% 0.01551 261.573)",
+          "oklch(72.143% 0.01551 261.573)",
+          "oklch(83.571% 0.01551 261.573)",
+          "oklch(95.000% 0.01551 261.573)"
+        ]
+      },
+      "surface-2": {
+        "role": "neutral",
+        "displayName": "Surface 2",
+        "tonalRamp": [
+          "oklch(15.000% 0.01720 259.753)",
+          "oklch(26.429% 0.01720 259.753)",
+          "oklch(37.857% 0.01720 259.753)",
+          "oklch(49.286% 0.01720 259.753)",
+          "oklch(60.714% 0.01720 259.753)",
+          "oklch(72.143% 0.01720 259.753)",
+          "oklch(83.571% 0.01720 259.753)",
+          "oklch(95.000% 0.01720 259.753)"
+        ]
+      },
+      "inset": {
+        "role": "neutral",
+        "displayName": "Inset",
+        "tonalRamp": [
+          "oklch(15.000% 0.00722 269.004)",
+          "oklch(26.429% 0.00722 269.004)",
+          "oklch(37.857% 0.00722 269.004)",
+          "oklch(49.286% 0.00722 269.004)",
+          "oklch(60.714% 0.00722 269.004)",
+          "oklch(72.143% 0.00722 269.004)",
+          "oklch(83.571% 0.00722 269.004)",
+          "oklch(95.000% 0.00722 269.004)"
+        ]
+      },
+      "hover": {
+        "role": "neutral",
+        "displayName": "Hover",
+        "tonalRamp": [
+          "oklch(15.000% 0.01911 258.362)",
+          "oklch(26.429% 0.01911 258.362)",
+          "oklch(37.857% 0.01911 258.362)",
+          "oklch(49.286% 0.01911 258.362)",
+          "oklch(60.714% 0.01911 258.362)",
+          "oklch(72.143% 0.01911 258.362)",
+          "oklch(83.571% 0.01911 258.362)",
+          "oklch(95.000% 0.01911 258.362)"
+        ]
+      },
+      "line": {
+        "role": "neutral",
+        "displayName": "Line",
+        "tonalRamp": [
+          "oklch(15.000% 0.02026 260.617)",
+          "oklch(26.429% 0.02026 260.617)",
+          "oklch(37.857% 0.02026 260.617)",
+          "oklch(49.286% 0.02026 260.617)",
+          "oklch(60.714% 0.02026 260.617)",
+          "oklch(72.143% 0.02026 260.617)",
+          "oklch(83.571% 0.02026 260.617)",
+          "oklch(95.000% 0.02026 260.617)"
+        ]
+      },
+      "line-soft": {
+        "role": "neutral",
+        "displayName": "Line Soft",
+        "tonalRamp": [
+          "oklch(15.000% 0.01713 259.757)",
+          "oklch(26.429% 0.01713 259.757)",
+          "oklch(37.857% 0.01713 259.757)",
+          "oklch(49.286% 0.01713 259.757)",
+          "oklch(60.714% 0.01713 259.757)",
+          "oklch(72.143% 0.01713 259.757)",
+          "oklch(83.571% 0.01713 259.757)",
+          "oklch(95.000% 0.01713 259.757)"
+        ]
+      },
+      "line-strong": {
+        "role": "neutral",
+        "displayName": "Line Strong",
+        "tonalRamp": [
+          "oklch(15.000% 0.02362 258.366)",
+          "oklch(26.429% 0.02362 258.366)",
+          "oklch(37.857% 0.02362 258.366)",
+          "oklch(49.286% 0.02362 258.366)",
+          "oklch(60.714% 0.02362 258.366)",
+          "oklch(72.143% 0.02362 258.366)",
+          "oklch(83.571% 0.02362 258.366)",
+          "oklch(95.000% 0.02362 258.366)"
+        ]
+      },
+      "text": {
+        "role": "neutral",
+        "displayName": "Text",
+        "tonalRamp": [
+          "oklch(15.000% 0.00578 264.532)",
+          "oklch(26.429% 0.00578 264.532)",
+          "oklch(37.857% 0.00578 264.532)",
+          "oklch(49.286% 0.00578 264.532)",
+          "oklch(60.714% 0.00578 264.532)",
+          "oklch(72.143% 0.00578 264.532)",
+          "oklch(83.571% 0.00578 264.532)",
+          "oklch(95.000% 0.00578 264.532)"
+        ]
+      },
+      "dim": {
+        "role": "neutral",
+        "displayName": "Dim",
+        "tonalRamp": [
+          "oklch(15.000% 0.01697 253.935)",
+          "oklch(26.429% 0.01697 253.935)",
+          "oklch(37.857% 0.01697 253.935)",
+          "oklch(49.286% 0.01697 253.935)",
+          "oklch(60.714% 0.01697 253.935)",
+          "oklch(72.143% 0.01697 253.935)",
+          "oklch(83.571% 0.01697 253.935)",
+          "oklch(95.000% 0.01697 253.935)"
+        ]
+      },
+      "faint": {
+        "role": "neutral",
+        "displayName": "Faint",
+        "tonalRamp": [
+          "oklch(15.000% 0.01765 253.960)",
+          "oklch(26.429% 0.01765 253.960)",
+          "oklch(37.857% 0.01765 253.960)",
+          "oklch(49.286% 0.01765 253.960)",
+          "oklch(60.714% 0.01765 253.960)",
+          "oklch(72.143% 0.01765 253.960)",
+          "oklch(83.571% 0.01765 253.960)",
+          "oklch(95.000% 0.01765 253.960)"
+        ]
+      },
+      "on-accent": {
+        "role": "neutral",
+        "displayName": "On Accent",
+        "tonalRamp": [
+          "oklch(15.000% 0.01168 260.613)",
+          "oklch(26.429% 0.01168 260.613)",
+          "oklch(37.857% 0.01168 260.613)",
+          "oklch(49.286% 0.01168 260.613)",
+          "oklch(60.714% 0.01168 260.613)",
+          "oklch(72.143% 0.01168 260.613)",
+          "oklch(83.571% 0.01168 260.613)",
+          "oklch(95.000% 0.01168 260.613)"
+        ]
+      },
+      "effort-off": {
+        "role": "primary",
+        "displayName": "Effort Off",
+        "tonalRamp": [
+          "oklch(15.000% 0.01432 229.107)",
+          "oklch(26.429% 0.01432 229.107)",
+          "oklch(37.857% 0.01432 229.107)",
+          "oklch(49.286% 0.01432 229.107)",
+          "oklch(60.714% 0.01432 229.107)",
+          "oklch(72.143% 0.01432 229.107)",
+          "oklch(83.571% 0.01432 229.107)",
+          "oklch(95.000% 0.01432 229.107)"
+        ]
+      },
+      "effort-minimal": {
+        "role": "primary",
+        "displayName": "Effort Minimal",
+        "tonalRamp": [
+          "oklch(15.000% 0.03421 231.770)",
+          "oklch(26.429% 0.03421 231.770)",
+          "oklch(37.857% 0.03421 231.770)",
+          "oklch(49.286% 0.03421 231.770)",
+          "oklch(60.714% 0.03421 231.770)",
+          "oklch(72.143% 0.03421 231.770)",
+          "oklch(83.571% 0.03421 231.770)",
+          "oklch(95.000% 0.03421 231.770)"
+        ]
+      },
+      "effort-low": {
+        "role": "primary",
+        "displayName": "Effort Low",
+        "tonalRamp": [
+          "oklch(15.000% 0.06985 231.727)",
+          "oklch(26.429% 0.06985 231.727)",
+          "oklch(37.857% 0.06985 231.727)",
+          "oklch(49.286% 0.06985 231.727)",
+          "oklch(60.714% 0.06985 231.727)",
+          "oklch(72.143% 0.06985 231.727)",
+          "oklch(83.571% 0.06985 231.727)",
+          "oklch(95.000% 0.06985 231.727)"
+        ]
+      },
+      "effort-medium": {
+        "role": "primary",
+        "displayName": "Effort Medium",
+        "tonalRamp": [
+          "oklch(15.000% 0.11545 263.011)",
+          "oklch(26.429% 0.11545 263.011)",
+          "oklch(37.857% 0.11545 263.011)",
+          "oklch(49.286% 0.11545 263.011)",
+          "oklch(60.714% 0.11545 263.011)",
+          "oklch(72.143% 0.11545 263.011)",
+          "oklch(83.571% 0.11545 263.011)",
+          "oklch(95.000% 0.11545 263.011)"
+        ]
+      },
+      "effort-high": {
+        "role": "primary",
+        "displayName": "Effort High",
+        "tonalRamp": [
+          "oklch(15.000% 0.16224 295.189)",
+          "oklch(26.429% 0.16224 295.189)",
+          "oklch(37.857% 0.16224 295.189)",
+          "oklch(49.286% 0.16224 295.189)",
+          "oklch(60.714% 0.16224 295.189)",
+          "oklch(72.143% 0.16224 295.189)",
+          "oklch(83.571% 0.16224 295.189)",
+          "oklch(95.000% 0.16224 295.189)"
+        ]
+      },
+      "effort-xhigh": {
+        "role": "primary",
+        "displayName": "Effort Xhigh",
+        "tonalRamp": [
+          "oklch(15.000% 0.20912 336.890)",
+          "oklch(26.429% 0.20912 336.890)",
+          "oklch(37.857% 0.20912 336.890)",
+          "oklch(49.286% 0.20912 336.890)",
+          "oklch(60.714% 0.20912 336.890)",
+          "oklch(72.143% 0.20912 336.890)",
+          "oklch(83.571% 0.20912 336.890)",
+          "oklch(95.000% 0.20912 336.890)"
+        ]
+      },
+      "effort-max": {
+        "role": "primary",
+        "displayName": "Effort Max",
+        "tonalRamp": [
+          "oklch(15.000% 0.20519 19.889)",
+          "oklch(26.429% 0.20519 19.889)",
+          "oklch(37.857% 0.20519 19.889)",
+          "oklch(49.286% 0.20519 19.889)",
+          "oklch(60.714% 0.20519 19.889)",
+          "oklch(72.143% 0.20519 19.889)",
+          "oklch(83.571% 0.20519 19.889)",
+          "oklch(95.000% 0.20519 19.889)"
+        ]
+      },
+      "running": {
+        "role": "semantic",
+        "displayName": "Running",
+        "tonalRamp": [
+          "oklch(15.000% 0.09583 183.001)",
+          "oklch(26.429% 0.09583 183.001)",
+          "oklch(37.857% 0.09583 183.001)",
+          "oklch(49.286% 0.09583 183.001)",
+          "oklch(60.714% 0.09583 183.001)",
+          "oklch(72.143% 0.09583 183.001)",
+          "oklch(83.571% 0.09583 183.001)",
+          "oklch(95.000% 0.09583 183.001)"
+        ]
+      },
+      "failure": {
+        "role": "semantic",
+        "displayName": "Failure",
+        "tonalRamp": [
+          "oklch(15.000% 0.15179 353.732)",
+          "oklch(26.429% 0.15179 353.732)",
+          "oklch(37.857% 0.15179 353.732)",
+          "oklch(49.286% 0.15179 353.732)",
+          "oklch(60.714% 0.15179 353.732)",
+          "oklch(72.143% 0.15179 353.732)",
+          "oklch(83.571% 0.15179 353.732)",
+          "oklch(95.000% 0.15179 353.732)"
+        ]
+      },
+      "warn": {
+        "role": "semantic",
+        "displayName": "Warn",
+        "tonalRamp": [
+          "oklch(15.000% 0.12232 77.043)",
+          "oklch(26.429% 0.12232 77.043)",
+          "oklch(37.857% 0.12232 77.043)",
+          "oklch(49.286% 0.12232 77.043)",
+          "oklch(60.714% 0.12232 77.043)",
+          "oklch(72.143% 0.12232 77.043)",
+          "oklch(83.571% 0.12232 77.043)",
+          "oklch(95.000% 0.12232 77.043)"
+        ]
+      },
+      "attention": {
+        "role": "semantic",
+        "displayName": "Attention",
+        "tonalRamp": [
+          "oklch(15.000% 0.18125 152.327)",
+          "oklch(26.429% 0.18125 152.327)",
+          "oklch(37.857% 0.18125 152.327)",
+          "oklch(49.286% 0.18125 152.327)",
+          "oklch(60.714% 0.18125 152.327)",
+          "oklch(72.143% 0.18125 152.327)",
+          "oklch(83.571% 0.18125 152.327)",
+          "oklch(95.000% 0.18125 152.327)"
+        ]
+      },
+      "git-added": {
+        "role": "semantic",
+        "displayName": "Git Added",
+        "tonalRamp": [
+          "oklch(15.000% 0.08671 149.496)",
+          "oklch(26.429% 0.08671 149.496)",
+          "oklch(37.857% 0.08671 149.496)",
+          "oklch(49.286% 0.08671 149.496)",
+          "oklch(60.714% 0.08671 149.496)",
+          "oklch(72.143% 0.08671 149.496)",
+          "oklch(83.571% 0.08671 149.496)",
+          "oklch(95.000% 0.08671 149.496)"
+        ]
+      },
+      "git-removed": {
+        "role": "semantic",
+        "displayName": "Git Removed",
+        "tonalRamp": [
+          "oklch(15.000% 0.10775 20.154)",
+          "oklch(26.429% 0.10775 20.154)",
+          "oklch(37.857% 0.10775 20.154)",
+          "oklch(49.286% 0.10775 20.154)",
+          "oklch(60.714% 0.10775 20.154)",
+          "oklch(72.143% 0.10775 20.154)",
+          "oklch(83.571% 0.10775 20.154)",
+          "oklch(95.000% 0.10775 20.154)"
+        ]
+      },
+      "light-bg": {
+        "role": "neutral",
+        "displayName": "Light Bg",
+        "tonalRamp": [
+          "oklch(15.000% 0.00626 255.475)",
+          "oklch(26.429% 0.00626 255.475)",
+          "oklch(37.857% 0.00626 255.475)",
+          "oklch(49.286% 0.00626 255.475)",
+          "oklch(60.714% 0.00626 255.475)",
+          "oklch(72.143% 0.00626 255.475)",
+          "oklch(83.571% 0.00626 255.475)",
+          "oklch(95.000% 0.00626 255.475)"
+        ]
+      },
+      "light-surface": {
+        "role": "neutral",
+        "displayName": "Light Surface",
+        "tonalRamp": [
+          "oklch(15.000% 0.00286 264.542)",
+          "oklch(26.429% 0.00286 264.542)",
+          "oklch(37.857% 0.00286 264.542)",
+          "oklch(49.286% 0.00286 264.542)",
+          "oklch(60.714% 0.00286 264.542)",
+          "oklch(72.143% 0.00286 264.542)",
+          "oklch(83.571% 0.00286 264.542)",
+          "oklch(95.000% 0.00286 264.542)"
+        ]
+      },
+      "light-surface-2": {
+        "role": "neutral",
+        "displayName": "Light Surface 2",
+        "tonalRamp": [
+          "oklch(15.000% 0.00000 89.876)",
+          "oklch(26.429% 0.00000 89.876)",
+          "oklch(37.857% 0.00000 89.876)",
+          "oklch(49.286% 0.00000 89.876)",
+          "oklch(60.714% 0.00000 89.876)",
+          "oklch(72.143% 0.00000 89.876)",
+          "oklch(83.571% 0.00000 89.876)",
+          "oklch(95.000% 0.00000 89.876)"
+        ]
+      },
+      "light-inset": {
+        "role": "neutral",
+        "displayName": "Light Inset",
+        "tonalRamp": [
+          "oklch(15.000% 0.00975 252.814)",
+          "oklch(26.429% 0.00975 252.814)",
+          "oklch(37.857% 0.00975 252.814)",
+          "oklch(49.286% 0.00975 252.814)",
+          "oklch(60.714% 0.00975 252.814)",
+          "oklch(72.143% 0.00975 252.814)",
+          "oklch(83.571% 0.00975 252.814)",
+          "oklch(95.000% 0.00975 252.814)"
+        ]
+      },
+      "light-hover": {
+        "role": "neutral",
+        "displayName": "Light Hover",
+        "tonalRamp": [
+          "oklch(15.000% 0.00971 252.813)",
+          "oklch(26.429% 0.00971 252.813)",
+          "oklch(37.857% 0.00971 252.813)",
+          "oklch(49.286% 0.00971 252.813)",
+          "oklch(60.714% 0.00971 252.813)",
+          "oklch(72.143% 0.00971 252.813)",
+          "oklch(83.571% 0.00971 252.813)",
+          "oklch(95.000% 0.00971 252.813)"
+        ]
+      },
+      "light-line": {
+        "role": "neutral",
+        "displayName": "Light Line",
+        "tonalRamp": [
+          "oklch(15.000% 0.01276 255.511)",
+          "oklch(26.429% 0.01276 255.511)",
+          "oklch(37.857% 0.01276 255.511)",
+          "oklch(49.286% 0.01276 255.511)",
+          "oklch(60.714% 0.01276 255.511)",
+          "oklch(72.143% 0.01276 255.511)",
+          "oklch(83.571% 0.01276 255.511)",
+          "oklch(95.000% 0.01276 255.511)"
+        ]
+      },
+      "light-line-soft": {
+        "role": "neutral",
+        "displayName": "Light Line Soft",
+        "tonalRamp": [
+          "oklch(15.000% 0.01091 256.697)",
+          "oklch(26.429% 0.01091 256.697)",
+          "oklch(37.857% 0.01091 256.697)",
+          "oklch(49.286% 0.01091 256.697)",
+          "oklch(60.714% 0.01091 256.697)",
+          "oklch(72.143% 0.01091 256.697)",
+          "oklch(83.571% 0.01091 256.697)",
+          "oklch(95.000% 0.01091 256.697)"
+        ]
+      },
+      "light-line-strong": {
+        "role": "neutral",
+        "displayName": "Light Line Strong",
+        "tonalRamp": [
+          "oklch(15.000% 0.01648 253.919)",
+          "oklch(26.429% 0.01648 253.919)",
+          "oklch(37.857% 0.01648 253.919)",
+          "oklch(49.286% 0.01648 253.919)",
+          "oklch(60.714% 0.01648 253.919)",
+          "oklch(72.143% 0.01648 253.919)",
+          "oklch(83.571% 0.01648 253.919)",
+          "oklch(95.000% 0.01648 253.919)"
+        ]
+      },
+      "light-text": {
+        "role": "neutral",
+        "displayName": "Light Text",
+        "tonalRamp": [
+          "oklch(15.000% 0.01541 256.809)",
+          "oklch(26.429% 0.01541 256.809)",
+          "oklch(37.857% 0.01541 256.809)",
+          "oklch(49.286% 0.01541 256.809)",
+          "oklch(60.714% 0.01541 256.809)",
+          "oklch(72.143% 0.01541 256.809)",
+          "oklch(83.571% 0.01541 256.809)",
+          "oklch(95.000% 0.01541 256.809)"
+        ]
+      },
+      "light-dim": {
+        "role": "neutral",
+        "displayName": "Light Dim",
+        "tonalRamp": [
+          "oklch(15.000% 0.02289 258.371)",
+          "oklch(26.429% 0.02289 258.371)",
+          "oklch(37.857% 0.02289 258.371)",
+          "oklch(49.286% 0.02289 258.371)",
+          "oklch(60.714% 0.02289 258.371)",
+          "oklch(72.143% 0.02289 258.371)",
+          "oklch(83.571% 0.02289 258.371)",
+          "oklch(95.000% 0.02289 258.371)"
+        ]
+      },
+      "light-faint": {
+        "role": "neutral",
+        "displayName": "Light Faint",
+        "tonalRamp": [
+          "oklch(15.000% 0.02140 258.372)",
+          "oklch(26.429% 0.02140 258.372)",
+          "oklch(37.857% 0.02140 258.372)",
+          "oklch(49.286% 0.02140 258.372)",
+          "oklch(60.714% 0.02140 258.372)",
+          "oklch(72.143% 0.02140 258.372)",
+          "oklch(83.571% 0.02140 258.372)",
+          "oklch(95.000% 0.02140 258.372)"
+        ]
+      },
+      "light-on-accent": {
+        "role": "neutral",
+        "displayName": "Light On Accent",
+        "tonalRamp": [
+          "oklch(15.000% 0.00000 89.876)",
+          "oklch(26.429% 0.00000 89.876)",
+          "oklch(37.857% 0.00000 89.876)",
+          "oklch(49.286% 0.00000 89.876)",
+          "oklch(60.714% 0.00000 89.876)",
+          "oklch(72.143% 0.00000 89.876)",
+          "oklch(83.571% 0.00000 89.876)",
+          "oklch(95.000% 0.00000 89.876)"
+        ]
+      },
+      "light-effort-off": {
+        "role": "primary",
+        "displayName": "Light Effort Off",
+        "tonalRamp": [
+          "oklch(15.000% 0.01340 231.836)",
+          "oklch(26.429% 0.01340 231.836)",
+          "oklch(37.857% 0.01340 231.836)",
+          "oklch(49.286% 0.01340 231.836)",
+          "oklch(60.714% 0.01340 231.836)",
+          "oklch(72.143% 0.01340 231.836)",
+          "oklch(83.571% 0.01340 231.836)",
+          "oklch(95.000% 0.01340 231.836)"
+        ]
+      },
+      "light-effort-minimal": {
+        "role": "primary",
+        "displayName": "Light Effort Minimal",
+        "tonalRamp": [
+          "oklch(15.000% 0.05134 233.261)",
+          "oklch(26.429% 0.05134 233.261)",
+          "oklch(37.857% 0.05134 233.261)",
+          "oklch(49.286% 0.05134 233.261)",
+          "oklch(60.714% 0.05134 233.261)",
+          "oklch(72.143% 0.05134 233.261)",
+          "oklch(83.571% 0.05134 233.261)",
+          "oklch(95.000% 0.05134 233.261)"
+        ]
+      },
+      "light-effort-low": {
+        "role": "primary",
+        "displayName": "Light Effort Low",
+        "tonalRamp": [
+          "oklch(15.000% 0.06208 232.822)",
+          "oklch(26.429% 0.06208 232.822)",
+          "oklch(37.857% 0.06208 232.822)",
+          "oklch(49.286% 0.06208 232.822)",
+          "oklch(60.714% 0.06208 232.822)",
+          "oklch(72.143% 0.06208 232.822)",
+          "oklch(83.571% 0.06208 232.822)",
+          "oklch(95.000% 0.06208 232.822)"
+        ]
+      },
+      "light-effort-medium": {
+        "role": "primary",
+        "displayName": "Light Effort Medium",
+        "tonalRamp": [
+          "oklch(15.000% 0.13747 262.558)",
+          "oklch(26.429% 0.13747 262.558)",
+          "oklch(37.857% 0.13747 262.558)",
+          "oklch(49.286% 0.13747 262.558)",
+          "oklch(60.714% 0.13747 262.558)",
+          "oklch(72.143% 0.13747 262.558)",
+          "oklch(83.571% 0.13747 262.558)",
+          "oklch(95.000% 0.13747 262.558)"
+        ]
+      },
+      "light-effort-high": {
+        "role": "primary",
+        "displayName": "Light Effort High",
+        "tonalRamp": [
+          "oklch(15.000% 0.20028 292.456)",
+          "oklch(26.429% 0.20028 292.456)",
+          "oklch(37.857% 0.20028 292.456)",
+          "oklch(49.286% 0.20028 292.456)",
+          "oklch(60.714% 0.20028 292.456)",
+          "oklch(72.143% 0.20028 292.456)",
+          "oklch(83.571% 0.20028 292.456)",
+          "oklch(95.000% 0.20028 292.456)"
+        ]
+      },
+      "light-effort-xhigh": {
+        "role": "primary",
+        "displayName": "Light Effort Xhigh",
+        "tonalRamp": [
+          "oklch(15.000% 0.23083 338.543)",
+          "oklch(26.429% 0.23083 338.543)",
+          "oklch(37.857% 0.23083 338.543)",
+          "oklch(49.286% 0.23083 338.543)",
+          "oklch(60.714% 0.23083 338.543)",
+          "oklch(72.143% 0.23083 338.543)",
+          "oklch(83.571% 0.23083 338.543)",
+          "oklch(95.000% 0.23083 338.543)"
+        ]
+      },
+      "light-effort-max": {
+        "role": "primary",
+        "displayName": "Light Effort Max",
+        "tonalRamp": [
+          "oklch(15.000% 0.23357 26.791)",
+          "oklch(26.429% 0.23357 26.791)",
+          "oklch(37.857% 0.23357 26.791)",
+          "oklch(49.286% 0.23357 26.791)",
+          "oklch(60.714% 0.23357 26.791)",
+          "oklch(72.143% 0.23357 26.791)",
+          "oklch(83.571% 0.23357 26.791)",
+          "oklch(95.000% 0.23357 26.791)"
+        ]
+      },
+      "light-running": {
+        "role": "semantic",
+        "displayName": "Light Running",
+        "tonalRamp": [
+          "oklch(15.000% 0.08498 181.119)",
+          "oklch(26.429% 0.08498 181.119)",
+          "oklch(37.857% 0.08498 181.119)",
+          "oklch(49.286% 0.08498 181.119)",
+          "oklch(60.714% 0.08498 181.119)",
+          "oklch(72.143% 0.08498 181.119)",
+          "oklch(83.571% 0.08498 181.119)",
+          "oklch(95.000% 0.08498 181.119)"
+        ]
+      },
+      "light-failure": {
+        "role": "semantic",
+        "displayName": "Light Failure",
+        "tonalRamp": [
+          "oklch(15.000% 0.15106 358.759)",
+          "oklch(26.429% 0.15106 358.759)",
+          "oklch(37.857% 0.15106 358.759)",
+          "oklch(49.286% 0.15106 358.759)",
+          "oklch(60.714% 0.15106 358.759)",
+          "oklch(72.143% 0.15106 358.759)",
+          "oklch(83.571% 0.15106 358.759)",
+          "oklch(95.000% 0.15106 358.759)"
+        ]
+      },
+      "light-warn": {
+        "role": "semantic",
+        "displayName": "Light Warn",
+        "tonalRamp": [
+          "oklch(15.000% 0.10317 73.151)",
+          "oklch(26.429% 0.10317 73.151)",
+          "oklch(37.857% 0.10317 73.151)",
+          "oklch(49.286% 0.10317 73.151)",
+          "oklch(60.714% 0.10317 73.151)",
+          "oklch(72.143% 0.10317 73.151)",
+          "oklch(83.571% 0.10317 73.151)",
+          "oklch(95.000% 0.10317 73.151)"
+        ]
+      },
+      "light-attention": {
+        "role": "semantic",
+        "displayName": "Light Attention",
+        "tonalRamp": [
+          "oklch(15.000% 0.12308 149.902)",
+          "oklch(26.429% 0.12308 149.902)",
+          "oklch(37.857% 0.12308 149.902)",
+          "oklch(49.286% 0.12308 149.902)",
+          "oklch(60.714% 0.12308 149.902)",
+          "oklch(72.143% 0.12308 149.902)",
+          "oklch(83.571% 0.12308 149.902)",
+          "oklch(95.000% 0.12308 149.902)"
+        ]
+      },
+      "light-git-added": {
+        "role": "semantic",
+        "displayName": "Light Git Added",
+        "tonalRamp": [
+          "oklch(15.000% 0.10808 146.473)",
+          "oklch(26.429% 0.10808 146.473)",
+          "oklch(37.857% 0.10808 146.473)",
+          "oklch(49.286% 0.10808 146.473)",
+          "oklch(60.714% 0.10808 146.473)",
+          "oklch(72.143% 0.10808 146.473)",
+          "oklch(83.571% 0.10808 146.473)",
+          "oklch(95.000% 0.10808 146.473)"
+        ]
+      },
+      "light-git-removed": {
+        "role": "semantic",
+        "displayName": "Light Git Removed",
+        "tonalRamp": [
+          "oklch(15.000% 0.14257 23.660)",
+          "oklch(26.429% 0.14257 23.660)",
+          "oklch(37.857% 0.14257 23.660)",
+          "oklch(49.286% 0.14257 23.660)",
+          "oklch(60.714% 0.14257 23.660)",
+          "oklch(72.143% 0.14257 23.660)",
+          "oklch(83.571% 0.14257 23.660)",
+          "oklch(95.000% 0.14257 23.660)"
+        ]
+      }
+    },
+    "shadows": [
+      {
+        "name": "overlay",
+        "value": "0 18px 48px #000000a6, 0 2px 8px #00000059",
+        "purpose": "Floating native UI only."
+      },
+      {
+        "name": "keyboard-focus",
+        "value": "0 0 0 1px rgba(133,141,151,0.9)",
+        "purpose": "External keyboard outline, not surface elevation."
+      }
+    ],
+    "motion": [
+      {
+        "name": "activity-pulse",
+        "value": "1400ms repeating; opacity = 0.35 + 0.65 * abs(sin(progress * pi))",
+        "purpose": "Live activity markers; no global motion policy inferred."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "inspector-overlay",
+        "value": "1120px"
+      }
+    ],
+    "themes": {
+      "modes": [
+        "system",
+        "dark",
+        "light"
+      ],
+      "default": "system",
+      "builtIn": [
+        {
+          "name": "dish-dark",
+          "appearance": "dark",
+          "canonical": true
+        },
+        {
+          "name": "dish-light",
+          "appearance": "light"
+        }
+      ],
+      "mapping": "Cada token escuro sem prefixo tem um par `light-*` (por exemplo `surface-2` e `light-surface-2`).",
+      "derivation": "O tema claro re-deriva cada papel para superfícies claras; a rampa de esforço mantém o matiz do Pi e desce a luminosidade até 4.5:1 sobre o branco. Os testes de ΔE e contraste correm sobre os dois temas.",
+      "switch": "A aparência é resolvida a cada render: trocar de tema, incluindo seguir o desktop, é imediato e não reinicia o app."
+    }
+  },
+  "components": [
+    {
+      "name": "Send",
+      "kind": "button",
+      "refersTo": "send",
+      "description": "Neutral native send action. Browser focus is a preview-only affordance; no universal native focus support is implied.",
+      "html": "<button class=\"ds-send\" aria-label=\"Enviar\"><svg width=\"15\" height=\"15\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"m12 19 0-14m-6 6 6-6 6 6\"/></svg></button>",
+      "css": ".ds-send{width:34px;height:34px;border:0;border-radius:10px;background:#eceef2;color:#0b0e13;cursor:pointer}.ds-send:hover{background:#a6aeb8}.ds-send:disabled{background:#252b35;color:#858d97;cursor:default}.ds-send:focus-visible{outline:1px solid rgba(133,141,151,.9);outline-offset:1px;}"
+    },
+    {
+      "name": "Inspector action",
+      "kind": "button",
+      "refersTo": "action",
+      "description": "Compact outlined action; browser focus treatment is illustrative.",
+      "html": "<button class=\"ds-action\">Compactar</button>",
+      "css": ".ds-action{padding:7px 12px;border:1px solid #252b35;border-radius:8px;background:transparent;color:#a6aeb8;font:12px Roboto,sans-serif;cursor:pointer}.ds-action:hover{background:#1e242d;border-color:#333b47}.ds-action:focus-visible{outline:1px solid rgba(133,141,151,.9);outline-offset:1px;}"
+    },
+    {
+      "name": "Model search",
+      "kind": "input",
+      "refersTo": "search",
+      "description": "Recessed field; medium effort is used only as the illustrative current state.",
+      "html": "<input class=\"ds-search\" aria-label=\"Buscar modelos\" placeholder=\"Buscar modelos\"/>",
+      "css": ".ds-search{height:38px;padding:8px 10px;border:1px solid rgba(97,133,204,.42);border-radius:4px;background:#07080b;color:#eceef2;font:13px Roboto,sans-serif}.ds-search::placeholder{color:#858d97}.ds-search:focus-visible{outline:none;border-color:rgba(97,133,204,.42)}"
+    },
+    {
+      "name": "Active session",
+      "kind": "nav",
+      "refersTo": "nav-active",
+      "description": "Active session edge and distinct keyboard outline, shown at medium effort.",
+      "html": "<button class=\"ds-nav\"><span class=\"ds-mark\"></span><span>Revisar os testes</span></button>",
+      "css": ".ds-nav{display:flex;align-items:center;gap:8px;padding:6px 8px 6px 12px;border:0;border-left:2px solid #6185cc;border-radius:8px;background:#191e26;color:#eceef2;font:12px Roboto,sans-serif;cursor:pointer}.ds-mark{width:6px;height:6px;background:#eceef2;border-radius:1.5px}.ds-nav:focus-visible{background:#1e242d;outline:1px solid rgba(133,141,151,.9);outline-offset:1px;}.ds-nav:hover{background:#1e242d}"
+    },
+    {
+      "name": "Keycap",
+      "kind": "chip",
+      "refersTo": "keycap",
+      "description": "Static shortcut hint; not an interactive chip.",
+      "html": "<kbd class=\"ds-keycap\">ctrl-l</kbd>",
+      "css": ".ds-keycap{display:inline-block;padding:3px 7px;border:1px solid #252b35;border-radius:3px;background:#07080b;color:#a6aeb8;font:11.5px \"JetBrains Mono\",monospace}"
+    },
+    {
+      "name": "User request",
+      "kind": "card",
+      "refersTo": "user-request",
+      "description": "Quiet raised request container, without a chat-bubble tail.",
+      "html": "<div class=\"ds-request\">Explique este código.</div>",
+      "css": ".ds-request{padding:8px 16px;border:1px solid #1a1f27;border-radius:12px;background:#191e26;color:#eceef2;font:15px Roboto,sans-serif}"
+    },
+    {
+      "name": "Composer",
+      "kind": "input",
+      "refersTo": "composer",
+      "description": "Roomy writing surface; medium effort is an illustrative focus color.",
+      "html": "<div class=\"ds-composer\"><textarea class=\"ds-writing\" aria-label=\"Mensagem\" placeholder=\"Escreva uma mensagem\"></textarea><div class=\"ds-controls\">modelo · esforço</div></div>",
+      "css": ".ds-composer{border:1px solid #333b47;border-radius:12px;background:#191e26;overflow:hidden}.ds-composer:focus-within{border-color:rgba(97,133,204,.42)}.ds-writing{display:block;width:calc(100% - 32px);min-height:48px;max-height:220px;margin:16px 16px 8px;padding:0;border:0;background:transparent;color:#eceef2;font:15px Roboto,sans-serif;resize:vertical}.ds-writing:focus-visible{outline:none}.ds-writing::placeholder{color:#858d97}.ds-controls{padding:0 12px 12px;color:#a6aeb8;font:12px \"JetBrains Mono\",monospace}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Graphite Instrument Panel",
+    "overview": "Dish is quiet, precise, and restrained. Graphite layers organize the workspace, compact controls expose agent activity, and readable answers take priority over decoration. The interface feels refined and restrained: compact controls, a roomy composer, and recessed technical detail.\n\nThe system is a value, not a stylesheet: dark and light are two derivations of the same rules, resolved at render time. This is a record of the existing Rust/GPUI desktop implementation, not a redesign or a web theme. `src/theme.rs` is the implementation authority for shared tokens; component sources own their local exceptions. Browser-preview snippets in `.impeccable/design.json` illustrate native patterns but are not production components. This documentation was extracted from source, not validated against a fresh rendered capture.",
+    "keyCharacteristics": [
+      "Graphite neutrals separated by tone and hairlines.",
+      "A Pi effort ladder independent of operational status.",
+      "Readable proportional prose and monospace technical content.",
+      "Flat surfaces at rest; structural shadows for floating UI.",
+      "Compact controls, progressive disclosure, and distinct send/stop actions.",
+      "Two built-in themes (dark and light) driven by one token vocabulary; the effort ladder keeps Pi's hues and is re-derived for light."
+    ],
+    "rules": [
+      {
+        "name": "The Effort-Is-Not-Status Rule",
+        "body": "Reasoning intensity must not stand in for execution, success, or failure. Maximum effort is coral, not an error state.",
+        "section": "colors"
+      },
+      {
+        "name": "The Reading-First Rule",
+        "body": "Keep answers visually larger than the metadata and controls surrounding them; do not turn all assistant output into monospace.",
+        "section": "typography"
+      },
+      {
+        "name": "The Flat-At-Rest Rule",
+        "body": "Reserve structural shadows for floating UI; ordinary panels and transcript containers separate by tone and hairlines.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Appearance-Is-A-Value Rule",
+        "body": "Every colour comes from the active Theme; no component hardcodes a hex value. Dark and light are derivations of the same rules, and the user's choice (including following the desktop) applies without a restart.",
+        "section": "colors"
+      }
+    ],
+    "dos": [
+      "**Do** use shared theme tokens and preserve documented local component exceptions.",
+      "**Do** separate reasoning intensity from operational status.",
+      "**Do** prioritize readable answers and reveal technical detail on demand.",
+      "**Do** retain independent send and stop controls.",
+      "**Do** pair consequential status colors with words or recognizable icons.",
+      "**Do** preserve tonal depth, hairline boundaries, and visible keyboard focus cues.",
+      "**Do** verify contrast and status separation in both themes, not just the default."
+    ],
+    "donts": [
+      "**Don't** turn every section into a raised or shadowed card.",
+      "**Don't** use maximum-effort coral as the failure signal.",
+      "**Don't** replace proportional answer text with blanket monospace styling.",
+      "**Don't** infer a mobile layout, universal focus treatment, or accessibility certification from this record.",
+      "**Don't** reintroduce effort-colored transcript spines or an effort-filled send button based on outdated README descriptions.",
+      "**Don't** hardcode a hex value in a component or assume the dark surface ordering holds in light."
+    ]
+  }
+}
