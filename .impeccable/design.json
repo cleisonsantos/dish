@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-10-12T23:42:10.532133+00:00",
+  "generatedAt": "2026-10-13T02:47:05.649199+00:00",
   "title": "Design System: Dish",
   "extensions": {
     "colorMeta": {
@@ -703,6 +703,342 @@
           "oklch(83.571% 0.14257 23.660)",
           "oklch(95.000% 0.14257 23.660)"
         ]
+      },
+      "paper-bg": {
+        "role": "neutral",
+        "displayName": "Paper Bg",
+        "tonalRamp": [
+          "oklch(15.000% 0.01394 88.684)",
+          "oklch(26.429% 0.01394 88.684)",
+          "oklch(37.857% 0.01394 88.684)",
+          "oklch(49.286% 0.01394 88.684)",
+          "oklch(60.714% 0.01394 88.684)",
+          "oklch(72.143% 0.01394 88.684)",
+          "oklch(83.571% 0.01394 88.684)",
+          "oklch(95.000% 0.01394 88.684)"
+        ]
+      },
+      "paper-surface": {
+        "role": "neutral",
+        "displayName": "Paper Surface",
+        "tonalRamp": [
+          "oklch(15.000% 0.00980 87.470)",
+          "oklch(26.429% 0.00980 87.470)",
+          "oklch(37.857% 0.00980 87.470)",
+          "oklch(49.286% 0.00980 87.470)",
+          "oklch(60.714% 0.00980 87.470)",
+          "oklch(72.143% 0.00980 87.470)",
+          "oklch(83.571% 0.00980 87.470)",
+          "oklch(95.000% 0.00980 87.470)"
+        ]
+      },
+      "paper-surface-2": {
+        "role": "neutral",
+        "displayName": "Paper Surface 2",
+        "tonalRamp": [
+          "oklch(15.000% 0.00569 84.566)",
+          "oklch(26.429% 0.00569 84.566)",
+          "oklch(37.857% 0.00569 84.566)",
+          "oklch(49.286% 0.00569 84.566)",
+          "oklch(60.714% 0.00569 84.566)",
+          "oklch(72.143% 0.00569 84.566)",
+          "oklch(83.571% 0.00569 84.566)",
+          "oklch(95.000% 0.00569 84.566)"
+        ]
+      },
+      "paper-inset": {
+        "role": "neutral",
+        "displayName": "Paper Inset",
+        "tonalRamp": [
+          "oklch(15.000% 0.01981 87.517)",
+          "oklch(26.429% 0.01981 87.517)",
+          "oklch(37.857% 0.01981 87.517)",
+          "oklch(49.286% 0.01981 87.517)",
+          "oklch(60.714% 0.01981 87.517)",
+          "oklch(72.143% 0.01981 87.517)",
+          "oklch(83.571% 0.01981 87.517)",
+          "oklch(95.000% 0.01981 87.517)"
+        ]
+      },
+      "paper-hover": {
+        "role": "neutral",
+        "displayName": "Paper Hover",
+        "tonalRamp": [
+          "oklch(15.000% 0.01812 89.361)",
+          "oklch(26.429% 0.01812 89.361)",
+          "oklch(37.857% 0.01812 89.361)",
+          "oklch(49.286% 0.01812 89.361)",
+          "oklch(60.714% 0.01812 89.361)",
+          "oklch(72.143% 0.01812 89.361)",
+          "oklch(83.571% 0.01812 89.361)",
+          "oklch(95.000% 0.01812 89.361)"
+        ]
+      },
+      "paper-line": {
+        "role": "neutral",
+        "displayName": "Paper Line",
+        "tonalRamp": [
+          "oklch(15.000% 0.02581 86.877)",
+          "oklch(26.429% 0.02581 86.877)",
+          "oklch(37.857% 0.02581 86.877)",
+          "oklch(49.286% 0.02581 86.877)",
+          "oklch(60.714% 0.02581 86.877)",
+          "oklch(72.143% 0.02581 86.877)",
+          "oklch(83.571% 0.02581 86.877)",
+          "oklch(95.000% 0.02581 86.877)"
+        ]
+      },
+      "paper-line-soft": {
+        "role": "neutral",
+        "displayName": "Paper Line Soft",
+        "tonalRamp": [
+          "oklch(15.000% 0.02147 85.946)",
+          "oklch(26.429% 0.02147 85.946)",
+          "oklch(37.857% 0.02147 85.946)",
+          "oklch(49.286% 0.02147 85.946)",
+          "oklch(60.714% 0.02147 85.946)",
+          "oklch(72.143% 0.02147 85.946)",
+          "oklch(83.571% 0.02147 85.946)",
+          "oklch(95.000% 0.02147 85.946)"
+        ]
+      },
+      "paper-line-strong": {
+        "role": "neutral",
+        "displayName": "Paper Line Strong",
+        "tonalRamp": [
+          "oklch(15.000% 0.03038 87.559)",
+          "oklch(26.429% 0.03038 87.559)",
+          "oklch(37.857% 0.03038 87.559)",
+          "oklch(49.286% 0.03038 87.559)",
+          "oklch(60.714% 0.03038 87.559)",
+          "oklch(72.143% 0.03038 87.559)",
+          "oklch(83.571% 0.03038 87.559)",
+          "oklch(95.000% 0.03038 87.559)"
+        ]
+      },
+      "paper-text": {
+        "role": "neutral",
+        "displayName": "Paper Text",
+        "tonalRamp": [
+          "oklch(15.000% 0.01717 86.858)",
+          "oklch(26.429% 0.01717 86.858)",
+          "oklch(37.857% 0.01717 86.858)",
+          "oklch(49.286% 0.01717 86.858)",
+          "oklch(60.714% 0.01717 86.858)",
+          "oklch(72.143% 0.01717 86.858)",
+          "oklch(83.571% 0.01717 86.858)",
+          "oklch(95.000% 0.01717 86.858)"
+        ]
+      },
+      "paper-dim": {
+        "role": "neutral",
+        "displayName": "Paper Dim",
+        "tonalRamp": [
+          "oklch(15.000% 0.02905 88.253)",
+          "oklch(26.429% 0.02905 88.253)",
+          "oklch(37.857% 0.02905 88.253)",
+          "oklch(49.286% 0.02905 88.253)",
+          "oklch(60.714% 0.02905 88.253)",
+          "oklch(72.143% 0.02905 88.253)",
+          "oklch(83.571% 0.02905 88.253)",
+          "oklch(95.000% 0.02905 88.253)"
+        ]
+      },
+      "paper-faint": {
+        "role": "neutral",
+        "displayName": "Paper Faint",
+        "tonalRamp": [
+          "oklch(15.000% 0.03100 87.879)",
+          "oklch(26.429% 0.03100 87.879)",
+          "oklch(37.857% 0.03100 87.879)",
+          "oklch(49.286% 0.03100 87.879)",
+          "oklch(60.714% 0.03100 87.879)",
+          "oklch(72.143% 0.03100 87.879)",
+          "oklch(83.571% 0.03100 87.879)",
+          "oklch(95.000% 0.03100 87.879)"
+        ]
+      },
+      "paper-ok": {
+        "role": "semantic",
+        "displayName": "Paper Ok",
+        "tonalRamp": [
+          "oklch(15.000% 0.02905 88.253)",
+          "oklch(26.429% 0.02905 88.253)",
+          "oklch(37.857% 0.02905 88.253)",
+          "oklch(49.286% 0.02905 88.253)",
+          "oklch(60.714% 0.02905 88.253)",
+          "oklch(72.143% 0.02905 88.253)",
+          "oklch(83.571% 0.02905 88.253)",
+          "oklch(95.000% 0.02905 88.253)"
+        ]
+      },
+      "dim-bg": {
+        "role": "neutral",
+        "displayName": "Dim Bg",
+        "tonalRamp": [
+          "oklch(15.000% 0.01032 268.199)",
+          "oklch(26.429% 0.01032 268.199)",
+          "oklch(37.857% 0.01032 268.199)",
+          "oklch(49.286% 0.01032 268.199)",
+          "oklch(60.714% 0.01032 268.199)",
+          "oklch(72.143% 0.01032 268.199)",
+          "oklch(83.571% 0.01032 268.199)",
+          "oklch(95.000% 0.01032 268.199)"
+        ]
+      },
+      "dim-surface": {
+        "role": "neutral",
+        "displayName": "Dim Surface",
+        "tonalRamp": [
+          "oklch(15.000% 0.01236 264.308)",
+          "oklch(26.429% 0.01236 264.308)",
+          "oklch(37.857% 0.01236 264.308)",
+          "oklch(49.286% 0.01236 264.308)",
+          "oklch(60.714% 0.01236 264.308)",
+          "oklch(72.143% 0.01236 264.308)",
+          "oklch(83.571% 0.01236 264.308)",
+          "oklch(95.000% 0.01236 264.308)"
+        ]
+      },
+      "dim-surface-2": {
+        "role": "neutral",
+        "displayName": "Dim Surface 2",
+        "tonalRamp": [
+          "oklch(15.000% 0.01424 261.685)",
+          "oklch(26.429% 0.01424 261.685)",
+          "oklch(37.857% 0.01424 261.685)",
+          "oklch(49.286% 0.01424 261.685)",
+          "oklch(60.714% 0.01424 261.685)",
+          "oklch(72.143% 0.01424 261.685)",
+          "oklch(83.571% 0.01424 261.685)",
+          "oklch(95.000% 0.01424 261.685)"
+        ]
+      },
+      "dim-inset": {
+        "role": "neutral",
+        "displayName": "Dim Inset",
+        "tonalRamp": [
+          "oklch(15.000% 0.00865 264.353)",
+          "oklch(26.429% 0.00865 264.353)",
+          "oklch(37.857% 0.00865 264.353)",
+          "oklch(49.286% 0.00865 264.353)",
+          "oklch(60.714% 0.00865 264.353)",
+          "oklch(72.143% 0.00865 264.353)",
+          "oklch(83.571% 0.00865 264.353)",
+          "oklch(95.000% 0.00865 264.353)"
+        ]
+      },
+      "dim-hover": {
+        "role": "neutral",
+        "displayName": "Dim Hover",
+        "tonalRamp": [
+          "oklch(15.000% 0.01620 259.792)",
+          "oklch(26.429% 0.01620 259.792)",
+          "oklch(37.857% 0.01620 259.792)",
+          "oklch(49.286% 0.01620 259.792)",
+          "oklch(60.714% 0.01620 259.792)",
+          "oklch(72.143% 0.01620 259.792)",
+          "oklch(83.571% 0.01620 259.792)",
+          "oklch(95.000% 0.01620 259.792)"
+        ]
+      },
+      "dim-line": {
+        "role": "neutral",
+        "displayName": "Dim Line",
+        "tonalRamp": [
+          "oklch(15.000% 0.01750 262.247)",
+          "oklch(26.429% 0.01750 262.247)",
+          "oklch(37.857% 0.01750 262.247)",
+          "oklch(49.286% 0.01750 262.247)",
+          "oklch(60.714% 0.01750 262.247)",
+          "oklch(72.143% 0.01750 262.247)",
+          "oklch(83.571% 0.01750 262.247)",
+          "oklch(95.000% 0.01750 262.247)"
+        ]
+      },
+      "dim-line-soft": {
+        "role": "neutral",
+        "displayName": "Dim Line Soft",
+        "tonalRamp": [
+          "oklch(15.000% 0.01578 264.284)",
+          "oklch(26.429% 0.01578 264.284)",
+          "oklch(37.857% 0.01578 264.284)",
+          "oklch(49.286% 0.01578 264.284)",
+          "oklch(60.714% 0.01578 264.284)",
+          "oklch(72.143% 0.01578 264.284)",
+          "oklch(83.571% 0.01578 264.284)",
+          "oklch(95.000% 0.01578 264.284)"
+        ]
+      },
+      "dim-line-strong": {
+        "role": "neutral",
+        "displayName": "Dim Line Strong",
+        "tonalRamp": [
+          "oklch(15.000% 0.02052 262.613)",
+          "oklch(26.429% 0.02052 262.613)",
+          "oklch(37.857% 0.02052 262.613)",
+          "oklch(49.286% 0.02052 262.613)",
+          "oklch(60.714% 0.02052 262.613)",
+          "oklch(72.143% 0.02052 262.613)",
+          "oklch(83.571% 0.02052 262.613)",
+          "oklch(95.000% 0.02052 262.613)"
+        ]
+      },
+      "dim-text": {
+        "role": "neutral",
+        "displayName": "Dim Text",
+        "tonalRamp": [
+          "oklch(15.000% 0.00932 258.338)",
+          "oklch(26.429% 0.00932 258.338)",
+          "oklch(37.857% 0.00932 258.338)",
+          "oklch(49.286% 0.00932 258.338)",
+          "oklch(60.714% 0.00932 258.338)",
+          "oklch(72.143% 0.00932 258.338)",
+          "oklch(83.571% 0.00932 258.338)",
+          "oklch(95.000% 0.00932 258.338)"
+        ]
+      },
+      "dim-dim": {
+        "role": "neutral",
+        "displayName": "Dim Dim",
+        "tonalRamp": [
+          "oklch(15.000% 0.01950 258.362)",
+          "oklch(26.429% 0.01950 258.362)",
+          "oklch(37.857% 0.01950 258.362)",
+          "oklch(49.286% 0.01950 258.362)",
+          "oklch(60.714% 0.01950 258.362)",
+          "oklch(72.143% 0.01950 258.362)",
+          "oklch(83.571% 0.01950 258.362)",
+          "oklch(95.000% 0.01950 258.362)"
+        ]
+      },
+      "dim-faint": {
+        "role": "neutral",
+        "displayName": "Dim Faint",
+        "tonalRamp": [
+          "oklch(15.000% 0.01958 261.319)",
+          "oklch(26.429% 0.01958 261.319)",
+          "oklch(37.857% 0.01958 261.319)",
+          "oklch(49.286% 0.01958 261.319)",
+          "oklch(60.714% 0.01958 261.319)",
+          "oklch(72.143% 0.01958 261.319)",
+          "oklch(83.571% 0.01958 261.319)",
+          "oklch(95.000% 0.01958 261.319)"
+        ]
+      },
+      "dim-ok": {
+        "role": "semantic",
+        "displayName": "Dim Ok",
+        "tonalRamp": [
+          "oklch(15.000% 0.01950 258.362)",
+          "oklch(26.429% 0.01950 258.362)",
+          "oklch(37.857% 0.01950 258.362)",
+          "oklch(49.286% 0.01950 258.362)",
+          "oklch(60.714% 0.01950 258.362)",
+          "oklch(72.143% 0.01950 258.362)",
+          "oklch(83.571% 0.01950 258.362)",
+          "oklch(95.000% 0.01950 258.362)"
+        ]
       }
     },
     "shadows": [
@@ -740,16 +1076,35 @@
       "builtIn": [
         {
           "name": "dish-dark",
+          "label": "Grafite",
           "appearance": "dark",
-          "canonical": true
+          "canonical": true,
+          "overrides": "todos os papéis"
         },
         {
           "name": "dish-light",
-          "appearance": "light"
+          "label": "Papel frio",
+          "appearance": "light",
+          "overrides": "todos os papéis (re-derivação clara)"
+        },
+        {
+          "name": "dish-paper",
+          "label": "Papel quente",
+          "appearance": "light",
+          "base": "dish-light",
+          "overrides": "neutros (`paper-*`)"
+        },
+        {
+          "name": "dish-dim",
+          "label": "Grafite baixo",
+          "appearance": "dark",
+          "base": "dish-dark",
+          "overrides": "neutros (`dim-*`)"
         }
       ],
-      "mapping": "Cada token escuro sem prefixo tem um par `light-*` (por exemplo `surface-2` e `light-surface-2`).",
-      "derivation": "O tema claro re-deriva cada papel para superfícies claras; a rampa de esforço mantém o matiz do Pi e desce a luminosidade até 4.5:1 sobre o branco. Os testes de ΔE e contraste correm sobre os dois temas.",
+      "mapping": "Cada token canônico tem pares `light-*`, `paper-*` e `dim-*` (por exemplo `surface-2`, `light-surface-2`, `paper-surface-2`).",
+      "derivation": "O tema claro e os presets re-derivam os neutros para as suas superfícies; a rampa de esforço mantém o matiz do Pi. No claro ela desce a luminosidade até 4.5:1 sobre o branco; nos presets ela vem inteira do tema base. Os testes de ΔE e contraste correm sobre o catálogo embutido inteiro.",
+      "userThemes": "Arquivos em $XDG_CONFIG_HOME/dish/themes/*.json entram no mesmo catálogo; chave ausente cai no tema base da `appearance`. Formato em docs/themes.md.",
       "switch": "A aparência é resolvida a cada render: trocar de tema, incluindo seguir o desktop, é imediato e não reinicia o app."
     }
   },
@@ -813,14 +1168,14 @@
   ],
   "narrative": {
     "northStar": "The Graphite Instrument Panel",
-    "overview": "Dish is quiet, precise, and restrained. Graphite layers organize the workspace, compact controls expose agent activity, and readable answers take priority over decoration. The interface feels refined and restrained: compact controls, a roomy composer, and recessed technical detail.\n\nThe system is a value, not a stylesheet: dark and light are two derivations of the same rules, resolved at render time. This is a record of the existing Rust/GPUI desktop implementation, not a redesign or a web theme. `src/theme.rs` is the implementation authority for shared tokens; component sources own their local exceptions. Browser-preview snippets in `.impeccable/design.json` illustrate native patterns but are not production components. This documentation was extracted from source, not validated against a fresh rendered capture.",
+    "overview": "Dish is quiet, precise, and restrained. Graphite layers organize the workspace, compact controls expose agent activity, and readable answers take priority over decoration. The interface feels refined and restrained: compact controls, a roomy composer, and recessed technical detail.\n\nThe system is a value, not a stylesheet: dark, light and two presets (warm light, low-contrast dark) are derivations of the same rules, resolved at render time. This is a record of the existing Rust/GPUI desktop implementation, not a redesign or a web theme. `src/theme.rs` is the implementation authority for shared tokens; component sources own their local exceptions. Browser-preview snippets in `.impeccable/design.json` illustrate native patterns but are not production components. This documentation was extracted from source, not validated against a fresh rendered capture.",
     "keyCharacteristics": [
       "Graphite neutrals separated by tone and hairlines.",
       "A Pi effort ladder independent of operational status.",
       "Readable proportional prose and monospace technical content.",
       "Flat surfaces at rest; structural shadows for floating UI.",
       "Compact controls, progressive disclosure, and distinct send/stop actions.",
-      "Two built-in themes (dark and light) driven by one token vocabulary; the effort ladder keeps Pi's hues and is re-derived for light."
+      "Four built-in themes sharing one token vocabulary: Grafite, Papel frio, Papel quente and Grafite baixo; the effort ladder keeps Pi's hues and is re-derived for light."
     ],
     "rules": [
       {
@@ -851,7 +1206,8 @@
       "**Do** retain independent send and stop controls.",
       "**Do** pair consequential status colors with words or recognizable icons.",
       "**Do** preserve tonal depth, hairline boundaries, and visible keyboard focus cues.",
-      "**Do** verify contrast and status separation in both themes, not just the default."
+      "**Do** verify contrast and status separation in every theme, not just the default.",
+      "**Do** keep presets and user themes re-deriving the documented roles; a new role starts in `src/theme.rs` and this document, never in a theme file."
     ],
     "donts": [
       "**Don't** turn every section into a raised or shadowed card.",

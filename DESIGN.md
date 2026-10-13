@@ -53,6 +53,31 @@ colors:
   light-attention: "#187237"
   light-git-added: "#2f6f38"
   light-git-removed: "#a83c3c"
+  # Presets: re-derivam só os neutros e herdam semânticos e rampa do base.
+  paper-bg: "#f5f1e7"
+  paper-surface: "#faf7f0"
+  paper-surface-2: "#fffdf9"
+  paper-inset: "#eae4d6"
+  paper-hover: "#efeadd"
+  paper-line: "#ddd5c3"
+  paper-line-soft: "#e8e1d2"
+  paper-line-strong: "#ccc3ae"
+  paper-text: "#27231a"
+  paper-dim: "#47402f"
+  paper-faint: "#625a47"
+  paper-ok: "#47402f"
+  dim-bg: "#17191e"
+  dim-surface: "#1c1f25"
+  dim-surface-2: "#23272e"
+  dim-inset: "#131519"
+  dim-hover: "#282d35"
+  dim-line: "#2e333c"
+  dim-line-soft: "#262a32"
+  dim-line-strong: "#3b414c"
+  dim-text: "#d3d7dd"
+  dim-dim: "#a4acb8"
+  dim-faint: "#8b929e"
+  dim-ok: "#a4acb8"
 typography:
   title:
     fontFamily: Roboto
@@ -159,7 +184,7 @@ The system is a value, not a stylesheet: `Theme` carries every token below, the 
 
 ## Colors
 
-Graphite neutrals form the workspace; the Pi effort ladder and independent activity/status signals carry meaning. Two built-in themes share this vocabulary: `dish-dark` holds the canonical values above, and `dish-light` carries the `light-*` counterparts. Appearance is a user preference (`system`, `dark`, or `light`) resolved on every render, so switching themes — including following the desktop — never restarts the app.
+Graphite neutrals form the workspace; the Pi effort ladder and independent activity/status signals carry meaning. Four built-in themes share this vocabulary: `dish-dark` holds the canonical values above, `dish-light` carries the `light-*` counterparts, and the presets `dish-paper` (`paper-*`) and `dish-dim` (`dim-*`) re-derive the neutrals. Appearance is a user preference (`system`, `dark`, or `light`, plus an explicit theme) resolved on every render, so switching themes — including following the desktop — never restarts the app.
 
 ### Primary
 
@@ -167,7 +192,7 @@ The primary accent is dynamic, not a fixed brand color. `effort-off`, `effort-mi
 
 Use the active effort color for composer focus, selected navigation edges, command selection, reasoning controls, and supported accent actions. `accent_edge()` applies 42% opacity; `accent_hover()` moves the accent away from the current background (lighter on dark, darker on light). These are computed states, not additional fixed palette tokens.
 
-`dish-light` keeps each level's hue and lowers its lightness until the level reads at 4.5:1 on white: the light ladder is a documented derivation of the same ramp, not a second set of meanings.
+`dish-light` keeps each level's hue and lowers its lightness until the level reads at 4.5:1 on white: the light ladder is a documented derivation of the same ramp, not a second set of meanings. Both presets inherit the ramp of the theme they derive from, so the ladder never drifts from the base.
 
 ### Neutral
 
@@ -180,6 +205,12 @@ Use the active effort color for composer focus, selected navigation edges, comma
 - `text`, `dim`, `faint`: primary reading text, secondary controls, and metadata.
 - `on-accent`: foreground on accent-filled controls (the dark backdrop in dark, white in light).
 - Success deliberately reuses `dim`; the light theme darkens it instead of reusing the dark value.
+
+### Presets
+
+Presets change only the neutrals. `dish-paper` is a warm light theme for bright rooms; `dish-dim` lifts the dark surfaces and softens the text for a lower-contrast dark — still above the 4.5:1 floor the tests enforce, not below it. Their `on-accent`, status signals and effort ladder come from `dish-light` and `dish-dark` respectively, so a preset can never invalidate the status separation.
+
+Themes created by users (`docs/themes.md`) follow the same rule: declare the roles you want, inherit the rest from the `dark` or `light` base. They appear in the same picker as the built-ins.
 
 ### Independent Status Signals
 
@@ -292,6 +323,7 @@ Collapsed navigation retains compact markers and contextual tooltips. Keep unrea
 - **Do** retain independent send and stop controls.
 - **Do** pair consequential status colors with words or recognizable icons.
 - **Do** preserve tonal depth, hairline boundaries, and visible keyboard focus cues.
+- **Do** keep presets and user themes re-deriving the documented roles; a new role starts in `src/theme.rs` and this document, never in a theme file.
 
 ### Don't:
 - **Don't** turn every section into a raised or shadowed card.
@@ -299,3 +331,4 @@ Collapsed navigation retains compact markers and contextual tooltips. Keep unrea
 - **Don't** replace proportional answer text with blanket monospace styling.
 - **Don't** infer a mobile layout, universal focus treatment, or accessibility certification from this record.
 - **Don't** reintroduce effort-colored transcript spines or an effort-filled send button based on outdated README descriptions.
+- **Don't** hardcode a hex value in a component or assume the dark surface ordering holds in light or in a preset.
