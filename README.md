@@ -14,15 +14,34 @@ dish [pi-flags] [path] [prompt...]
 
 ## Release status
 
-Dish is pre-release software. The initial release target is **Linux x86_64**;
-Windows and macOS are not currently supported or validated. Sessions and tools
-can modify project files, so review agent actions and keep backups. Prebuilt
-Linux previews are published as a Debian/Ubuntu package (`.deb`) and a portable
-`.tar.gz` on the releases page.
+Dish is pre-release software. Linux x86_64 is the primary target, and a Windows
+x86_64 preview installer (`.exe`) is published alongside each Linux preview;
+macOS is not supported or validated. Sessions and tools can modify project
+files, so review agent actions and keep backups.
 
-Linux candidate packaging and validation are documented in
-[docs/releasing.md](docs/releasing.md). The GitHub workflow saves candidate
-artifacts only; it does not publish Releases automatically.
+Prebuilt Linux previews are published as a Debian/Ubuntu package (`.deb`) and a
+portable `.tar.gz`. The Windows preview is a per-user NSIS installer that needs
+no administrator rights, registers its own uninstaller and offers the official
+Pi installer when Pi is missing. Every asset carries a SHA-256 checksum beside
+it.
+
+The Windows build is validated by CI on GitHub's `windows-latest` runner only —
+there is no real-desktop testing yet. Linux candidate packaging and validation
+are documented in [docs/releasing.md](docs/releasing.md). The GitHub workflows
+save candidate artifacts on every push; Release assets are attached only when a
+Release is published, never automatically from a push.
+
+### Download
+
+Packages and installers are on the
+[releases page](https://github.com/cleisonsantos/dish/releases). On Windows,
+download `dish-<version>-windows-x86_64-setup.exe` and compare its hash with the
+`.sha256` file published next to it (PowerShell prints uppercase; compare
+case-insensitively):
+
+```powershell
+Get-FileHash .\dish-<version>-windows-x86_64-setup.exe -Algorithm SHA256
+```
 
 ## Quick start
 

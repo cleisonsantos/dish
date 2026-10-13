@@ -111,6 +111,15 @@ dependency texts, the hash-pinned overrides and native notices, the Rust
 toolchain notices and the MPL source archive. A missing license entry stops the
 build, on every platform. macOS packaging must use the same module.
 
+When a GitHub Release is published, `.github/workflows/windows.yml` rebuilds the
+installer in that run and attaches it plus its `.sha256` sidecar through
+`gh release upload`. Pushing a branch or a tag publishes nothing; it only saves
+short-lived Actions artifacts. The publish job refuses an installer whose
+version does not match the release tag, verifies the checksum sidecar, and never
+overwrites an existing asset (`--clobber` is deliberately absent), so a wrong or
+replaced build fails closed. Publishing Windows assets is therefore a human
+decision, made by creating the Release.
+
 ## GitHub CI
 
 `.github/workflows/ci.yml` builds on Ubuntu 24.04, runs strict Clippy and unit
@@ -120,6 +129,12 @@ named `dish-pi` so it never disputes the `dish` package Debian ships), then
 saves both as short-lived Actions artifacts. It has read-only
 repository permissions and no release-publication step. The configured alpha
 version label must be updated when Cargo.toml's base version changes.
+
+`.github/workflows/windows.yml` does the same for Windows: strict Clippy, a
+release build, a GUI-subsystem check on `dish.exe`, and the NSIS installer with
+the same license bundle. Both workflows keep `contents: read` as the default;
+only the Windows `publish` job, gated on `release: published`, is granted
+`contents: write` to attach the installer to that Release.
 
 Only use a tested CI-built archive for an official release, not a locally built
 binary with a newer glibc requirement. Inspect its `BUILD.json`, dynamic library

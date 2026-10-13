@@ -189,6 +189,34 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn('File /r "${SRCDIR}\\dist\\windows-payload\\licenses"', nsi)
         self.assertIn('RMDir /r "$INSTDIR\\licenses"', nsi)
 
+    def test_installer_is_published_only_for_a_release(self):
+        workflow = (ROOT / ".github/workflows/windows.yml").read_text(encoding="utf-8")
+        # O gatilho é publicar o Release; um push (mesmo de tag) não publica.
+        self.assertIn("  release:\n    types: [published]", workflow)
+        self.assertIn("if: github.event_name == 'release'", workflow)
+        self.assertIn("gh release upload", workflow)
+        # Asset publicado não é substituído (imutabilidade).
+        for line in workflow.splitlines():
+            if "gh release upload" in line:
+                self.assertNotIn("--clobber", line)
+
+    def test_write_permission_belongs_only_to_the_upload_job(self):
+        workflow = (ROOT / ".github/workflows/windows.yml").read_text(encoding="utf-8")
+        top, jobs = workflow.split("jobs:", 1)
+        build, publish = jobs.split("  publish:\n", 1)
+        self.assertIn("permissions:\n  contents: read", top)
+        self.assertNotIn("contents: write", build)
+        self.assertIn("contents: write", publish)
+
+    def test_release_refuses_an_installer_that_does_not_match_the_tag(self):
+        workflow = (ROOT / ".github/workflows/windows.yml").read_text(encoding="utf-8")
+        publish = workflow.split("  publish:\n", 1)[1]
+        self.assertIn("${version%-windows-x86_64-setup.exe}", publish)
+        self.assertIn("GITHUB_REF_NAME", publish)
+        self.assertIn("sha256sum -c", publish)
+        # O artifact precisa carregar o checksum junto do instalador.
+        self.assertIn("dist/*-windows-x86_64-setup.exe.sha256", workflow)
+
     def test_published_crate_without_license_files_uses_standard_texts(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
