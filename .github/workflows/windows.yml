@@ -3,6 +3,10 @@ name: Windows build
 on:
   push:
   workflow_dispatch:
+  # Publicar o Release é a única ação que anexa os assets do Windows. Um push
+  # (inclusive de tag) só produz artifacts do Actions.
+  release:
+    types: [published]
 
 permissions:
   contents: read
@@ -96,6 +100,50 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dish-windows-installer
-          path: dist/*-windows-x86_64-setup.exe
+          path: |
+            dist/*-windows-x86_64-setup.exe
+            dist/*-windows-x86_64-setup.exe.sha256
           if-no-files-found: error
           retention-days: 14
+
+  publish:
+    # Só o evento de Release publica. Push e workflow_dispatch continuam
+    # salvando artifacts, para revisão, sem tocar em nenhum Release.
+    if: github.event_name == 'release'
+    needs: windows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      # O workflow é somente leitura; escrever no Release é privilégio deste job.
+      contents: write
+    steps:
+      - name: Download the installer built in this run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: dish-windows-installer
+          path: dist-win
+      - name: Check that the installer matches the release tag
+        run: |
+          set -euo pipefail
+          installer="$(find dist-win -maxdepth 1 -name 'dish-*-windows-x86_64-setup.exe' -print -quit)"
+          if [ -z "$installer" ]; then
+            echo 'O artifact não contém o instalador do Windows.' >&2
+            exit 1
+          fi
+          asset="$(basename "$installer")"
+          version="${asset#dish-}"
+          version="${version%-windows-x86_64-setup.exe}"
+          # O rótulo do build vem do ci.yml; o Release precisa ser a tag v<versão>.
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Instalador $version não corresponde ao release $GITHUB_REF_NAME." >&2
+            exit 1
+          fi
+          (cd dist-win && sha256sum -c "$asset.sha256")
+          printf 'ASSET=%s\n' "$asset" >> "$GITHUB_ENV"
+      - name: Attach the installer to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # Sem --clobber: asset publicado não é substituído (imutabilidade).
+          gh release upload "$GITHUB_REF_NAME" "dist-win/$ASSET" "dist-win/$ASSET.sha256"
