@@ -211,7 +211,10 @@ shortcuts do not act on the background while settings is open.
 
 Provider login is managed by Pi itself: open Pi in a terminal and use `/login`.
 Dish uses the credentials already configured in Pi and provides no integrated
-provider login or logout.
+provider login or logout. The read-only probe that tells Dish which providers
+exist — including the ones without a credential — and where each credential
+comes from is specified in [docs/provider-auth.md](docs/provider-auth.md); it
+never reads or prints a credential value.
 
 Application settings expose the existing details/navigation visibility and
 expanded-thinking preferences. These use the existing Dish preferences store,

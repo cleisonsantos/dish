@@ -1,0 +1,6 @@
+{
+  "name": "@earendil-works/pi-coding-agent",
+  "version": "0.0.0-fixture",
+  "type": "module",
+  "exports": { ".": { "import": "./dist/index.js" } }
+}
