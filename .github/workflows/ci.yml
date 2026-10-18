@@ -17,7 +17,7 @@ jobs:
       - name: Install Linux build and UI test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev libvulkan-dev libfontconfig-dev libfreetype-dev libssl-dev libegl1 libgl1-mesa-dri libvulkan1 mesa-vulkan-drivers binutils python3 xvfb xauth libxtst6 xclip tesseract-ocr imagemagick fonts-dejavu-core
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev libvulkan-dev libfontconfig-dev libfreetype-dev libssl-dev libegl1 libgl1-mesa-dri libvulkan1 mesa-vulkan-drivers binutils python3 nodejs xvfb xauth libxtst6 xclip tesseract-ocr imagemagick fonts-dejavu-core
       - name: Install Rust
         id: rust
         run: |
@@ -44,6 +44,9 @@ jobs:
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Release tooling tests
         run: python3 -m unittest discover -s tests -p 'test_release_package.py' -v
+      - name: Provider adapter contract
+        # Roda contra o SDK falso: sem Pi, sem rede e sem credencial real.
+        run: python3 -m unittest discover -s tests -p 'test_provider_adapter.py' -v
       - name: Build and package candidate (with path remapping and license checks)
         run: python3 scripts/package-linux.py --version 0.1.0-alpha.4
       - name: Build Debian package from the verified candidate
