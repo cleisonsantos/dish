@@ -6,6 +6,7 @@ import os
 import re
 from pathlib import Path
 import shutil
+import struct
 import subprocess
 import tempfile
 import tarfile
@@ -292,6 +293,56 @@ class WindowsPackagingTests(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("dpkg-deb") and shutil.which("dpkg-query") and shutil.which("readelf"),
                      "Debian packaging tools (dpkg-deb, dpkg-query, readelf)")
+class IconAssetTests(unittest.TestCase):
+    """O prato é um só: cada formato de ícone vem da mesma renderização."""
+
+    def ico_entries(self, data: bytes) -> list[tuple[int, bytes]]:
+        reserved, kind, count = struct.unpack("<HHH", data[:6])
+        self.assertEqual((reserved, kind), (0, 1))
+        entries = []
+        end = 0
+        for index in range(count):
+            width, height, _, _, _, depth, size, offset = struct.unpack(
+                "<BBBBHHII", data[6 + 16 * index:22 + 16 * index])
+            self.assertEqual(depth, 32)
+            payload = data[offset:offset + size]
+            self.assertEqual(len(payload), size)
+            end = max(end, offset + size)
+            entries.append((width or 256, payload))
+        # Nenhum byte sobrando depois do último payload.
+        self.assertEqual(end, len(data))
+        return entries
+
+    def test_ico_covers_the_shell_sizes_with_png_payloads(self):
+        data = (ROOT / "assets/dish-icon.ico").read_bytes()
+        entries = self.ico_entries(data)
+        self.assertEqual([size for size, _ in entries], [16, 32, 48, 64, 128, 256])
+        for size, payload in entries:
+            self.assertEqual(payload[:8], b"\x89PNG\r\n\x1a\n", size)
+
+    def test_icns_has_the_modern_element_set(self):
+        data = (ROOT / "assets/dish-icon.icns").read_bytes()
+        self.assertEqual(data[:4], b"icns")
+        self.assertEqual(struct.unpack(">I", data[4:8])[0], len(data))
+        elements = {}
+        offset = 8
+        while offset < len(data):
+            kind = data[offset:offset + 4].decode("ascii")
+            size = struct.unpack(">I", data[offset + 4:offset + 8])[0]
+            self.assertEqual(data[offset + 8:offset + 16], b"\x89PNG\r\n\x1a\n", kind)
+            elements[kind] = size
+            offset += size
+        self.assertEqual(offset, len(data))
+        self.assertEqual(set(elements), {
+            "ic07", "ic08", "ic09", "ic10", "ic11", "ic12", "ic13", "ic14"})
+
+    def test_build_script_owns_both_formats(self):
+        script = (ROOT / "assets/build-icon.py").read_text(encoding="utf-8")
+        self.assertIn('write_ico(here / "dish-icon.ico"', script)
+        self.assertIn('write_icns(', script)
+        self.assertIn('here / "dish-icon.icns"', script)
+
+
 class DebianPackageTests(unittest.TestCase):
     def test_debian_version_mapping_sorts_prereleases_below_releases(self):
         self.assertEqual(deb.debian_version("0.1.0-alpha.1"), "0.1.0~alpha.1")
