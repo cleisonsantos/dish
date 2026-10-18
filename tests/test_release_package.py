@@ -122,18 +122,58 @@ class InstallerTests(unittest.TestCase):
             pi.parent.mkdir(parents=True)
             pi.write_text("pi installation")
             env = dict(os.environ, HOME=str(home), XDG_DATA_HOME=str(data))
-            subprocess.run(["bash", str(app / "install.sh")], env=env, check=True, capture_output=True)
+            installed = subprocess.run(["bash", str(app / "install.sh")], env=env,
+                                      check=True, capture_output=True, stdin=subprocess.DEVNULL)
+            # Sem terminal o script instala direto, sem menu.
+            self.assertIn("Sem terminal interativo", installed.stdout.decode())
             self.assertTrue((home / ".local/bin/dish").is_file())
             self.assertTrue((data / "dish/licenses/LICENSE").is_file())
             desktop = (data / "applications/dish.desktop").read_text()
             for escaped in [r"\$", "%%", r'\"', r"\`", r"\\\\"]:
                 self.assertIn(escaped, desktop)
-            subprocess.run(["bash", str(app / "uninstall.sh")], env=env, check=True, capture_output=True)
+            subprocess.run(["bash", str(app / "uninstall.sh")], env=env,
+                           check=True, capture_output=True, stdin=subprocess.DEVNULL)
             self.assertFalse((home / ".local/bin/dish").exists())
             self.assertFalse((data / "applications/dish.desktop").exists())
             self.assertFalse((data / "dish/licenses").exists())
             self.assertTrue(prefs.is_file())
             self.assertTrue(pi.is_file())
+
+    def test_install_script_uninstall_option_needs_no_payload(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            app = root / "package"
+            app.mkdir()
+            for source, target in [("install-release.sh", "install.sh"), ("uninstall-release.sh", "uninstall.sh")]:
+                shutil.copyfile(ROOT / "scripts" / source, app / target)
+            home, data = root / "home", root / "data"
+            (home / ".local/bin").mkdir(parents=True)
+            (home / ".local/bin/dish").write_text("installed")
+            (data / "applications").mkdir(parents=True)
+            (data / "applications/dish.desktop").write_text("[Desktop Entry]")
+            env = dict(os.environ, HOME=str(home), XDG_DATA_HOME=str(data))
+            # Sem bin/ no pacote: desinstalar não depende do payload.
+            subprocess.run(["bash", str(app / "install.sh"), "uninstall"], env=env,
+                           check=True, capture_output=True, stdin=subprocess.DEVNULL)
+            self.assertFalse((home / ".local/bin/dish").exists())
+            self.assertFalse((data / "applications/dish.desktop").exists())
+
+    def test_install_script_rejects_unknown_options(self):
+        result = subprocess.run(["bash", str(ROOT / "scripts/install-release.sh"), "--turbo"],
+                                capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("Uso:", result.stderr)
+
+    def test_install_script_help_changes_nothing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp) / "home"
+            home.mkdir()
+            env = dict(os.environ, HOME=str(home), XDG_DATA_HOME=str(Path(temp) / "data"))
+            result = subprocess.run(["bash", str(ROOT / "scripts/install-release.sh"), "--help"],
+                                    env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+            self.assertEqual(result.returncode, 0)
+            self.assertIn("Uso:", result.stdout)
+            self.assertFalse((home / ".local/bin").exists())
 
 
 @unittest.skipUnless(os.environ.get("DISH_TEST_ARCHIVE"), "Set DISH_TEST_ARCHIVE to test a real candidate")
@@ -165,10 +205,12 @@ class CandidateArchiveTests(unittest.TestCase):
             home, data = root / "home", root / "data"
             home.mkdir()
             env = dict(os.environ, HOME=str(home), XDG_DATA_HOME=str(data))
-            subprocess.run(["bash", str(app / "install.sh")], env=env, check=True, capture_output=True)
+            subprocess.run(["bash", str(app / "install.sh")], env=env, check=True,
+                           capture_output=True, stdin=subprocess.DEVNULL)
             self.assertEqual(package.sha256(home / ".local/bin/dish"), package.sha256(app / "bin/dish"))
             self.assertTrue((data / "dish/licenses/sources" / mpl["source_archive"]).is_file())
-            subprocess.run(["bash", str(app / "uninstall.sh")], env=env, check=True, capture_output=True)
+            subprocess.run(["bash", str(app / "uninstall.sh")], env=env, check=True,
+                           capture_output=True, stdin=subprocess.DEVNULL)
             self.assertFalse((home / ".local/bin/dish").exists())
 
 
