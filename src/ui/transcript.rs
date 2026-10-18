@@ -791,8 +791,7 @@ fn tool_row(
             crate::metadata::describe(None, &card.timing),
             |el, metadata| {
                 el.child(super::metadata_view::MetadataView {
-                    id: SharedString::from(format!("tool-metadata-{message_index}-{block_index}"))
-                        .into(),
+                    id: tool_metadata_key(card).into(),
                     metadata,
                 })
             },
@@ -886,11 +885,11 @@ fn command_row(
                 .when_some(
                     crate::metadata::describe(None, &card.timing),
                     |el, metadata| {
+                        // A mensagem de bash ocupa um bloco próprio e não é
+                        // reconstruída durante o turno; o índice da mensagem
+                        // identifica o cartão.
                         el.child(super::metadata_view::MetadataView {
-                            id: SharedString::from(format!(
-                                "bash-metadata-{message_index}-{block_index}"
-                            ))
-                            .into(),
+                            id: SharedString::from(format!("bash-metadata-{message_index}")).into(),
                             metadata,
                         })
                     },
@@ -1090,11 +1089,37 @@ fn note(label: &str, text: &str, color: Hsla) -> AnyElement {
         .into_any_element()
 }
 
+/// Element id of a tool card's metadata block.
+///
+/// The transcript rebuilds a streaming assistant message from the authoritative
+/// `message_end` payload, and that rebuild drops empty text and redacted
+/// reasoning blocks, so a tool card can move to a lower block index while the
+/// turn is still arriving. Keying the expanded state by position lost it in the
+/// middle of a gesture (#65): the card stayed open but its observed-duration
+/// block never came back. The tool call id is stable for the life of the card,
+/// so the key is derived from it and never from the position in the list.
+fn tool_metadata_key(card: &ToolCard) -> SharedString {
+    SharedString::from(format!("tool-metadata-{}", card.id))
+}
+
 #[cfg(test)]
 mod copy_tests {
-    use super::{group_status, tool_copy_text};
+    use super::{group_status, tool_copy_text, tool_metadata_key};
+    use crate::state::ToolCard;
     use crate::ui::icons::Icon;
     use serde_json::json;
+
+    #[test]
+    fn tool_metadata_key_is_stable_across_a_block_reindex() {
+        let card = ToolCard::new("call-7".into(), "bash".into());
+        assert_eq!(tool_metadata_key(&card).to_string(), "tool-metadata-call-7");
+        // O mesmo cartão num índice diferente é o mesmo cartão: a chave não muda.
+        let reindexed = card.clone();
+        assert_eq!(tool_metadata_key(&card), tool_metadata_key(&reindexed));
+        // Chamadas diferentes não compartilham estado expandido.
+        let other = ToolCard::new("call-8".into(), "bash".into());
+        assert_ne!(tool_metadata_key(&card), tool_metadata_key(&other));
+    }
 
     #[test]
     fn unstarted_or_cancelled_tools_are_not_reported_as_success() {

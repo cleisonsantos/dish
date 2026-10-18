@@ -284,11 +284,15 @@ assets/
   dish-icon.svg       generated SVG copy for the app
   dish-mark.svg       generated SVG copy of the same plate
   dish-icon.png       generated 512px system icon
-  build-icon.py       copies the SVG and renders the PNG using rsvg-convert
+  dish-icon.ico       generated Windows icon, 16–256px
+  dish-icon.icns      generated macOS icon, the ic07–ic14 set
+  build-icon.py       renders every derived icon from the SVG using rsvg-convert
 ```
 
-Regenerate with `python3 assets/build-icon.py` (requires `rsvg-convert`).
-The local installer uses `dish-icon.png` for the application launcher.
+Regenerate with `python3 assets/build-icon.py` (requires `rsvg-convert`); the
+`.ico` and `.icns` are packed from the same renders as the PNG, so the plate
+cannot drift between platforms. The local installer uses `dish-icon.png` for the
+application launcher, and the Windows build embeds `dish-icon.ico`.
 
 ## Architecture
 

@@ -1505,7 +1505,7 @@ impl Workspace {
                                             )
                                             .when(running, |el| {
                                                 el.child(div().truncate().text_size(px(theme::TEXT_XS)).text_color(theme::dim())
-                                                    .child(SharedString::from(live.and_then(|i| self.conversations[i].state.read(cx).activity.clone()).unwrap_or_default().replace("Thinking…", "Pensando…").replace("Compacting…", "Compactando…"))))
+                                                    .child(SharedString::from(live.and_then(|i| self.conversations[i].state.read(cx).activity.clone()).unwrap_or_default())))
                                             }),
                                     )
                                     .when_some(live_index, |el, index| {
