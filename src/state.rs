@@ -54,7 +54,7 @@ pub struct ToolCard {
 }
 
 impl ToolCard {
-    fn new(id: String, name: String) -> Self {
+    pub(crate) fn new(id: String, name: String) -> Self {
         Self {
             id,
             name,
