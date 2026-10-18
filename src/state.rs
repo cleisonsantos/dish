@@ -685,12 +685,12 @@ impl AppState {
                 self.banner = None;
                 self.run_error_in_transcript = false;
                 self.streaming = true;
-                self.activity = Some("Thinking…".into());
+                self.activity = Some("Pensando…".into());
                 None
             }
             "turn_start" => {
                 self.streaming = true;
-                self.activity = Some("Thinking…".into());
+                self.activity = Some("Pensando…".into());
                 None
             }
             "agent_end" => {
@@ -766,10 +766,10 @@ impl AppState {
                     .and_then(Value::as_str)
                     .unwrap_or("manual");
                 self.banner = Some(Banner {
-                    text: format!("Compacting context ({reason})…"),
+                    text: format!("Compactando o contexto ({reason})…"),
                     tone: Tone::Info,
                 });
-                self.activity = Some("Compacting…".into());
+                self.activity = Some("Compactando…".into());
                 self.session.is_compacting = true;
                 None
             }
@@ -813,7 +813,7 @@ impl AppState {
                     .and_then(Value::as_str)
                     .unwrap_or("transient error");
                 self.banner = Some(Banner {
-                    text: format!("Retrying ({attempt}/{max}) — {message}"),
+                    text: format!("Tentando novamente ({attempt}/{max}) — {message}"),
                     tone: Tone::Warning,
                 });
                 None
@@ -828,7 +828,7 @@ impl AppState {
                         .and_then(Value::as_str)
                         .unwrap_or("request failed");
                     self.banner = Some(Banner {
-                        text: format!("Request failed: {error}"),
+                        text: format!("A solicitação falhou: {error}"),
                         tone: Tone::Error,
                     });
                 }
@@ -836,7 +836,7 @@ impl AppState {
             }
             "summarization_retry_scheduled" => {
                 self.banner = Some(Banner {
-                    text: "Retrying summarization…".into(),
+                    text: "Tentando resumir novamente…".into(),
                     tone: Tone::Warning,
                 });
                 None
@@ -1133,7 +1133,7 @@ impl AppState {
                 self.content_slots.clear();
                 let index = self.push_message(entry);
                 self.streaming_message = Some(index);
-                self.activity = Some("Thinking…".into());
+                self.activity = Some("Pensando…".into());
                 Some(index)
             }
             "bashExecution" => {
@@ -1181,14 +1181,14 @@ impl AppState {
                     .get("tokensBefore")
                     .and_then(Value::as_u64)
                     .unwrap_or(0);
-                Some(self.push_message(self.summary_message("Context compacted", summary, before, 0)))
+                Some(self.push_message(self.summary_message("Contexto compactado", summary, before, 0)))
             }
             "branchSummary" => {
                 let summary = message
                     .get("summary")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
-                Some(self.push_message(self.summary_message("Branch summary", summary, 0, 0)))
+                Some(self.push_message(self.summary_message("Resumo do branch", summary, 0, 0)))
             }
             "custom" => {
                 if message.get("display").and_then(Value::as_bool).unwrap_or(true) {
@@ -1478,14 +1478,14 @@ impl AppState {
                     .and_then(Value::as_str)
                     .unwrap_or_default();
                 let before = message.get("tokensBefore").and_then(Value::as_u64).unwrap_or(0);
-                Some(self.push_message(self.summary_message("Context compacted", summary, before, 0)))
+                Some(self.push_message(self.summary_message("Contexto compactado", summary, before, 0)))
             }
             "branchSummary" => {
                 let summary = message
                     .get("summary")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
-                Some(self.push_message(self.summary_message("Branch summary", summary, 0, 0)))
+                Some(self.push_message(self.summary_message("Resumo do branch", summary, 0, 0)))
             }
             _ => None,
         }
@@ -1621,7 +1621,7 @@ impl AppState {
                 card.started_at = card.timing.observed_start;
             }
         }
-        self.activity = Some(format!("Running {name}…"));
+        self.activity = Some(format!("Executando {name}…"));
         Some(message_index)
     }
 
@@ -1658,7 +1658,7 @@ impl AppState {
                 card.elapsed_ms = card.timing.elapsed_ms;
             }
         }
-        self.activity = Some("Thinking…".into());
+        self.activity = Some("Pensando…".into());
         Some(message_index)
     }
 
@@ -1966,7 +1966,7 @@ impl AppState {
                 self.steering_queue.push(display);
             } else {
                 self.streaming = true;
-                self.activity = Some("Thinking…".into());
+                self.activity = Some("Pensando…".into());
             }
             self.editor.update(cx, |editor, cx| editor.clear(cx));
             self.last_run = Some(std::time::SystemTime::now());
@@ -2026,7 +2026,7 @@ impl AppState {
             self.steering_queue.push(text);
         } else {
             self.streaming = true;
-            self.activity = Some("Thinking…".into());
+            self.activity = Some("Pensando…".into());
         }
         cx.notify();
     }
@@ -2049,7 +2049,7 @@ impl AppState {
                 }
                 self.client.send(command);
                 self.banner = Some(Banner {
-                    text: "Compacting context…".into(),
+                    text: "Compactando o contexto…".into(),
                     tone: Tone::Info,
                 });
                 true
@@ -2505,7 +2505,7 @@ impl AppState {
     pub fn compact(&mut self) {
         self.client.call("compact", Value::Null);
         self.banner = Some(Banner {
-            text: "Compacting context…".into(),
+            text: "Compactando o contexto…".into(),
             tone: Tone::Info,
         });
     }
