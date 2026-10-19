@@ -99,7 +99,13 @@ with tempfile.TemporaryDirectory(prefix="dish-appearance-") as temporary:
         wanted = order[label.casefold()]
         for _ in range(4):
             for line in ocr_lines():
-                words = [fields for fields in line if int(fields[6]) >= 840]
+                # A borda do segmento ativo vira "|" ou "{" na OCR: só palavras
+                # com letra entram na contagem, senão o índice desloca.
+                words = [
+                    fields for fields in line
+                    if int(fields[6]) >= 840
+                    and any(character.isalnum() for character in fields[11])
+                ]
                 words.sort(key=lambda fields: int(fields[6]))
                 if not words or not words[0][11].strip().casefold().startswith("sis"):
                     continue
