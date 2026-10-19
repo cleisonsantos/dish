@@ -120,10 +120,14 @@ fn find_installed() -> Option<PathBuf> {
 // Fixed script: no project path, credentials or user input is interpolated.
 const OFFICIAL_SCRIPT: &str = "curl -fsSL https://pi.dev/install.sh | sh; result=$?; printf '\\nInstalador finalizado (status %s). Volte ao Dish e clique em Tentar novamente.\\nPressione Enter para fechar.\\n' \"$result\"; read answer";
 
-fn launch_terminal(program: &Path, flag: &str) -> Result<()> {
+// O Dish não autentica: abre o Pi para a pessoa usar `/login`. Sem caminho,
+// sem credencial e sem entrada do usuário interpolados no script.
+const PI_LOGIN_SCRIPT: &str = "pi || printf '\\nNão foi possível iniciar o Pi. Verifique se ele está no PATH.\\n'; printf '\\nNo Pi, use /login para conectar um provedor. Pressione Enter para fechar.\\n'; read answer";
+
+fn launch_terminal(program: &Path, flag: &str, script: &str) -> Result<()> {
     let mut command = Command::new(program);
     command
-        .args([flag, "/bin/sh", "-c", OFFICIAL_SCRIPT])
+        .args([flag, "/bin/sh", "-c", script])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -135,10 +139,8 @@ fn launch_terminal(program: &Path, flag: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn launch_official_installer() -> Result<()> {
-    if !cfg!(target_os = "linux") {
-        bail!("Neste sistema, copie o comando oficial e execute-o em um terminal.");
-    }
+/// Executa um script nosso no primeiro terminal compatível encontrado.
+pub fn launch_script_in_terminal(script: &str) -> Result<()> {
     for (name, flag) in [
         ("x-terminal-emulator", "-e"),
         ("gnome-terminal", "--"),
@@ -149,12 +151,33 @@ pub fn launch_official_installer() -> Result<()> {
         ("xterm", "-e"),
     ] {
         if let Some(path) = find_on_path(name) {
-            if launch_terminal(&path, flag).is_ok() {
+            if launch_terminal(&path, flag, script).is_ok() {
                 return Ok(());
             }
         }
     }
-    bail!("Nenhum terminal compatível foi encontrado. Copie o comando oficial, execute-o em um terminal e tente novamente.");
+    bail!("Nenhum terminal compatível foi encontrado.");
+}
+
+/// Abre o Pi num terminal para a pessoa entrar com `/login`.
+///
+/// Enquanto o Dish não escreve credencial (#69, fase 3), este é o caminho
+/// honesto: o Pi conduz o OAuth e guarda o resultado, e o Dish só relê o estado.
+pub fn launch_pi_login() -> Result<()> {
+    if !cfg!(target_os = "linux") {
+        bail!("Neste sistema, abra o Pi em um terminal e use /login.");
+    }
+    launch_script_in_terminal(PI_LOGIN_SCRIPT)
+        .context("Não encontrei um terminal. Abra o Pi e use /login.")
+}
+
+pub fn launch_official_installer() -> Result<()> {
+    if !cfg!(target_os = "linux") {
+        bail!("Neste sistema, copie o comando oficial e execute-o em um terminal.");
+    }
+    launch_script_in_terminal(OFFICIAL_SCRIPT).context(
+        "Nenhum terminal compatível foi encontrado. Copie o comando oficial, execute-o em um terminal e tente novamente.",
+    )
 }
 
 // An executable just written by another thread/process can briefly return
@@ -445,7 +468,7 @@ chmod +x "$7/bin/pi""#,
             "terminal",
             &format!("printf '%s\\n' \"$@\" > '{}'", output.display()),
         );
-        launch_terminal(Path::new(&terminal), "-e").unwrap();
+        launch_terminal(Path::new(&terminal), "-e", OFFICIAL_SCRIPT).unwrap();
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             if let Ok(arguments) = std::fs::read_to_string(&output) {
@@ -456,6 +479,6 @@ chmod +x "$7/bin/pi""#,
             assert!(Instant::now() < deadline);
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert!(launch_terminal(&f.0.join("missing"), "-e").is_err());
+        assert!(launch_terminal(&f.0.join("missing"), "-e", OFFICIAL_SCRIPT).is_err());
     }
 }
