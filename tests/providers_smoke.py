@@ -84,27 +84,26 @@ class Harness:
                                        stderr=subprocess.DEVNULL).decode()
 
     def find_label(self, label):
-        """Centro do rótulo, ignorando acentos e quebras de linha do OCR."""
-        subprocess.run(["import", "-window", str(self.window), self.screenshot], check=True)
-        rows = subprocess.check_output(["tesseract", self.screenshot, "stdout", "--psm", "6", "tsv"],
-                                       stderr=subprocess.DEVNULL).decode().splitlines()[1:]
-        lines = {}
-        for row in rows:
-            fields = row.split("\t")
-            if len(fields) != 12 or not fields[11].strip():
-                continue
-            lines.setdefault(tuple(fields[1:5]), []).append(fields)
+        """Centro da primeira palavra que começa o rótulo.
+
+        A âncora é a palavra inicial, não a linha inteira: o OCR do CI já dividiu
+        "Voltar à lista" em duas linhas e leu o "à" como "&". Comparar acentos e
+        espaços para fora resolve as duas coisas, e é o que os outros smokes já
+        fazem (`click_word` em appearance_smoke).
+        """
         wanted = normalized(label)
-        for words in lines.values():
-            if wanted not in normalized(" ".join(word[11] for word in words)):
-                continue
-            # A linha pode conter o rótulo do estado antes do botão ("credencial
-            # salva ... Remover credencial"): a âncora é a palavra que começa o
-            # rótulo, não qualquer uma contida nele.
-            anchor = next((word for word in words if normalized(word[11]) and
-                           wanted.startswith(normalized(word[11]))), None)
-            anchor = anchor or next((word for word in words if normalized(word[11]) in wanted), words[0])
-            return (int(anchor[6]) + int(anchor[8]) // 2, int(anchor[7]) + int(anchor[9]) // 2)
+        for _ in range(4):
+            subprocess.run(["import", "-window", str(self.window), self.screenshot], check=True)
+            rows = subprocess.check_output(["tesseract", self.screenshot, "stdout", "--psm", "6", "tsv"],
+                                           stderr=subprocess.DEVNULL).decode().splitlines()[1:]
+            for row in rows:
+                fields = row.split("\t")
+                if len(fields) != 12:
+                    continue
+                word = normalized(fields[11])
+                if len(word) >= 4 and wanted.startswith(word):
+                    return (int(fields[6]) + int(fields[8]) // 2, int(fields[7]) + int(fields[9]) // 2)
+            time.sleep(0.4)
         return None
 
     def click(self, label):
