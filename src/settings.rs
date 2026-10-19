@@ -3,7 +3,7 @@ use gpui::{prelude::*, *};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy, PartialEq)]
-pub enum Section { App, Appearance, Models, Keys, About }
+pub enum Section { App, Appearance, Providers, Models, Keys, About }
 
 pub enum SettingsEvent {
     Closed,
@@ -25,6 +25,21 @@ pub enum SettingsEvent {
 }
 impl EventEmitter<SettingsEvent> for Settings {}
 
+/// Estado da consulta ao Pi sobre provedores.
+///
+/// A leitura é somente leitura e roda fora da thread da interface: enquanto
+/// responde, a tela diz que está consultando em vez de mostrar uma lista vazia
+/// que pareceria "nenhum provedor" (issue #69).
+#[derive(Clone)]
+enum ProvidersView {
+    /// Ainda não consultado nesta sessão.
+    Idle,
+    Loading,
+    Ready(crate::providers::Snapshot),
+    /// Sem Node, sem pacote do Pi ou consulta falhou.
+    Unavailable(String),
+}
+
 pub struct Settings {
     pub open: bool,
     section: Section,
@@ -41,6 +56,9 @@ pub struct Settings {
     /// `(provider, id)` de cada modelo que o Pi reportou.
     models: Vec<(String, String)>,
     hidden: BTreeSet<String>,
+    providers: ProvidersView,
+    /// Aviso da última ação na seção Provedores (ex.: nenhum terminal).
+    provider_notice: Option<String>,
 }
 
 /// O que a tela de configurações precisa mostrar quando abre.
@@ -66,6 +84,8 @@ impl Settings {
             appearance: AppearanceMode::System,
             theme: None,
             models: Vec::new(), hidden: BTreeSet::new(),
+            providers: ProvidersView::Idle,
+            provider_notice: None,
         }
     }
 
@@ -85,8 +105,36 @@ impl Settings {
         self.models = view.models;
         self.hidden = view.hidden;
         self.focus.focus(window, cx);
-        if section == Section::Keys { self.search.read(cx).focus_handle.clone().focus(window, cx); }
+        if section == Section::Keys { self.search.read(cx).focus_handle.clone().focus(window, cx); } else { self.focus.focus(window, cx); }
+        self.provider_notice = None;
+        if section == Section::Providers { self.refresh_providers(cx); }
         cx.notify();
+    }
+
+    /// Consulta o catálogo e o estado dos provedores no Pi.
+    ///
+    /// Uma consulta por vez: a tela pode ser reaberta enquanto a anterior
+    /// responde, e duas leituras concorrentes só gastariam processos.
+    pub fn refresh_providers(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.providers, ProvidersView::Loading) {
+            return;
+        }
+        self.providers = ProvidersView::Loading;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let probed = cx
+                .background_executor()
+                .spawn(async { crate::providers::probe() })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.providers = match probed {
+                    crate::providers::Probed::Ready(snapshot) => ProvidersView::Ready(snapshot),
+                    crate::providers::Probed::Unavailable(reason) => ProvidersView::Unavailable(reason),
+                };
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -115,6 +163,8 @@ impl Settings {
         self.open = false;
         self.previous_focus = None;
         self.search.update(cx, |editor, cx| editor.clear(cx));
+        // Reabrir a tela relê o estado: a credencial pode ter mudado no Pi.
+        self.providers = ProvidersView::Idle;
         cx.notify();
     }
 }
@@ -304,6 +354,15 @@ fn appearance_segment(
         .into_any_element()
 }
 
+/// "1 modelo" não é "1 modelos": a contagem aparece em toda linha.
+fn model_count(models: usize) -> String {
+    if models == 1 {
+        "1 modelo".to_string()
+    } else {
+        format!("{models} modelos")
+    }
+}
+
 /// Título de página: uma linha, sem rótulo de seção novo — é a mesma palavra
 /// do menu à esquerda.
 fn page_title(label: &str) -> Div {
@@ -323,6 +382,7 @@ impl Render for Settings {
         for (section, label, id) in [
             (Section::App, "Aplicativo", "settings-app"),
             (Section::Appearance, "Aparência", "settings-appearance"),
+            (Section::Providers, "Provedores", "settings-providers"),
             (Section::Models, "Modelos", "settings-models"),
             (Section::Keys, "Atalhos de teclado", "settings-keys"),
             (Section::About, "Sobre / Pi", "settings-about"),
@@ -331,6 +391,7 @@ impl Render for Settings {
                 this.section = section;
                 if section == Section::Keys { this.search.read(cx).focus_handle.clone().focus(window, cx); }
                 else { this.focus.focus(window, cx); }
+                if section == Section::Providers { this.refresh_providers(cx); }
                 cx.notify();
             })).when(self.section == section, |el| el
                 // A escolha na esquerda é neutra: o accent é do raciocínio,
@@ -442,6 +503,91 @@ impl Render for Settings {
                         )))
                         .child(note("Um arquivo .json por tema, lido quando o Dish abre (docs/themes.md).")),
                 );
+                page.into_any_element()
+            }
+            Section::Providers => {
+                let mut page = column().child(page_title("Provedores")).child(note(
+                    "O estado vem do Pi e é lido sem tocar no valor de nenhuma credencial. Conectar ou remover uma credencial continua sendo /login e /logout no Pi.",
+                ));
+                if let Some(notice) = self.provider_notice.clone() {
+                    page = page.child(note(&notice));
+                }
+                match self.providers.clone() {
+                    ProvidersView::Idle | ProvidersView::Loading => {
+                        page = page.child(note("Consultando o Pi…"));
+                    }
+                    ProvidersView::Unavailable(reason) => {
+                        page = page.child(note(&reason));
+                    }
+                    ProvidersView::Ready(snapshot) => {
+                        if snapshot.empty() {
+                            // Primeiro uso sem credencial: o Pi instalado não
+                            // basta, e o usuário precisa saber o que fazer agora.
+                            page = page.child(note(
+                                "Nenhum provedor conectado, então ainda não há modelo para conversar. O Dish abre o Pi no terminal: use /login lá e volte para verificar de novo.",
+                            ));
+                        }
+                        let mut providers = snapshot.providers.clone();
+                        providers.sort_by(|a, b| {
+                            b.configured.cmp(&a.configured).then_with(|| a.id.cmp(&b.id))
+                        });
+                        for provider in providers {
+                            // Uma linha por provedor: nome técnico, estado por
+                            // extenso e a origem da credencial quando existe.
+                            let status = if provider.configured {
+                                provider.source.map(|source| source.label()).unwrap_or("conectado")
+                            } else {
+                                "sem credencial"
+                            };
+                            page = page.child(
+                                div().flex().flex_row().items_center().gap(px(12.))
+                                    .px(px(12.)).py(px(8.)).rounded(theme::r_control())
+                                    .bg(theme::surface_2()).border_1().border_color(theme::line_soft())
+                                    .child(div().flex_1().min_w(px(0.)).truncate()
+                                        .font_family(theme::FONT_MONO).text_size(px(theme::TEXT_SM))
+                                        .text_color(if provider.configured { theme::text() } else { theme::faint() })
+                                        .child(SharedString::from(provider.id.clone())))
+                                    .child(div().flex_none().text_size(px(theme::TEXT_XS))
+                                        .text_color(if provider.configured { theme::dim() } else { theme::faint() })
+                                        .child(SharedString::from(status)))
+                                    .child(div().flex_none().font_family(theme::FONT_MONO)
+                                        .text_size(px(theme::TEXT_XS)).text_color(theme::faint())
+                                        .child(SharedString::from(model_count(provider.models))))
+                            );
+                        }
+                        let mut summary = match snapshot.pi_version.clone() {
+                            Some(version) => format!("Catálogo do Pi {version}"),
+                            None => "Catálogo do Pi".to_string(),
+                        };
+                        summary.push_str(&format!(
+                            " · {} provedores · {} conectados",
+                            snapshot.providers.len(),
+                            snapshot.ready(),
+                        ));
+                        page = page.child(note(&summary));
+                    }
+                }
+                let mut actions = div().flex().flex_row().gap(px(8.));
+                if matches!(self.providers, ProvidersView::Ready(_)) {
+                    if let ProvidersView::Ready(snapshot) = &self.providers {
+                        if snapshot.empty() {
+                            actions = actions.child(control("providers-login", "Conectar um provedor", cx.listener(
+                                |this, _, _, cx| {
+                                    this.provider_notice = crate::installation::launch_pi_login()
+                                        .err()
+                                        .map(|error| format!("{error:#}"));
+                                    cx.notify();
+                                },
+                            )));
+                        }
+                    }
+                }
+                actions = actions.child(control("providers-retry", "Verificar de novo", cx.listener(
+                    |this, _, _, cx| this.refresh_providers(cx),
+                )));
+                page = page.child(actions).child(note(
+                    "Provedores locais e endpoints compatíveis são configurados em models.json, como o Pi descreve em docs/models.md.",
+                ));
                 page.into_any_element()
             }
             Section::Models => {
