@@ -212,10 +212,18 @@ paragraph and general clickable Markdown links are not yet supported.
 ### Settings
 
 The navigation's three-dot button opens a window-level **Configurações** modal
-with **Aplicativo**, **Atalhos de teclado**, and
-**Sobre / Pi** sections. The collapsed navigation retains a settings button.
+with **Aplicativo**, **Aparência**, **Provedores**, **Modelos**,
+**Atalhos de teclado**, and **Sobre / Pi** sections. The collapsed navigation
+retains a settings button.
 Click outside, use **Fechar**, or press Esc to close. F1 and `/help` open the keyboard section directly. Session keyboard
 shortcuts do not act on the background while settings is open.
+
+**Provedores** lists every provider the Pi knows — including the ones with no
+credential, which the RPC model list cannot show — with its state and where the
+configured credential comes from (a stored credential, an environment variable,
+`models.json`, ambient cloud credentials). It never shows or stores a credential
+value. With nothing connected it says so and offers to open Pi in a terminal for
+`/login`, then re-reads the state.
 
 Provider login is managed by Pi itself: open Pi in a terminal and use `/login`.
 Dish uses the credentials already configured in Pi and provides no integrated

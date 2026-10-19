@@ -125,13 +125,14 @@ cancelar.
 
 ## Fases
 
-1. **Fase 1 (este PR)** — adaptador somente leitura, contrato acima e testes
-   contra um SDK falso que esconde segredos em campos proibidos.
-2. **Fase 2** — seção **Provedores** nas configurações: catálogo com estado,
-   origem, contagem de modelos; linha "Conectar um provedor" quando não há
-   nenhum pronto, em vez de o usuário descobrir ao enviar uma mensagem. Estado
-   lido na `background_executor`, com timeout; falha vira uma linha em
-   português, nunca um pânico. Nenhuma ação de escrita.
+1. **Fase 1** — adaptador somente leitura, contrato acima e testes contra um SDK
+   falso que esconde segredos em campos proibidos.
+2. **Fase 2 (implementada)** — seção **Provedores** nas configurações: catálogo
+   com estado, origem e contagem de modelos (no singular quando é um), a linha
+   "Conectar um provedor" quando não há nenhum pronto, e "Verificar de novo".
+   A leitura roda na `background_executor` com prazo de 20s; falha vira uma linha
+   em português, nunca lista vazia nem pânico. Sem ação de escrita: o convite
+   abre o Pi num terminal para `/login`.
 3. **Fase 3** — escrever credencial pelo adaptador: chave de API (prompt
    `secret`), login por navegador/código de dispositivo (`auth_url`,
    `device_code`), cancelamento, remoção com confirmação, e reconsulta do estado

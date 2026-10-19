@@ -16,6 +16,7 @@ mod platform;
 mod editor;
 mod settings;
 mod installation;
+mod providers;
 mod startup;
 mod preferences;
 mod markdown;

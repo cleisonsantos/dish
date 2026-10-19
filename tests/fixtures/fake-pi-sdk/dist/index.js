@@ -4,7 +4,11 @@
 // copiar (`apiKey`, `oauth.token`, `secret`, `env`). Um teste que encontre
 // qualquer um desses valores na saída do adaptador falha: é o contrato de que
 // nada além de estado e origem atravessa a fronteira.
+//
+// `FAKE_PI_EMPTY=1` deixa todos os provedores sem credencial, para o teste de
+// interface cobrir o primeiro uso em que nada está conectado.
 const SECRET = "sk-ant-FIXTURE-SECRET-DO-NOT-LEAK";
+const EMPTY = process.env.FAKE_PI_EMPTY === "1";
 
 export class ModelRuntime {
   static async create(options = {}) {
@@ -24,6 +28,7 @@ export class ModelRuntime {
   }
 
   getProviderAuthStatus(providerId) {
+    if (EMPTY) return { configured: false };
     if (providerId === "openai") {
       return { configured: true, source: "stored", label: "OpenAI (assinatura)" };
     }
@@ -34,14 +39,15 @@ export class ModelRuntime {
   }
 
   hasConfiguredAuth(providerId) {
-    return providerId === "openai";
+    return !EMPTY && providerId === "openai";
   }
 
   isUsingOAuth(providerId) {
-    return providerId === "openai";
+    return !EMPTY && providerId === "openai";
   }
 
   async listCredentials() {
+    if (EMPTY) return [];
     return [
       { providerId: "openai", type: "oauth", secret: SECRET },
       { providerId: "groq", type: "api_key", key: SECRET },
@@ -49,7 +55,7 @@ export class ModelRuntime {
   }
 
   async checkAuth(providerId) {
-    if (providerId === "openai") return { source: "stored", type: "oauth" };
+    if (!EMPTY && providerId === "openai") return { source: "stored", type: "oauth" };
     throw new Error(`no credential for ${providerId}: ${SECRET}`);
   }
 
