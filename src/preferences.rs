@@ -20,6 +20,9 @@ pub struct Preferences {
     pub collapsed_projects: BTreeSet<PathBuf>,
     pub last_project: Option<PathBuf>,
     pub last_session: Option<PathBuf>,
+    /// Pastas usadas recentemente, da mais recente para a mais antiga.
+    /// Limitada: é atalho de navegação, não histórico.
+    pub recent_projects: Vec<PathBuf>,
     pub window_size: Option<[f32; 2]>,
     pub pi_executable: Option<PathBuf>,
     /// Client-observed completion time for responses not yet viewed.
@@ -57,6 +60,16 @@ fn path() -> Option<PathBuf> {
 /// Onde ficam os temas do usuário, lidos na inicialização.
 pub fn themes_dir() -> Option<PathBuf> {
     config_dir().map(|directory| directory.join("themes"))
+}
+
+impl Preferences {
+    /// Põe a pasta no topo dos recentes, sem repetir e com um teto.
+    pub fn remember_project(&mut self, path: &std::path::Path) {
+        const LIMIT: usize = 8;
+        self.recent_projects.retain(|item| item != path);
+        self.recent_projects.insert(0, path.to_path_buf());
+        self.recent_projects.truncate(LIMIT);
+    }
 }
 
 pub fn load() -> Preferences {
@@ -117,6 +130,24 @@ mod tests {
         assert_eq!(preferences.theme, None);
     }
     #[test]
+    fn remember_project_moves_to_front_dedupes_and_caps() {
+        let mut preferences = Preferences::default();
+        for index in 0..10 {
+            preferences.remember_project(&PathBuf::from(format!("/tmp/projeto-{index}")));
+        }
+        assert_eq!(preferences.recent_projects.len(), 8, "teto de 8");
+        assert_eq!(preferences.recent_projects[0], PathBuf::from("/tmp/projeto-9"));
+        preferences.remember_project(&PathBuf::from("/tmp/projeto-5"));
+        assert_eq!(preferences.recent_projects[0], PathBuf::from("/tmp/projeto-5"));
+        assert_eq!(
+            preferences.recent_projects.iter().filter(|path| *path == &PathBuf::from("/tmp/projeto-5")).count(),
+            1,
+            "sem repetir"
+        );
+        assert_eq!(preferences.recent_projects.len(), 8);
+    }
+
+    #[test]
     fn atomic_write_creates_directory_and_replaces_file() {
         let root = std::env::temp_dir().join(format!("dish-prefs-test-{}", std::process::id()));
         let path = root.join("config/state.json");
@@ -138,6 +169,7 @@ mod tests {
             hidden_models: ["anthropic/claude-sonnet-4".to_string()].into(),
             collapsed_projects: [PathBuf::from("/tmp/projeto-á")].into(),
             last_project: Some("/tmp/projeto-á".into()), last_session: Some("/tmp/session.jsonl".into()),
+            recent_projects: [PathBuf::from("/tmp/projeto-á"), PathBuf::from("/tmp/outro")].into(),
             window_size: Some([1240., 860.]),
             pi_executable: None,
             unread_sessions: [(PathBuf::from("/tmp/session.jsonl"), 123456)].into(),

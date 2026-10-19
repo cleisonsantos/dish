@@ -154,6 +154,18 @@ const PI_FLAGS_WITH_VALUES: &[&str] = &[
     "--prompt-template", "--theme", "--use-theme", "--export", "--tui-mode",
 ];
 
+/// Um argumento com cara de caminho: absoluto, `~`, relativo explícito ou com
+/// separador. Só vale antes do primeiro prompt, para que texto comum continue
+/// sendo texto.
+fn looks_like_path(argument: &str) -> bool {
+    argument.starts_with('/')
+        || argument.starts_with('~')
+        || argument.starts_with("./")
+        || argument.starts_with("../")
+        || argument.contains('/')
+        || (cfg!(windows) && argument.contains('\\'))
+}
+
 fn main() {
     // `DISH_BACKEND=x11` força o XWayland no Linux: é o caminho para ter as
     // decorações do sistema onde o compositor Wayland não as fornece (GNOME).
@@ -174,6 +186,7 @@ fn main() {
     let mut pi_flags: Vec<String> = Vec::new();
     let mut cwd: Option<PathBuf> = None;
     let mut words: Vec<String> = Vec::new();
+    let mut notice: Option<String> = None;
     let mut arguments = std::env::args().skip(1).peekable();
     while let Some(argument) = arguments.next() {
         let still_leading = cwd.is_none() && words.is_empty();
@@ -191,6 +204,14 @@ fn main() {
             }
         } else if still_leading && PathBuf::from(&argument).is_dir() {
             cwd = Some(PathBuf::from(&argument));
+        } else if still_leading && looks_like_path(&argument) {
+            // Um caminho que não existe não vira prompt em silêncio. O resto da
+            // linha era um pedido para aquela pasta, então não é enviado em
+            // outra; a janela avisa e segue com a pasta atual.
+            notice = Some(format!(
+                "A pasta “{argument}” não existe ou não é um diretório. O Dish abriu a pasta atual; use “Abrir projeto…” para escolher outra."
+            ));
+            break;
         } else {
             words.push(argument);
         }
@@ -314,7 +335,7 @@ fn main() {
             window
                 .observe_window_appearance(|window, _| window.refresh())
                 .detach();
-            let root = cx.new(|cx| startup::Startup::new(cwd.clone(), pi_flags.clone(), initial_prompt.clone(), window, cx));
+            let root = cx.new(|cx| startup::Startup::new(cwd.clone(), pi_flags.clone(), initial_prompt.clone(), notice.clone(), window, cx));
             let weak = root.downgrade();
             window.on_window_should_close(cx, move |_, cx| {
                 weak.update(cx, |root, cx| root.can_close(cx)).unwrap_or(true)
@@ -330,4 +351,19 @@ fn main() {
 
         cx.activate(true);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::looks_like_path;
+
+    #[test]
+    fn path_like_arguments_are_recognized() {
+        for value in ["/tmp/projeto", "~/projetos/novo", "./app", "../app", "pasta/app", "/"] {
+            assert!(looks_like_path(value), "{value}");
+        }
+        for value in ["explique", "este", "código", "--continue", "fix the tests"] {
+            assert!(!looks_like_path(value), "{value}");
+        }
+    }
 }
