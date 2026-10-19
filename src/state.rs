@@ -419,12 +419,14 @@ pub struct AppState {
     pub show_thinking: bool,
     /// Títulos de sessão gerados pelo modelo da sessão. Opt-in: gasta tokens.
     pub generated_titles: bool,
-    /// Demanda que já produziu o título gerado atual, e o título em si.
-    generated_title: Option<(String, String)>,
+    /// RPC id, candidate name and revision awaiting Pi confirmation.
+    pending_title_name: Option<(String, String, u64)>,
+    /// Invalidates in-flight results on manual rename, reset or preference change.
+    title_revision: u64,
     /// Demanda de uma geração em andamento, para não repetir a chamada.
     title_generation: Option<String>,
-    /// Demanda cuja geração falhou. Uma tentativa por demanda, sem retry em
-    /// loop a cada rodada.
+    /// Demanda já tentada (inclusive falha de geração/persistência). Sem retry
+    /// em loop a cada rodada.
     title_failure: Option<String>,
 
     /// Escolha explícita do usuário sobre abrir o grupo de atividade de um turno.
@@ -538,7 +540,8 @@ impl AppState {
             title_override: None,
             show_thinking: true,
             generated_titles: false,
-            generated_title: None,
+            pending_title_name: None,
+            title_revision: 0,
             title_generation: None,
             title_failure: None,
             activity_override: HashMap::new(),
@@ -754,10 +757,8 @@ impl AppState {
                 None
             }
             "session_info_changed" => {
-                self.session.name = record
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
+                let name = record.get("name").and_then(Value::as_str).map(str::to_string);
+                self.observe_session_name(name);
                 None
             }
             "compaction_start" => {
@@ -866,6 +867,18 @@ impl AppState {
     }
 
     fn apply_response(&mut self, response: RpcResponse, cx: &mut Context<Self>) -> Option<usize> {
+        if self.pending_title_name.as_ref().is_some_and(|(id, _, _)| response.id.as_ref() == Some(id)) {
+            if let Some((_, title, revision)) = self.pending_title_name.take() {
+                if revision == self.title_revision {
+                    if response.success {
+                        self.session.name = Some(title);
+                    } else {
+                        self.push_toast("Não foi possível salvar o título da sessão no Pi.".into(), Tone::Warning, cx);
+                    }
+                }
+            }
+            return None;
+        }
         if let Some((text, images)) = response.id.as_ref().and_then(|id| self.pending_image_prompts.remove(id)) {
             if !response.success {
                 self.pasted_images.extend(images);
@@ -940,10 +953,8 @@ impl AppState {
                     .get("sessionFile")
                     .and_then(Value::as_str)
                     .map(str::to_string);
-                self.session.name = data
-                    .get("sessionName")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
+                let name = data.get("sessionName").and_then(Value::as_str).map(str::to_string);
+                self.observe_session_name(name);
                 self.session.message_count = data
                     .get("messageCount")
                     .and_then(Value::as_u64)
@@ -1882,6 +1893,10 @@ impl AppState {
     }
 
     fn reset_transcript(&mut self) {
+        self.title_revision = self.title_revision.wrapping_add(1);
+        self.title_generation = None;
+        self.title_failure = None;
+        self.pending_title_name = None;
         self.messages.clear();
         self.tool_slots.clear();
         self.content_slots.clear();
@@ -2113,6 +2128,8 @@ impl AppState {
                 if argument.is_empty() {
                     self.push_toast("Uso: /name <nome da sessão>".into(), Tone::Info, cx);
                 } else {
+                    self.title_revision = self.title_revision.wrapping_add(1);
+                    self.title_generation = None;
                     self.client
                         .call("set_session_name", json!({ "name": argument }));
                     self.session.name = Some(argument);
@@ -2195,8 +2212,7 @@ impl AppState {
         cx.notify();
     }
 
-    /// No modo por modelo, o resumo tem prioridade e o título anterior fica
-    /// visível enquanto a nova demanda é resumida. O nome do Pi não muda.
+    /// O nome confirmado pelo Pi tem prioridade, inclusive após reabrir a sessão.
     pub fn display_title(&self) -> String {
         self.title(72)
     }
@@ -2209,7 +2225,7 @@ impl AppState {
             let first = self.messages.iter().find(|message| message.role == Role::User)
                 .and_then(|message| crate::demand::clip(&message.text(), max_chars));
             return crate::demand::summary_title(
-                self.generated_title.as_ref().map(|(_, title)| title.as_str()),
+                None,
                 original,
                 first.as_deref(),
                 max_chars,
@@ -2224,12 +2240,10 @@ impl AppState {
             .unwrap_or_else(|| "Nova conversa".to_string())
     }
 
-    /// A demanda mais recente com substância, normalizada. É a chave do cache
-    /// do título gerado: se ela não mudou, não vale chamar o modelo de novo.
-    fn latest_substantive_demand(&self) -> Option<String> {
+    /// O primeiro pedido relevante define a identidade estável da sessão.
+    fn initial_substantive_demand(&self) -> Option<String> {
         self.messages
             .iter()
-            .rev()
             .filter(|message| message.role == Role::User)
             .find_map(|message| {
                 let text = message.text();
@@ -2243,33 +2257,40 @@ impl AppState {
         demand_title(&self.messages, max_chars)
     }
 
+    fn observe_session_name(&mut self, name: Option<String>) {
+        // An external/manual rename invalidates a generated result in flight.
+        // The event for our own pending rename is not a manual change.
+        if name != self.session.name
+            && !self.pending_title_name.as_ref().is_some_and(|(_, pending, _)| name.as_ref() == Some(pending)) {
+            self.title_revision = self.title_revision.wrapping_add(1);
+            self.title_generation = None;
+        }
+        self.session.name = name;
+    }
+
     /// Liga/desliga títulos por modelo. Descartar o cache garante que, ao
     /// religar, a demanda atual seja regerada em vez de reusar um título antigo.
     pub fn set_generated_titles(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.generated_titles = enabled;
+        self.title_revision = self.title_revision.wrapping_add(1);
+        self.title_generation = None;
         self.title_failure = None;
         if enabled && !self.streaming {
             self.maybe_generate_title(cx);
         }
     }
 
-    /// Fim de rodada: se o usuário ligou os títulos por modelo e a demanda
-    /// mudou, gera um título em background. Nunca bloqueia a UI e nunca toca a
-    /// sessão do Pi — o resultado vive só no Dish.
+    /// Fim de rodada: gera o nome uma vez para sessões sem nome, em background.
+    /// A persistência usa o escritor RPC existente e aguarda confirmação do Pi.
     fn maybe_generate_title(&mut self, cx: &mut Context<Self>) {
-        if !self.generated_titles || self.disconnected {
+        if !self.generated_titles || self.disconnected || self.streaming
+            || self.loading || self.pending_title_name.is_some()
+            || self.session.name.as_ref().is_some_and(|name| !name.trim().is_empty()) {
             return;
         }
-        let Some(demand) = self.latest_substantive_demand() else {
+        let Some(demand) = self.initial_substantive_demand() else {
             return;
         };
-        if self
-            .generated_title
-            .as_ref()
-            .is_some_and(|(fingerprint, _)| fingerprint == &demand)
-        {
-            return;
-        }
         if self.title_generation.as_deref() == Some(demand.as_str()) {
             return;
         }
@@ -2282,6 +2303,8 @@ impl AppState {
         let program = crate::installation::program();
         let cwd = self.cwd.clone();
         self.title_generation = Some(demand.clone());
+        let revision = self.title_revision;
+        let session = (self.session.id.clone(), self.session.file.clone());
         cx.spawn(async move |this, cx| {
             let request = demand.clone();
             let generated = cx
@@ -2291,20 +2314,27 @@ impl AppState {
                 })
                 .await;
             let _ = this.update(cx, |state, cx| {
-                if state.title_generation.as_deref() == Some(demand.as_str()) {
-                    state.title_generation = None;
-                }
-                // Um resultado de demanda que o usuário já deixou para trás é
-                // descartado: nunca guarda um título que não é o de agora.
-                if !state.generated_titles || state.latest_substantive_demand().as_deref() != Some(demand.as_str()) {
+                if revision != state.title_revision || session != (state.session.id.clone(), state.session.file.clone()) {
                     return;
                 }
-                if let Some(title) = generated {
-                    state.generated_title = Some((demand, title));
-                    cx.notify();
-                } else {
-                    state.title_failure = Some(demand);
+                state.title_generation = None;
+                if !state.generated_titles || state.disconnected || state.streaming
+                    || state.session.name.as_ref().is_some_and(|name| !name.trim().is_empty())
+                    || state.initial_substantive_demand().as_deref() != Some(demand.as_str()) {
+                    return;
                 }
+                // One attempt per demand; toggling the preference explicitly retries.
+                state.title_failure = Some(demand);
+                match generated {
+                    Ok(title) => {
+                        let id = state.client.call("set_session_name", json!({ "name": title }));
+                        state.pending_title_name = Some((id, title, revision));
+                    }
+                    Err(error) => state.push_toast(
+                        format!("Não foi possível gerar o título: {error}. Mantido o texto do pedido; desative e reative os títulos para tentar novamente."),
+                        Tone::Warning, cx),
+                }
+                cx.notify();
             });
         })
         .detach();
