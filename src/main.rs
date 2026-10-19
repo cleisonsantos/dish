@@ -17,6 +17,7 @@ mod editor;
 mod settings;
 mod installation;
 mod providers;
+mod provider_login;
 mod startup;
 mod preferences;
 mod markdown;

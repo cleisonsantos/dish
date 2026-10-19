@@ -37,6 +37,32 @@ pub fn open_directory(directory: &std::path::Path) {
     }
 }
 
+/// Abre um endereço no navegador padrão. Usado pelo login OAuth, onde o Pi
+/// conduz a autorização e só precisa que a página apareça.
+///
+/// Fire-and-forget pelo mesmo motivo de `open_directory`, e restrito a https:
+/// um endereço vindo de um provedor não deve conseguir abrir outra coisa.
+pub fn open_url(url: &str) {
+    if !url.starts_with("https://") {
+        crate::logging::warn(format_args!("Dish: refusing to open non-https url"));
+        return;
+    }
+    #[cfg(target_os = "windows")]
+    let program = "rundll32";
+    #[cfg(target_os = "macos")]
+    let program = "open";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let program = "xdg-open";
+    let mut command = std::process::Command::new(program);
+    #[cfg(target_os = "windows")]
+    command.arg("url.dll,FileProtocolHandler");
+    command.arg(url);
+    hide_console(&mut command);
+    if let Err(error) = command.spawn() {
+        crate::logging::warn(format_args!("Dish: cannot open {program}: {error}"));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
