@@ -2,25 +2,33 @@
 // Adaptador de autenticação do Dish para o Pi.
 //
 // O Dish não reimplementa autenticação: o Pi é dono do OAuth, do refresh e do
-// armazenamento. Este processo é a fronteira entre os dois, e a única coisa que
-// atravessa são *estado* e *origem* — nunca um valor de credencial.
-//
-// Fase 1 (esta): somente leitura. `status` devolve o catálogo de provedores que
-// o Pi conhece, incluindo os que não têm credencial, com a origem da
-// configuração e sem tocar em segredo. `login` e `logout` respondem
-// `not_implemented` de propósito: escrever credencial é a fase 3, e falhar
-// fechado é melhor do que oferecer um caminho pela metade.
+// armazenamento. Este processo é a fronteira entre os dois, e o que atravessa é
+// *estado*, *origem* e as *perguntas* de um login — nunca um valor de
+// credencial de volta.
 //
 // Uso:
 //   node pi-auth-adapter.mjs --status [--package DIR] [--agent-dir DIR]
 //   echo '{"id":1,"op":"status"}' | node pi-auth-adapter.mjs
 //
-// Protocolo (uma linha JSON por mensagem, stdin/stdout):
-//   entrada  {"id": <any>, "op": "status"}
-//   saída    {"id": <any>, "ok": true,  "data": <snapshot>}
-//   saída    {"id": <any>, "ok": false, "error": "<código>", "detail": "<texto>"}
+// Protocolo (uma linha JSON por mensagem, stdin/stdout). O processo é de longa
+// duração: um login faz perguntas e espera respostas, então a leitura continua
+// enquanto ele acontece.
 //
-// Nunca escreve nada além de JSON em stdout; diagnóstico vai para stderr.
+//   entrada  {"id": N, "op": "status"}
+//   entrada  {"id": N, "op": "login", "provider": "anthropic", "type": "api_key"|"oauth"}
+//   entrada  {"id": N, "op": "logout", "provider": "anthropic"}
+//   entrada  {"id": N, "op": "reply", "prompt": P, "value": "…"}
+//   entrada  {"id": N, "op": "cancel", "target": N}
+//
+//   saída    {"id": N, "ok": true,  "data": {…}}
+//   saída    {"id": N, "ok": false, "error": "<código>", "detail": "<texto>"}
+//   saída    {"id": N, "prompt": P, "ask": "text|secret|select|manual_code", …}
+//   saída    {"id": N, "notify": "info|auth_url|device_code|progress", …}
+//
+// Regras do contrato: a resposta de um prompt `secret` viaja só do Dish para o
+// Pi; nenhum valor volta. O desfecho de um login informa provedor e tipo, e
+// nada mais. Nunca escreve nada além de JSON em stdout; diagnóstico vai para
+// stderr.
 
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
@@ -30,12 +38,12 @@ import { pathToFileURL } from "node:url";
 
 const PACKAGE_NAME = "@earendil-works/pi-coding-agent";
 const EXIT_OK = 0;
-const EXIT_UNSUPPORTED = 3;
 const EXIT_NO_RUNTIME = 4;
 
 // Formas de segredo que nunca podem aparecer na saída. Serve de rede de
 // segurança: mesmo que alguém acrescente um campo por engano, o valor é
-// substituído antes de sair.
+// substituído antes de sair. Também cobre mensagens de erro do provedor, que
+// costumam repetir a chave recusada.
 const SECRET_PATTERNS = [
   /sk-[A-Za-z0-9_-]{8,}/,
   /eyJ[A-Za-z0-9_-]{10,}/,
@@ -55,6 +63,21 @@ function safeString(value) {
 
 function safeCount(value) {
   return Number.isInteger(value) && value >= 0 ? value : 0;
+}
+
+/** Texto de erro que pode ser mostrado: sem segredo, sem caminho, curto. */
+function safeDetail(value) {
+  const text = typeof value === "string" ? value : String(value ?? "");
+  if (looksLikeSecret(text)) return "<redacted>";
+  return text.slice(0, 200);
+}
+
+function fail(code, detail) {
+  return { ok: false, error: code, ...(detail ? { detail: safeDetail(detail) } : {}) };
+}
+
+function write(message) {
+  process.stdout.write(`${JSON.stringify(message)}\n`);
 }
 
 /// Procura o pacote do Pi nas formas de instalação que o Dish conhece.
@@ -111,21 +134,26 @@ export function packageCandidates({ explicit, agentDir, piBin, env = process.env
   return { dirs, rejected: null };
 }
 
-/** Catálogo + estado, sem nenhum valor de credencial. */
-export async function snapshot({ packageDir, agentDir } = {}) {
-  const entry = path.join(packageDir, "dist", "index.js");
-  // Caminho absoluto, e não especificador de pacote: o diretório do Pi pode
-  // estar em qualquer prefixo, e `import("tests/...")` seria lido como pacote.
-  const { ModelRuntime, VERSION } = await import(pathToFileURL(entry).href);
-  // `refreshOnCreate` precisa ficar no padrão: com `false`, os acessores
-  // síncronos de estado não enxergam credencial já armazenada e o adaptador
-  // diria "sem credencial" para um provedor configurado. Medido contra o Pi
-  // 1.2.0 — ver docs/provider-auth.md.
-  const runtime = await ModelRuntime.create({
-    ...(agentDir ? { authPath: path.join(agentDir, "auth.json") } : {}),
-    allowModelNetwork: false,
-  });
+/// Um provedor só entra na lista se houver um login interativo para oferecer.
+function authMethods(provider) {
+  const apiKey = provider.auth?.apiKey;
+  const oauth = provider.auth?.oauth;
+  const interactive = (method) => Boolean(method) && typeof method.login === "function";
+  const apiKeyEntry = interactive(apiKey)
+    ? { name: safeString(apiKey.name) ?? "Chave de API" }
+    : null;
+  const oauthEntry = interactive(oauth)
+    ? {
+        name: safeString(oauth.name) ?? "Conta do provedor",
+        label: safeString(oauth.loginLabel),
+        subscription: oauth.isSubscription === true,
+      }
+    : null;
+  return { api_key: apiKeyEntry, oauth: oauthEntry };
+}
 
+/** Catálogo + estado, sem nenhum valor de credencial. */
+export async function snapshot(runtime, { packageDir, version } = {}) {
   const providers = runtime.getProviders().map((provider) => {
     const status = (() => {
       try {
@@ -140,6 +168,7 @@ export async function snapshot({ packageDir, agentDir } = {}) {
       configured: status?.configured === true,
       source: safeString(status?.source),
       label: safeString(status?.label),
+      auth: authMethods(provider),
     };
   });
 
@@ -149,37 +178,172 @@ export async function snapshot({ packageDir, agentDir } = {}) {
   }));
 
   return {
-    pi: { version: safeString(VERSION), package: packageDir },
+    pi: { version: safeString(version), package: packageDir ?? null },
     providers: providers.sort((a, b) => a.id.localeCompare(b.id)),
     credentials: credentials.sort((a, b) => a.providerId.localeCompare(b.providerId)),
-    readOnly: true,
+    readOnly: false,
   };
 }
 
-function fail(code, detail) {
-  return { ok: false, error: code, ...(detail ? { detail: String(detail).slice(0, 200) } : {}) };
+export class Adapter {
+  constructor(options = {}) {
+    this.options = options;
+    this.runtimePromise = null;
+    this.packageDir = null;
+    this.active = null;
+    this.nextPromptId = 1;
+  }
+
+  async runtime() {
+    if (!this.runtimePromise) {
+      const { dirs, rejected } = packageCandidates(this.options);
+      if (rejected) throw Object.assign(new Error("package_invalid"), { code: "package_invalid" });
+      if (dirs.length === 0) throw Object.assign(new Error("package_not_found"), { code: "package_not_found" });
+      this.packageDir = dirs[0];
+      this.runtimePromise = import(pathToFileURL(path.join(dirs[0], "dist", "index.js")).href).then(
+        async (module) => {
+          // `refreshOnCreate` fica no padrão: com `false`, os acessores
+          // síncronos de estado não enxergam credencial já armazenada.
+          const runtime = await module.ModelRuntime.create({
+            ...(this.options.agentDir ? { authPath: path.join(this.options.agentDir, "auth.json") } : {}),
+            allowModelNetwork: false,
+          });
+          this.version = module.VERSION;
+          return runtime;
+        },
+      );
+    }
+    return this.runtimePromise;
+  }
+
+  async handle(request) {
+    const op = typeof request?.op === "string" ? request.op : "";
+    const id = request?.id ?? null;
+    if (op === "status") {
+      try {
+        const runtime = await this.runtime();
+        return { id, ok: true, data: await snapshot(runtime, { packageDir: this.packageDir, version: this.version }) };
+      } catch (error) {
+        return { id, ...fail(error?.code ?? "probe_failed", error?.message ?? error) };
+      }
+    }
+    if (op === "logout") {
+      const provider = typeof request.provider === "string" ? request.provider : "";
+      if (!provider) return { id, ...fail("bad_request", "provider ausente") };
+      try {
+        const runtime = await this.runtime();
+        await runtime.logout(provider);
+        return { id, ok: true, data: { provider } };
+      } catch (error) {
+        return { id, ...fail("logout_failed", error?.message ?? error) };
+      }
+    }
+    if (op === "reply") {
+      const pending = this.active?.prompts.get(Number(request.prompt));
+      if (!pending) return { id, ...fail("unknown_prompt") };
+      this.active.prompts.delete(Number(request.prompt));
+      pending.resolve(typeof request.value === "string" ? request.value : "");
+      return null; // a resposta em si só sai no fim da operação
+    }
+    if (op === "cancel") {
+      if (!this.active || this.active.id !== request.target) return { id, ...fail("nothing_to_cancel") };
+      this.active.controller.abort();
+      return null;
+    }
+    if (op === "login") {
+      return { id, ...fail("unsupported_op", "login é despachado em paralelo") };
+    }
+    return { id, ...fail("unsupported_op", op || "(vazio)") };
+  }
+
+  /** Um login por vez: duas perguntas simultâneas não teriam para onde ir. */
+  startLogin(request, onMessage) {
+    const id = request?.id ?? null;
+    if (this.active) {
+      write({ id, ...fail("busy", "já existe um login em andamento") });
+      return;
+    }
+    const provider = typeof request.provider === "string" ? request.provider : "";
+    const type = request.type === "oauth" ? "oauth" : "api_key";
+    if (!provider) {
+      write({ id, ...fail("bad_request", "provider ausente") });
+      return;
+    }
+    const controller = new AbortController();
+    const active = { id, controller, prompts: new Map(), provider, type };
+    this.active = active;
+
+    const prompt = (request_) =>
+      new Promise((resolve, reject) => {
+        const promptId = this.nextPromptId++;
+        const entry = { resolve, reject };
+        active.prompts.set(promptId, entry);
+        const abort = () => {
+          active.prompts.delete(promptId);
+          reject(withCode(new Error("cancelled"), "cancelled"));
+        };
+        request_.signal?.addEventListener("abort", abort, { once: true });
+        controller.signal.addEventListener("abort", abort, { once: true });
+        onMessage({
+          id,
+          prompt: promptId,
+          ask: request_.type,
+          message: safeString(request_.message),
+          placeholder: safeString(request_.placeholder),
+          options: (request_.options ?? []).map((option) => ({
+            id: String(option.id),
+            label: safeString(option.label) ?? String(option.id),
+            description: safeString(option.description),
+          })),
+        });
+      });
+
+    const notify = (event) => {
+      onMessage({
+        id,
+        notify: event.type,
+        message: safeString(event.message),
+        url: safeString(event.url),
+        instructions: safeString(event.instructions),
+        userCode: safeString(event.userCode),
+        verificationUri: safeString(event.verificationUri),
+        intervalSeconds: safeCount(event.intervalSeconds),
+        expiresInSeconds: safeCount(event.expiresInSeconds),
+        links: (event.links ?? []).map((link) => ({ url: safeString(link.url), label: safeString(link.label) })),
+      });
+    };
+
+    this.runtime()
+      .then((runtime) =>
+        runtime.login(provider, type, { prompt, notify, signal: controller.signal }, { agentName: "Dish" }),
+      )
+      .then((credential) => {
+        // Só o desfecho: nada do que foi digitado volta.
+        write({ id, ok: true, data: { provider, type: safeString(credential?.type) ?? type } });
+      })
+      .catch((error) => {
+        const aborted = controller.signal.aborted || error?.name === "AbortError" || error?.code === "cancelled";
+        write({ id, ...fail(aborted ? "cancelled" : classifyLoginError(error), error?.message ?? error) });
+      })
+      .finally(() => {
+        for (const entry of active.prompts.values()) entry.reject(withCode(new Error("cancelled"), "cancelled"));
+        active.prompts.clear();
+        if (this.active === active) this.active = null;
+      });
+  }
 }
 
-async function handle(request, options) {
-  const op = typeof request?.op === "string" ? request.op : "";
-  if (op === "status") {
-    const { dirs, rejected } = packageCandidates(options);
-    if (rejected) {
-      return fail("package_invalid", `${rejected} não contém ${PACKAGE_NAME}`);
-    }
-    if (dirs.length === 0) {
-      return fail("package_not_found", `procurei ${PACKAGE_NAME} em ${options.agentDir ?? "~/.pi/agent"}`);
-    }
-    try {
-      return { ok: true, data: await snapshot({ packageDir: dirs[0], agentDir: options.agentDir }) };
-    } catch (error) {
-      return fail("probe_failed", error?.message ?? error);
-    }
-  }
-  if (op === "login" || op === "logout") {
-    return fail("not_implemented", "escrever credencial é a fase 3; use /login no Pi");
-  }
-  return fail("unsupported_op", op || "(vazio)");
+function withCode(error, code) {
+  error.code = code;
+  return error;
+}
+
+function classifyLoginError(error) {
+  const message = String(error?.message ?? "");
+  if (error?.code === "package_not_found" || error?.code === "package_invalid") return error.code;
+  if (/does not support|unsupported/i.test(message)) return "unsupported_type";
+  if (/unknown provider/i.test(message)) return "unknown_provider";
+  return "login_failed";
 }
 
 function parseArgs(argv) {
@@ -192,32 +356,45 @@ function parseArgs(argv) {
     else if (arg === "--agent-dir") options.agentDir = argv[++index];
     else if (arg === "--pi-bin") options.piBin = argv[++index];
     else if (arg === "--help" || arg === "-h") {
-      process.stdout.write("uso: pi-auth-adapter.mjs --status [--package DIR] [--agent-dir DIR] [--pi-bin CAMINHO]\n");
+      process.stdout.write(
+        "uso: pi-auth-adapter.mjs --status [--package DIR] [--agent-dir DIR] [--pi-bin CAMINHO]\n" +
+          "     echo '{\"id\":1,\"op\":\"status\"}' | pi-auth-adapter.mjs\n",
+      );
       process.exit(EXIT_OK);
     }
   }
   return { status, options };
 }
 
-const { status: oneShot, options } = parseArgs(process.argv.slice(2));
+const invokedDirectly = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 
-if (oneShot) {
-  const result = await handle({ op: "status" }, options);
-  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-  process.exit(result.ok ? EXIT_OK : EXIT_NO_RUNTIME);
-} else {
-  const lines = createInterface({ input: process.stdin });
-  for await (const line of lines) {
-    if (line.trim() === "") continue;
-    let request;
-    try {
-      request = JSON.parse(line);
-    } catch {
-      process.stdout.write(`${JSON.stringify({ id: null, ...fail("bad_json") })}\n`);
-      continue;
+if (invokedDirectly) {
+  const { status: oneShot, options } = parseArgs(process.argv.slice(2));
+  const adapter = new Adapter(options);
+  if (oneShot) {
+    const result = await adapter.handle({ op: "status" });
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    process.exit(result.ok ? EXIT_OK : EXIT_NO_RUNTIME);
+  } else {
+    const lines = createInterface({ input: process.stdin });
+    for await (const line of lines) {
+      if (line.trim() === "") continue;
+      let request;
+      try {
+        request = JSON.parse(line);
+      } catch {
+        write({ id: null, ...fail("bad_json") });
+        continue;
+      }
+      // Um login não bloqueia a leitura: as respostas aos prompts chegam nas
+      // linhas seguintes.
+      if (request?.op === "login") {
+        adapter.startLogin(request, write);
+        continue;
+      }
+      const answer = await adapter.handle(request);
+      if (answer) write(answer);
     }
-    const result = await handle(request, options);
-    process.stdout.write(`${JSON.stringify({ id: request?.id ?? null, ...result })}\n`);
+    process.exit(EXIT_OK);
   }
-  process.exit(EXIT_OK);
 }

@@ -44,7 +44,10 @@ class ProviderAdapterTests(unittest.TestCase):
             self.assertNotIn(planted, result.stdout, "segredo vazou na saída")
         data = json.loads(result.stdout)["data"]
         # O catálogo inclui provedor sem credencial: é o motivo da issue #69.
-        self.assertEqual([p["id"] for p in data["providers"]], ["anthropic", "groq", "openai"])
+        self.assertEqual(
+            [p["id"] for p in data["providers"]],
+            ["anthropic", "groq", "openai", "select-provider"],
+        )
         by_id = {p["id"]: p for p in data["providers"]}
         self.assertFalse(by_id["anthropic"]["configured"])
         self.assertFalse(by_id["groq"]["configured"])
@@ -52,16 +55,21 @@ class ProviderAdapterTests(unittest.TestCase):
         self.assertEqual(by_id["openai"]["source"], "stored")
         self.assertEqual(by_id["openai"]["models"], 1)
         # `listCredentials` só expõe provedor e tipo.
-        self.assertEqual(
-            data["credentials"],
-            [{"providerId": "groq", "type": "api_key"}, {"providerId": "openai", "type": "oauth"}],
-        )
-        self.assertTrue(data["readOnly"])
+        self.assertEqual(data["credentials"], [{"providerId": "openai", "type": "oauth"}])
+        self.assertFalse(data["readOnly"])
+        # Quem pode ser conectado, e com qual nome o provedor se apresenta.
+        by_id = {p["id"]: p for p in data["providers"]}
+        self.assertEqual(by_id["anthropic"]["auth"]["api_key"]["name"], "Anthropic API key")
+        self.assertIsNone(by_id["anthropic"]["auth"]["oauth"])
+        self.assertEqual(by_id["openai"]["auth"]["oauth"]["label"], "Entrar com a conta ChatGPT")
+        self.assertTrue(by_id["openai"]["auth"]["oauth"]["subscription"])
+        # Provedor sem login interativo não oferece botão nenhum.
+        self.assertIsNone(by_id["groq"]["auth"]["api_key"])
 
     def test_package_can_come_from_the_environment(self):
         result = run_adapter(["--status"], env={"DISH_PI_PACKAGE": str(FIXTURE)})
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(len(json.loads(result.stdout)["data"]["providers"]), 3)
+        self.assertEqual(len(json.loads(result.stdout)["data"]["providers"]), 4)
 
     def test_a_stated_package_is_authoritative(self):
         result = run_adapter(["--status", "--package", "/nonexistent/pi-package"])
@@ -76,10 +84,12 @@ class ProviderAdapterTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(json.loads(result.stdout)["error"], "package_invalid")
 
-    def test_jsonl_protocol_answers_status_and_refuses_writes(self):
+    def test_jsonl_protocol_answers_status_and_rejects_unknown_ops(self):
+        # O ciclo interativo de login tem teste próprio (test_provider_login.py);
+        # aqui fica só o que não depende de interação.
         requests = "\n".join([
             json.dumps({"id": 1, "op": "status"}),
-            json.dumps({"id": "a", "op": "login", "provider": "openai"}),
+            json.dumps({"id": "a", "op": "login"}),
             json.dumps({"id": 3, "op": "logout"}),
             json.dumps({"id": 4, "op": "wat"}),
             "not json",
@@ -92,9 +102,9 @@ class ProviderAdapterTests(unittest.TestCase):
         self.assertEqual(len(replies), 5)
         self.assertEqual(replies[0]["id"], 1)
         self.assertTrue(replies[0]["ok"])
-        # Escrever credencial é fase 3: recusa explícita, nunca meia implementação.
-        self.assertEqual((replies[1]["id"], replies[1]["error"]), ("a", "not_implemented"))
-        self.assertEqual((replies[2]["id"], replies[2]["error"]), (3, "not_implemented"))
+        # Sem provedor não há o que fazer: recusa fechada, não silêncio.
+        self.assertEqual((replies[1]["id"], replies[1]["error"]), ("a", "bad_request"))
+        self.assertEqual((replies[2]["id"], replies[2]["error"]), (3, "bad_request"))
         self.assertEqual((replies[3]["id"], replies[3]["error"]), (4, "unsupported_op"))
         self.assertIsNone(replies[4]["id"])
         self.assertEqual(replies[4]["error"], "bad_json")
