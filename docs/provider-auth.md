@@ -78,24 +78,43 @@ precisa saber apresentar:
 
 ## Protocolo entre Dish e adaptador
 
-`scripts/pi-auth-adapter.mjs`, um processo por consulta, JSONL em stdin/stdout.
-Somente `status` na fase 1; `login` e `logout` respondem `not_implemented` de
-propósito, e op desconhecida responde `unsupported_op`. Todos os erros são
-códigos fechados (`package_not_found`, `package_invalid`, `probe_failed`,
-`bad_json`), nunca texto de exceção cru com caminho de credencial.
+`scripts/pi-auth-adapter.mjs`, JSONL em stdin/stdout. Um `--status` responde e
+sai; com `login`, o processo fica aberto até o fim da operação, porque o login
+faz perguntas e espera respostas. Todos os erros são códigos fechados
+(`package_not_found`, `package_invalid`, `probe_failed`, `bad_json`,
+`bad_request`, `busy`, `unsupported_op`, `unsupported_type`, `login_failed`,
+`logout_failed`, `cancelled`, `unknown_prompt`), nunca texto de exceção cru com
+caminho de credencial.
 
 ```jsonc
 // entrada
 {"id": 1, "op": "status"}
+{"id": 1, "op": "login", "provider": "anthropic", "type": "api_key"}
+{"id": 2, "op": "reply", "prompt": 7, "value": "…"}   // resposta a uma pergunta
+{"id": 3, "op": "cancel", "target": 1}                  // aborta o login 1
+{"id": 4, "op": "logout", "provider": "anthropic"}
+
 // saída
 {"id": 1, "ok": true, "data": {
   "pi": {"version": "1.2.0", "package": "…/@earendil-works/pi-coding-agent"},
   "providers": [{"id": "anthropic", "models": 17, "configured": false,
-                 "source": null, "label": null}],
+                 "source": null, "label": null,
+                 "auth": {"api_key": {"name": "Anthropic API key"}, "oauth": null}}],
   "credentials": [{"providerId": "openai", "type": "oauth"}],
-  "readOnly": true
+  "readOnly": false
 }}
+{"id": 1, "prompt": 7, "ask": "secret", "message": "Cole a chave", "placeholder": "sk-…",
+ "options": []}
+{"id": 1, "notify": "auth_url", "url": "https://…", "instructions": "…"}
+{"id": 1, "notify": "device_code", "userCode": "ABCD-1234",
+ "verificationUri": "https://…", "intervalSeconds": 5, "expiresInSeconds": 900}
+{"id": 1, "ok": true, "data": {"provider": "anthropic", "type": "api_key"}}
 ```
+
+`ask` pode ser `text`, `secret`, `select` (com `options`) ou `manual_code`;
+`notify` pode ser `info` (com `links`), `auth_url`, `device_code` ou `progress`.
+O desfecho de um login informa **provedor e tipo** — nunca a credencial, que o
+Pi já gravou. Um login por vez: uma segunda tentativa responde `busy`.
 
 Localização do pacote do Pi, em ordem: `--package`, `DISH_PI_PACKAGE`, o prefixo
 privado do Dish (`$XDG_DATA_HOME/dish/pi`), as releases do instalador oficial
@@ -133,14 +152,32 @@ cancelar.
    A leitura roda na `background_executor` com prazo de 20s; falha vira uma linha
    em português, nunca lista vazia nem pânico. Sem ação de escrita: o convite
    abre o Pi num terminal para `/login`.
-3. **Fase 3** — escrever credencial pelo adaptador: chave de API (prompt
-   `secret`), login por navegador/código de dispositivo (`auth_url`,
-   `device_code`), cancelamento, remoção com confirmação, e reconsulta do estado
-   depois de cada ação. Sem UI otimista.
+3. **Fase 3 (implementada)** — escrever credencial pelo adaptador: chave de API
+   (`prompt` do tipo `secret`), login por conta do provedor (avisos `auth_url`,
+   `device_code` e `progress`, com o código colado de volta), cancelamento,
+   remoção com confirmação e releitura do estado depois de cada ação. Sem UI
+   otimista: a lista só muda quando o Pi confirma.
 4. **Fase 4** — provedores locais/compatíveis (`models.json`), preservando o
    arquivo existente. Separado de propósito: não bloqueia a fase 3.
 5. **Fase 5** — pedir ao Pi `pi auth login|logout` e aposentar o adaptador, se
    ele preferir expor isso na CLI. Até lá, o adaptador é a ponte.
+
+## Limites conhecidos
+
+- **O campo da resposta não é mascarado.** O editor do Dish não tem modo
+   `password`, então a chave aparece enquanto é digitada — como acontece no
+   `/login` do terminal. Em compensação ela não é copiada para o estado, não
+   entra em registro, não volta pelo protocolo e o campo é limpo no instante do
+   envio. Mascarar é uma mudança própria no editor, com testes de seleção e
+   colagem, e fica para um PR separado.
+- **`getDeviceId` não é enviado.** Alguns fluxos (o host id da OpenAI) aceitam
+   um identificador estável da instalação; o Dish ainda não cria nem guarda um,
+   para não introduzir um identificador persistente sem decisão explícita. Se
+   algum provedor passar a exigi-lo, a falha aparece como `login_failed` e o
+   valor pode ser acrescentado depois.
+- **Provedores só-OAuth funcionam; provedores sem login interativo não mostram
+   ação.** Numa instalação normal, 41 dos 42 provedores têm login por chave e 9
+têm OAuth, então não há caso vazio na prática.
 
 ## Como verificar
 
