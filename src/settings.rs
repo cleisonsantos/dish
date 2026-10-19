@@ -440,7 +440,7 @@ impl Render for Settings {
                                 }))),
                     );
                 }
-                page = page.child(note("Resume a intenção do último pedido com o modelo da sessão (gasta tokens). O resumo aparece só no Dish, sem renomear a sessão do Pi. Durante a geração, mantém o título anterior."));
+                page = page.child(note("Gera um nome curto para o primeiro pedido relevante com o modelo da sessão (gasta tokens) e salva no Pi ao terminar a rodada. Nomes já definidos são preservados. Se falhar, mantém o texto do pedido e avisa; desative e reative para tentar novamente."));
                 page.into_any_element()
             }
             Section::Appearance => {

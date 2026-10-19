@@ -1,14 +1,8 @@
-//! Turning the latest thing the user asked into a short conversation title.
+//! Generate a semantic title for the initial task in an isolated Pi process.
 //!
-//! Pi only rewrites a session name when someone sets one explicitly. For an
-//! unnamed session Dish therefore derives the title from the transcript, and
-//! the *current* demand is more useful than the first one: the same session
-//! often moves on to a different task.
-//!
-//! When the user opts in, Dish may instead ask the session's model for a short
-//! title. That runs in an isolated one-shot process and never touches the Pi
-//! session: the result lives only in memory. The literal demand is always the
-//! deterministic fallback.
+//! No tools, project resources or conversation history are loaded. The caller
+//! persists the result through the existing RPC writer only after checking that
+//! the session is still unnamed. Errors are safe to show without provider output.
 
 use crate::state::ModelInfo;
 use std::io::Read;
@@ -20,8 +14,30 @@ use std::time::Duration;
 const MIN_WORDS: usize = 3;
 const MIN_CHARS: usize = 16;
 
-/// How long the isolated title process may take before it is killed.
+/// A bounded deadline includes both output collection and process exit.
 const TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_OUTPUT: u64 = 64 * 1024;
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum TitleError {
+    Start,
+    Output,
+    Failed,
+    Timeout,
+    Invalid,
+}
+
+impl std::fmt::Display for TitleError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Start => "não foi possível iniciar o Pi",
+            Self::Output => "não foi possível ler a resposta",
+            Self::Failed => "o Pi encerrou com falha; verifique o modelo e a autenticação",
+            Self::Timeout => "o tempo limite de 30 segundos foi atingido",
+            Self::Invalid => "o modelo não retornou um título válido",
+        })
+    }
+}
 
 /// Fixed instruction. Only the demand is appended, so the cost per round stays
 /// tiny and the same demand tends to produce the same title.
@@ -107,6 +123,9 @@ pub fn arguments(model: &ModelInfo, demand: &str) -> Vec<String> {
         args.push("--model".into());
         args.push(model.id.clone());
     }
+    // Do not inherit a coding system prompt or an expensive thinking level.
+    args.extend(["--mode".into(), "json".into(), "--thinking".into(), "off".into(),
+        "--system-prompt".into(), INSTRUCTION.into()]);
     args.push(format!("{INSTRUCTION}\n\n{demand}"));
     args
 }
@@ -139,15 +158,41 @@ pub fn sanitize(raw: &str, max_chars: usize) -> Option<String> {
     clip(cleaned, max_chars)
 }
 
-/// Run the isolated one-shot and return a sanitized title. `None` on any
-/// failure or timeout, so the caller keeps the literal demand.
+/// Extract only completed assistant text, never thinking or startup diagnostics.
+fn title_from_records(raw: &str, max_chars: usize) -> Option<String> {
+    let mut answer = None;
+    for line in raw.lines().filter(|line| !line.trim().is_empty()) {
+        let record: serde_json::Value = serde_json::from_str(line).ok()?;
+        if record["type"] == "message_end" && record["message"]["role"] == "assistant" {
+            let message = &record["message"];
+            if message["stopReason"] != "stop" {
+                return None;
+            }
+            let text = message["content"].as_array()?.iter()
+                .filter(|part| part["type"] == "text")
+                .filter_map(|part| part["text"].as_str())
+                .collect::<Vec<_>>().join("\n");
+            answer = sanitize(&text, max_chars);
+        }
+    }
+    answer
+}
+
+/// Run the isolated one-shot. Errors contain no provider output or secrets.
 pub fn generate_title(
     program: &str,
     cwd: &Path,
     model: &ModelInfo,
     demand: &str,
     max_chars: usize,
-) -> Option<String> {
+) -> Result<String, TitleError> {
+    generate_title_with_timeout(program, cwd, model, demand, max_chars, TIMEOUT)
+}
+
+fn generate_title_with_timeout(
+    program: &str, cwd: &Path, model: &ModelInfo, demand: &str,
+    max_chars: usize, timeout: Duration,
+) -> Result<String, TitleError> {
     let mut command = Command::new(program);
     command
         .args(arguments(model, demand))
@@ -157,26 +202,41 @@ pub fn generate_title(
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     crate::platform::hide_console(&mut command);
-    let mut child = command.spawn().ok()?;
-    let mut stdout = child.stdout.take()?;
+    let mut child = command.spawn().map_err(|_| TitleError::Start)?;
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(TitleError::Output);
+    };
     // Read on a worker so a hung Pi can be killed instead of blocking forever.
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut buffer = String::new();
-        let _ = stdout.read_to_string(&mut buffer);
-        let _ = sender.send(buffer);
+        let result = stdout.take(MAX_OUTPUT + 1).read_to_string(&mut buffer);
+        let _ = sender.send((result, buffer));
     });
-    match receiver.recv_timeout(TIMEOUT) {
-        Ok(raw) => match child.wait() {
-            Ok(status) if status.success() => sanitize(&raw, max_chars),
-            _ => None,
-        },
-        Err(_) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            None
+    let deadline = std::time::Instant::now() + timeout;
+    let result = (|| {
+        let (read, raw) = receiver.recv_timeout(timeout).map_err(|_| TitleError::Timeout)?;
+        read.map_err(|_| TitleError::Output)?;
+        if raw.len() as u64 > MAX_OUTPUT {
+            return Err(TitleError::Output);
         }
+        loop {
+            match child.try_wait().map_err(|_| TitleError::Failed)? {
+                Some(status) if status.success() => break,
+                Some(_) => return Err(TitleError::Failed),
+                None if std::time::Instant::now() >= deadline => return Err(TitleError::Timeout),
+                None => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        title_from_records(&raw, max_chars).ok_or(TitleError::Invalid)
+    })();
+    if result.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
     }
+    result
 }
 
 #[cfg(test)]
@@ -233,6 +293,9 @@ mod tests {
         assert!(args.contains(&"--print".to_string()));
         assert!(args.contains(&"--no-session".to_string()));
         assert!(args.contains(&"--no-tools".to_string()));
+        assert!(args.windows(2).any(|pair| pair == ["--mode", "json"]));
+        assert!(args.windows(2).any(|pair| pair == ["--thinking", "off"]));
+        assert!(args.contains(&"--system-prompt".to_string()));
         let provider = args.iter().position(|a| a == "--provider").unwrap();
         assert_eq!(args[provider + 1], "provedor");
         let model_index = args.iter().position(|a| a == "--model").unwrap();
@@ -256,6 +319,43 @@ mod tests {
         assert_eq!(sanitize("", 60), None);
         assert_eq!(sanitize("   \n  ", 60), None);
         assert_eq!(sanitize("Claro, aqui está:\nCorrigir login", 60), None);
+    }
+
+    #[test]
+    fn structured_output_ignores_thinking_and_rejects_failed_messages() {
+        let record = serde_json::json!({"type": "message_end", "message": {
+            "role": "assistant", "stopReason": "stop", "content": [
+                {"type": "thinking", "thinking": "Reasoning is not a title"},
+                {"type": "text", "text": "Corrigir títulos de sessões"}
+            ]
+        }});
+        assert_eq!(title_from_records(&record.to_string(), 60).as_deref(), Some("Corrigir títulos de sessões"));
+        let mut failed = record;
+        failed["message"]["stopReason"] = "error".into();
+        assert_eq!(title_from_records(&failed.to_string(), 60), None);
+        assert_eq!(title_from_records("plain text diagnostic", 60), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn isolated_process_reports_failures_and_bounds_exit_wait() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = std::env::temp_dir().join(format!("dish-title-test-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir(&directory).unwrap();
+        let script = directory.join("fake-pi");
+        let run = |body: &str, timeout| {
+            std::fs::write(&script, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+            generate_title_with_timeout(script.to_str().unwrap(), &directory, &model(), "Corrigir os títulos das sessões", 60, timeout)
+        };
+        let record = r#"{"type":"message_end","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"Corrigir títulos de sessões"}]}}"#;
+        assert_eq!(run(&format!("printf '%s\\n' '{record}'"), Duration::from_secs(2)).unwrap(), "Corrigir títulos de sessões");
+        assert_eq!(run("exit 1", Duration::from_secs(2)), Err(TitleError::Failed));
+        assert_eq!(run("printf 'bad response'", Duration::from_secs(2)), Err(TitleError::Invalid));
+        // Closing stdout must not turn the subsequent wait into an unbounded wait.
+        assert_eq!(run("exec 1>&-\nexec sleep 10", Duration::from_millis(100)), Err(TitleError::Timeout));
+        assert_eq!(run("exec sleep 10", Duration::from_millis(100)), Err(TitleError::Timeout));
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
