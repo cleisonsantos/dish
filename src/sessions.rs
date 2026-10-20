@@ -1,6 +1,6 @@
 use serde_json::Value;
 use std::fs;
-use std::io::{self, BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug)]
@@ -14,11 +14,10 @@ pub struct SessionInfo {
     pub modified: std::time::SystemTime,
 }
 
-/// A session file waiting in Dish's trash, with the paths needed to restore it.
+/// A session file waiting in Dish's trash.
 #[derive(Clone, Debug)]
 pub struct TrashedSession {
     pub trashed: PathBuf,
-    pub meta: PathBuf,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -94,10 +93,14 @@ pub fn trash_into(root: &Path, info: &SessionInfo) -> std::io::Result<TrashedSes
         ));
     }
     fs::create_dir_all(root)?;
-    let stem = unique_trash_name();
-    let trashed = root.join(format!("{stem}.jsonl"));
-    let meta = root.join(format!("{stem}.json"));
-    move_file(&info.path, &trashed)?;
+    let (trashed, meta) = loop {
+        let stem = unique_trash_name();
+        let trashed = root.join(format!("{stem}.jsonl"));
+        let meta = root.join(format!("{stem}.json"));
+        if !trashed.exists() && !meta.exists() {
+            break (trashed, meta);
+        }
+    };
     let metadata = TrashMeta {
         original: info.path.clone(),
         cwd: info.cwd.clone(),
@@ -107,22 +110,69 @@ pub fn trash_into(root: &Path, info: &SessionInfo) -> std::io::Result<TrashedSes
             .map(|duration| duration.as_secs())
             .unwrap_or(0),
     };
+    // Serialize before touching the session: a path that cannot be represented
+    // must leave the original file in place, not strand it without metadata.
     let encoded = serde_json::to_vec_pretty(&metadata).map_err(io::Error::other)?;
-    if let Err(error) = fs::write(&meta, encoded) {
-        // Never leave a session in the trash without its metadata.
-        let _ = move_file(&trashed, &info.path);
+    move_file_no_clobber(&info.path, &trashed)?;
+    let metadata_error = match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&meta)
+    {
+        Ok(mut file) => match file.write_all(&encoded).and_then(|_| file.sync_all()) {
+            Ok(()) => None,
+            Err(error) => {
+                drop(file);
+                let _ = fs::remove_file(&meta);
+                Some(error)
+            }
+        },
+        Err(error) => Some(error),
+    };
+    if let Some(error) = metadata_error {
+        // Never leave a session in the trash without its metadata.  If the
+        // original path was recreated in the meantime, keep both files and
+        // report where the session can be recovered from.
+        if let Err(rollback) = move_file_no_clobber(&trashed, &info.path) {
+            crate::logging::warn(format_args!(
+                "dish: cannot restore session after metadata failure: {rollback}; session kept at {}",
+                trashed.display()
+            ));
+            return Err(io::Error::new(
+                error.kind(),
+                format!(
+                    "{error}; não foi possível devolver a sessão ao caminho original ({rollback}); ela continua em {}",
+                    trashed.display()
+                ),
+            ));
+        }
         return Err(error);
     }
-    Ok(TrashedSession { trashed, meta })
+    Ok(TrashedSession { trashed })
 }
 
 /// Moves a trashed session back to its original path and drops the metadata.
+///
+/// The original path may have been recreated while the session was in the
+/// trash.  Restoration is no-clobber: an existing file is left untouched and
+/// the session remains recoverable in the trash.
 pub fn restore(trashed: &Path, original: &Path) -> std::io::Result<()> {
     if let Some(parent) = original.parent() {
         fs::create_dir_all(parent)?;
     }
-    move_file(trashed, original)?;
-    let _ = fs::remove_file(trashed.with_extension("json"));
+    move_file_no_clobber(trashed, original)?;
+    let meta = trashed.with_extension("json");
+    if let Err(error) = fs::remove_file(&meta) {
+        if error.kind() != io::ErrorKind::NotFound {
+            // The session is already back in place.  A stale metadata file only
+            // leaves an artifact in the trash; it must not turn a successful
+            // restoration into a failure.
+            crate::logging::warn(format_args!(
+                "dish: cannot remove session trash metadata {}: {error}",
+                meta.display()
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -140,16 +190,48 @@ fn unique_trash_name() -> String {
     )
 }
 
-/// `rename` fails across filesystems (a custom `--session-dir` on another
-/// mount); fall back to a copy.
-fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
-    match fs::rename(from, to) {
-        Ok(()) => Ok(()),
-        Err(_) => {
-            fs::copy(from, to)?;
-            fs::remove_file(from)
+/// Moves a file without replacing an existing destination.
+///
+/// `rename` replaces the destination on Unix and Windows, which is unsafe for
+/// a restore: another process may have recreated the original session while it
+/// was in the trash.  A hard link is the efficient same-filesystem primitive;
+/// when it is unavailable (for example across a `--session-dir` mount), copy
+/// into a destination opened with `create_new`.
+fn move_file_no_clobber(from: &Path, to: &Path) -> std::io::Result<()> {
+    match fs::hard_link(from, to) {
+        Ok(()) => {
+            if let Err(error) = fs::remove_file(from) {
+                let _ = fs::remove_file(to);
+                return Err(error);
+            }
+            Ok(())
         }
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Err(error),
+        Err(_) => copy_file_no_clobber(from, to),
     }
+}
+
+fn copy_file_no_clobber(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut source = fs::File::open(from)?;
+    let permissions = source.metadata()?.permissions();
+    let mut destination = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(to)?;
+    let copied = io::copy(&mut source, &mut destination)
+        .and_then(|_| destination.set_permissions(permissions))
+        .and_then(|_| destination.sync_all());
+    if let Err(error) = copied {
+        drop(destination);
+        let _ = fs::remove_file(to);
+        return Err(error);
+    }
+    drop(destination);
+    if let Err(error) = fs::remove_file(from) {
+        let _ = fs::remove_file(to);
+        return Err(error);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -338,12 +420,84 @@ mod tests {
         let entry = trash_into(&trash, &info).unwrap();
         assert!(!path.exists());
         assert!(entry.trashed.exists());
-        assert!(entry.meta.exists());
+        let meta = entry.trashed.with_extension("json");
+        assert!(meta.exists());
 
         restore(&entry.trashed, &path).unwrap();
         assert!(path.exists());
         assert!(!entry.trashed.exists());
-        assert!(!entry.meta.exists());
+        assert!(!meta.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn restoring_never_overwrites_a_recreated_session() {
+        let root = std::env::temp_dir().join(format!("dish-trash-conflict-{}", std::process::id()));
+        let sessions = root.join("sessions");
+        let trash = root.join("trash");
+        fs::create_dir_all(&sessions).unwrap();
+        let path = sessions.join("a.jsonl");
+        fs::write(&path, "old session").unwrap();
+        let info = SessionInfo {
+            path: path.clone(),
+            cwd: root.clone(),
+            title: "Conflict".into(),
+            named: true,
+            modified: fs::metadata(&path).unwrap().modified().unwrap(),
+        };
+
+        let entry = trash_into(&trash, &info).unwrap();
+        fs::write(&path, "new session").unwrap();
+
+        let error = restore(&entry.trashed, &path).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "new session");
+        assert_eq!(fs::read_to_string(&entry.trashed).unwrap(), "old session");
+        assert!(
+            entry.trashed.with_extension("json").exists(),
+            "trash metadata must survive a conflict"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unrepresentable_path_is_not_moved_without_metadata() {
+        use std::os::unix::ffi::OsStringExt as _;
+
+        let root = std::env::temp_dir().join(format!("dish-trash-utf8-{}", std::process::id()));
+        let sessions = root.join("sessions");
+        let trash = root.join("trash");
+        fs::create_dir_all(&sessions).unwrap();
+        let path = sessions.join(std::ffi::OsString::from_vec(b"bad-\xff.jsonl".to_vec()));
+        fs::write(&path, "session").unwrap();
+        let info = SessionInfo {
+            path: path.clone(),
+            cwd: root.clone(),
+            title: "Unrepresentable".into(),
+            named: true,
+            modified: fs::metadata(&path).unwrap().modified().unwrap(),
+        };
+
+        assert!(trash_into(&trash, &info).is_err());
+        assert!(path.exists(), "the session must stay in place");
+        assert_eq!(fs::read_dir(&trash).unwrap().count(), 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn no_clobber_move_preserves_both_files_on_conflict() {
+        let root = std::env::temp_dir().join(format!("dish-trash-move-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.jsonl");
+        let destination = root.join("destination.jsonl");
+        fs::write(&source, "source").unwrap();
+        fs::write(&destination, "destination").unwrap();
+
+        let error = move_file_no_clobber(&source, &destination).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read_to_string(&source).unwrap(), "source");
+        assert_eq!(fs::read_to_string(&destination).unwrap(), "destination");
         fs::remove_dir_all(root).unwrap();
     }
 

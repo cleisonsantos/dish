@@ -28,7 +28,6 @@ struct Conversation {
 struct DeletedSession {
     info: SessionInfo,
     trashed: PathBuf,
-    meta: PathBuf,
     id: u64,
 }
 
@@ -151,8 +150,12 @@ pub struct Workspace {
     error: Option<String>,
     /// Sessão salva aguardando confirmação de exclusão.
     pending_delete: Option<PathBuf>,
+    /// Exclusões em andamento, para não mover o mesmo arquivo duas vezes.
+    deleting: BTreeSet<PathBuf>,
     /// Última sessão excluída, enquanto o "Desfazer" está disponível.
     undo_delete: Option<DeletedSession>,
+    /// Restauração em andamento; mantém o "Desfazer" visível até o resultado.
+    restoring: Option<u64>,
     undo_seq: u64,
     confirm_close: bool,
     close_target: Option<usize>,
@@ -273,7 +276,9 @@ impl Workspace {
             opening: None,
             error: None,
             pending_delete: None,
+            deleting: BTreeSet::new(),
             undo_delete: None,
+            restoring: None,
             undo_seq: 0,
             confirm_close: false,
             close_target: None,
@@ -582,6 +587,11 @@ impl Workspace {
     }
 
     fn open(&mut self, info: SessionInfo, window: &mut Window, cx: &mut Context<Self>) {
+        // A exclusão em background ainda não removeu o arquivo do catálogo.
+        // Não inicie o Pi com uma sessão que está sendo movida para a lixeira.
+        if self.deleting.contains(&info.path) {
+            return;
+        }
         if let Some(index) = self
             .conversations
             .iter()
@@ -725,63 +735,125 @@ impl Workspace {
     }
 
     /// Move uma sessão salva para a lixeira e oferece "Desfazer" por 10s.
+    ///
+    /// O filesystem pode estar lento ou em outro mount, então a transação
+    /// inteira roda no executor de background.  A UI só recebe o resultado.
     fn delete_session(&mut self, info: SessionInfo, cx: &mut Context<Self>) {
-        match sessions::trash(&info) {
-            Ok(trashed) => {
-                drop_from_catalog(&mut self.catalog, &info.path);
-                self.pending_delete = None;
-                self.undo_seq += 1;
-                let id = self.undo_seq;
-                self.undo_delete = Some(DeletedSession {
-                    info,
-                    trashed: trashed.trashed,
-                    meta: trashed.meta,
-                    id,
-                });
-                cx.notify();
-                cx.spawn(async move |this, cx| {
-                    cx.background_executor()
-                        .timer(Duration::from_secs(10))
-                        .await;
-                    this.update(cx, |workspace, cx| {
+        let path = info.path.clone();
+        if !self.deleting.insert(path.clone()) {
+            return;
+        }
+        self.pending_delete = None;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn({
+                    let info = info.clone();
+                    async move { sessions::trash(&info) }
+                })
+                .await;
+            let _ = this.update(cx, |workspace, cx| {
+                workspace.deleting.remove(&path);
+                match result {
+                    Ok(trashed) => {
+                        drop_from_catalog(&mut workspace.catalog, &info.path);
+                        workspace.undo_seq += 1;
+                        let id = workspace.undo_seq;
+                        workspace.undo_delete = Some(DeletedSession {
+                            info,
+                            trashed: trashed.trashed,
+                            id,
+                        });
+                        cx.notify();
+                        Self::schedule_undo_expiry(id, cx);
+                    }
+                    Err(error) => {
+                        workspace.error =
+                            Some(format!("Não foi possível excluir a sessão: {error}"));
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Devolve a última sessão excluída para o lugar de onde saiu.  A
+    /// restauração é no-clobber: se o caminho original foi recriado, nada é
+    /// sobrescrito e a sessão continua recuperável na lixeira.
+    fn undo_delete(&mut self, cx: &mut Context<Self>) {
+        let Some(undo) = self.undo_delete.as_ref() else {
+            return;
+        };
+        if self.restoring == Some(undo.id) {
+            return;
+        }
+        let id = undo.id;
+        let trashed = undo.trashed.clone();
+        let original = undo.info.path.clone();
+        let info = undo.info.clone();
+        self.restoring = Some(id);
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { sessions::restore(&trashed, &original) })
+                .await;
+            let _ = this.update(cx, |workspace, cx| {
+                if workspace.restoring != Some(id) {
+                    return;
+                }
+                workspace.restoring = None;
+                match result {
+                    Ok(()) => {
                         if workspace
                             .undo_delete
                             .as_ref()
                             .is_some_and(|undo| undo.id == id)
                         {
                             workspace.undo_delete = None;
-                            cx.notify();
                         }
-                    })
-                    .ok();
-                })
-                .detach();
-            }
-            Err(error) => {
-                self.pending_delete = None;
-                self.error = Some(format!("Não foi possível excluir a sessão: {error}"));
+                        add_to_catalog(&mut workspace.catalog, info);
+                        workspace.refresh(cx);
+                    }
+                    Err(error) => {
+                        workspace.error = Some(if error.kind() == std::io::ErrorKind::AlreadyExists
+                        {
+                            "Não foi possível restaurar: já existe um arquivo no caminho original. A sessão continua na lixeira; mova o arquivo atual e tente novamente.".into()
+                        } else {
+                            format!("Não foi possível restaurar a sessão: {error}")
+                        });
+                        // O prazo original pode ter expirado enquanto a
+                        // restauração estava em andamento.
+                        Self::schedule_undo_expiry(id, cx);
+                    }
+                }
                 cx.notify();
-            }
-        }
+            });
+        })
+        .detach();
     }
 
-    /// Devolve a última sessão excluída para o lugar de onde saiu.
-    fn undo_delete(&mut self, cx: &mut Context<Self>) {
-        let Some(undo) = self.undo_delete.take() else {
-            return;
-        };
-        match sessions::restore(&undo.trashed, &undo.info.path) {
-            Ok(()) => {
-                let _ = std::fs::remove_file(&undo.meta);
-                add_to_catalog(&mut self.catalog, undo.info);
-                self.refresh(cx);
-            }
-            Err(error) => {
-                self.undo_delete = Some(undo);
-                self.error = Some(format!("Não foi possível restaurar a sessão: {error}"));
-            }
-        }
-        cx.notify();
+    fn schedule_undo_expiry(id: u64, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_secs(10))
+                .await;
+            this.update(cx, |workspace, cx| {
+                if workspace
+                    .undo_delete
+                    .as_ref()
+                    .is_some_and(|undo| undo.id == id)
+                    && workspace.restoring != Some(id)
+                {
+                    workspace.undo_delete = None;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Barra "Sessão excluída — Desfazer" acima do rodapé da navegação.
@@ -790,6 +862,7 @@ impl Workspace {
             return div().into_any_element();
         };
         let title = undo.info.title.clone();
+        let restoring = self.restoring == Some(undo.id);
         let weak = cx.entity().downgrade();
         div()
             .id("undo-session-delete")
@@ -827,11 +900,14 @@ impl Workspace {
                     .text_size(px(theme::TEXT_XS))
                     .text_color(theme::running())
                     .hover(|style| style.text_color(theme::text()))
-                    .on_click(move |_event: &ClickEvent, _, cx: &mut App| {
-                        weak.update(cx, |workspace, cx| workspace.undo_delete(cx))
-                            .ok();
+                    .when(restoring, |el| el.opacity(0.6))
+                    .when(!restoring, |el| {
+                        el.on_click(move |_event: &ClickEvent, _, cx: &mut App| {
+                            weak.update(cx, |workspace, cx| workspace.undo_delete(cx))
+                                .ok();
+                        })
                     })
-                    .child("Desfazer"),
+                    .child(if restoring { "Restaurando…" } else { "Desfazer" }),
             )
             .into_any_element()
     }
