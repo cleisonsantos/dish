@@ -602,18 +602,21 @@ impl AppState {
 
         let logs = self.client.logs.clone();
         cx.spawn(async move |this, cx| {
-            while let Ok(line) = logs.recv().await {
-                if line.trim().is_empty() {
-                    continue;
-                }
-                crate::logging::warn(format_args!("pi: {line}"));
-                let alive = this.update(cx, |state, cx| {
-                    if line.contains("Error") || line.contains("error") {
-                        state.push_toast(line.clone(), Tone::Warning, cx);
+            let mut reported_error = false;
+            while let Ok(diagnostic) = logs.recv().await {
+                crate::logging::warn(format_args!("{}", diagnostic.log_message()));
+                if diagnostic.is_error && !reported_error {
+                    reported_error = true;
+                    let alive = this.update(cx, |state, cx| {
+                        state.push_toast(
+                            diagnostic.toast_message().to_string(),
+                            Tone::Warning,
+                            cx,
+                        );
+                    });
+                    if alive.is_err() {
+                        break;
                     }
-                });
-                if alive.is_err() {
-                    break;
                 }
             }
         })

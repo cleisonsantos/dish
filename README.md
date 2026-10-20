@@ -207,7 +207,8 @@ paragraph and general clickable Markdown links are not yet supported.
 - **Extension UI** — `notify`, `setStatus`, `setWidget`, `setTitle` and the
   blocking `select` / `confirm` / `input` / `editor` dialogs are all supported.
 - **Live status** — compaction, auto-retry and summarization retries surface as
-  banners; errors from Pi's stderr become toasts.
+  banners; errors from Pi's stderr become a generic toast, and raw stderr is
+  never written to the default logs.
 
 ### Settings
 

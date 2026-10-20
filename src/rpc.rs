@@ -78,13 +78,48 @@ impl Drop for ChildGuard {
     }
 }
 
+/// A safe summary of one Pi stderr line.
+///
+/// The raw line is deliberately not retained or sent to the UI: stderr can
+/// contain prompt text, tool arguments, paths or provider credentials.  Only
+/// the error classification and byte count cross the transport boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PiDiagnostic {
+    pub is_error: bool,
+    pub bytes: usize,
+}
+
+impl PiDiagnostic {
+    fn from_stderr(line: &str) -> Self {
+        Self {
+            is_error: line
+                .as_bytes()
+                .windows(5)
+                .any(|window| window.eq_ignore_ascii_case(b"error")),
+            bytes: line.len(),
+        }
+    }
+
+    pub fn log_message(&self) -> String {
+        let category = if self.is_error { "error" } else { "diagnostic" };
+        format!(
+            "dish: pi stderr: {category} ({} bytes, content omitted)",
+            self.bytes
+        )
+    }
+
+    pub fn toast_message(&self) -> &'static str {
+        "O Pi registrou um erro interno. Reinicie o Dish se o problema continuar."
+    }
+}
+
 #[derive(Clone)]
 pub struct PiClient {
     tx: Sender<String>,
     /// Parsed protocol records read from Pi's stdout.
     pub records: Receiver<Value>,
-    /// Diagnostic lines read from Pi's stderr.
-    pub logs: Receiver<String>,
+    /// Safe summaries of diagnostic lines read from Pi's stderr.
+    pub logs: Receiver<PiDiagnostic>,
     next_id: Arc<AtomicU64>,
     _guard: Arc<ChildGuard>,
 }
@@ -111,7 +146,7 @@ impl PiClient {
 
         let (line_tx, line_rx) = async_channel::unbounded::<String>();
         let (record_tx, record_rx) = async_channel::bounded::<Value>(2048);
-        let (log_tx, log_rx) = async_channel::unbounded::<String>();
+        let (log_tx, log_rx) = async_channel::unbounded::<PiDiagnostic>();
 
         // Writer: one JSON object per line, terminated by LF. Closing stdin
         // (when this thread exits) is how Pi is asked to shut down.
@@ -156,7 +191,10 @@ impl PiClient {
                                     }
                                 }
                                 Err(error) => {
-                                    crate::logging::warn(format_args!("dish: unparsable record: {error}: {line}"));
+                                    crate::logging::warn(format_args!(
+                                        "{}",
+                                        unparsable_record_summary(&error, line.len())
+                                    ));
                                 }
                             }
                         }
@@ -173,7 +211,10 @@ impl PiClient {
             .name("dish-pi-stderr".into())
             .spawn(move || {
                 for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                    if log_tx.send_blocking(line).is_err() {
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    if log_tx.send_blocking(PiDiagnostic::from_stderr(&line)).is_err() {
                         break;
                     }
                 }
@@ -265,6 +306,17 @@ impl RpcResponse {
     }
 }
 
+/// Describes an invalid JSONL frame without copying its contents into logs.
+fn unparsable_record_summary(error: &serde_json::Error, bytes: usize) -> String {
+    format!(
+        "dish: unparsable record: category={:?} line={} column={} bytes={} content omitted",
+        error.classify(),
+        error.line(),
+        error.column(),
+        bytes
+    )
+}
+
 /// Locate a usable `pi` binary, preferring the caller's PATH.
 /// `DISH_PI_BIN` overrides the lookup.
 #[allow(dead_code)]
@@ -319,6 +371,42 @@ mod tests {
     }
 
     #[test]
+    fn stderr_is_summarized_before_it_reaches_the_ui() {
+        let root = std::env::temp_dir().join(format!("dish-rpc-privacy-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let script = root.join("emit-secret.py");
+        std::fs::write(
+            &script,
+            "import sys, time\nsys.stderr.write('fatal Error: token=sk-live-SYNTHETIC\\n')\nsys.stderr.flush()\ntime.sleep(10)\n",
+        )
+        .unwrap();
+        let client = PiClient::spawn(&PiConfig {
+            program: "python3".into(),
+            args: vec![script.to_string_lossy().into_owned()],
+            cwd: root.clone(),
+        })
+        .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let diagnostic = loop {
+            match client.logs.try_recv() {
+                Ok(diagnostic) => break diagnostic,
+                Err(async_channel::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("stderr channel closed: {error}"),
+            }
+            assert!(Instant::now() < deadline, "Timed out waiting for stderr");
+        };
+        assert!(diagnostic.is_error);
+        let message = diagnostic.log_message();
+        assert!(!message.contains("sk-live-SYNTHETIC"));
+        assert!(!message.contains("token"));
+        drop(client);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn independent_processes_keep_streaming_and_isolate_commands() {
         let root = std::env::temp_dir().join(format!("dish-rpc-{}", std::process::id()));
         let a_dir = root.join("a");
@@ -356,5 +444,43 @@ mod tests {
         drop(a);
         drop(b);
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod privacy_tests {
+    use super::*;
+
+    const SECRET: &str = "sk-live-SYNTHETIC-DIAGNOSTIC-0123456789";
+
+    #[test]
+    fn stderr_diagnostics_never_retain_the_line() {
+        let diagnostic = PiDiagnostic::from_stderr(&format!("fatal Error: token={SECRET}"));
+        assert!(diagnostic.is_error);
+
+        let log = diagnostic.log_message();
+        assert!(!log.contains(SECRET));
+        assert!(!log.contains("token"));
+        assert!(log.contains("error"));
+        assert!(log.contains("content omitted"));
+        assert!(!diagnostic.toast_message().contains(SECRET));
+    }
+
+    #[test]
+    fn malformed_record_summary_omits_the_payload() {
+        let payload = format!(r#"{{"type":"message","token":"{SECRET}"#);
+        let error = serde_json::from_str::<Value>(&payload).unwrap_err();
+        let summary = unparsable_record_summary(&error, payload.len());
+
+        assert!(!summary.contains(SECRET));
+        assert!(!summary.contains("token"));
+        assert!(summary.contains("bytes="));
+    }
+
+    #[test]
+    fn stderr_error_detection_is_case_insensitive() {
+        assert!(PiDiagnostic::from_stderr("ERROR: failed").is_error);
+        assert!(PiDiagnostic::from_stderr("warning: Error while running").is_error);
+        assert!(!PiDiagnostic::from_stderr("progress 10%").is_error);
     }
 }

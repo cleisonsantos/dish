@@ -17,6 +17,12 @@ if "--session" in sys.argv:
     session_file = sys.argv[sys.argv.index("--session") + 1]
 session_id = str(os.getpid())
 level = "low"
+if os.environ.get("DISH_FAKE_PI_DIAGNOSTIC"):
+    # Synthetic payloads for the privacy smoke: one invalid JSONL frame on
+    # stdout and one stderr error. Neither may reach the app's default logs.
+    secret = "sk-live-SYNTHETIC-PRIVACY-0123456789"
+    print(f'{{"type":"message","token":"{secret}"', flush=True)
+    print(f"fatal Error: token={secret}", file=sys.stderr, flush=True)
 running = False
 prompts = queue.Queue()
 dialog_answer = threading.Event()
