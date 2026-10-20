@@ -1,6 +1,6 @@
 use serde_json::Value;
 use std::fs;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug)]
@@ -278,8 +278,20 @@ fn collect_files(dir: &Path, depth: usize, paths: &mut std::collections::BTreeSe
 fn read_session(path: &Path) -> Option<SessionInfo> {
     let file = fs::File::open(path).ok()?;
     let modified = file.metadata().ok()?.modified().ok()?;
-    let mut lines = BufReader::new(file).lines();
-    let header: Value = serde_json::from_str(&lines.next()?.ok()?).ok()?;
+    let mut reader = BufReader::new(file);
+    let header = match crate::limits::read_line_limited(
+        &mut reader,
+        crate::limits::MAX_SESSION_LINE_BYTES,
+        true,
+    )
+    .ok()?
+    {
+        crate::limits::BoundedLine::Line(line) => line,
+        crate::limits::BoundedLine::TooLong { .. } | crate::limits::BoundedLine::Eof => {
+            return None;
+        }
+    };
+    let header: Value = serde_json::from_slice(&header).ok()?;
     if header.get("type")?.as_str()? != "session" {
         return None;
     }
@@ -290,8 +302,23 @@ fn read_session(path: &Path) -> Option<SessionInfo> {
     let mut name = None;
     let mut last = None;
     let mut last_substantive = None;
-    for line in lines.map_while(Result::ok) {
-        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+    loop {
+        let line = match crate::limits::read_line_limited(
+            &mut reader,
+            crate::limits::MAX_SESSION_LINE_BYTES,
+            true,
+        ) {
+            Ok(crate::limits::BoundedLine::Line(line)) => line,
+            Ok(crate::limits::BoundedLine::TooLong { bytes }) => {
+                crate::logging::warn(format_args!(
+                    "dish: session line exceeded the limit ({} bytes)",
+                    bytes
+                ));
+                continue;
+            }
+            Ok(crate::limits::BoundedLine::Eof) | Err(_) => break,
+        };
+        let Ok(value) = serde_json::from_slice::<Value>(&line) else {
             continue;
         };
         if value["type"] == "session_info" {

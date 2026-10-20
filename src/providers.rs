@@ -10,10 +10,9 @@
 
 use anyhow::{anyhow, Result};
 use serde_json::Value;
-use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::time::Duration;
 
 /// O adaptador acompanha o binário: embutido no build e gravado em cache na
 /// primeira consulta, para não existirem duas cópias para manter em sincronia.
@@ -275,58 +274,17 @@ pub fn find_node() -> Option<PathBuf> {
 /// Diferente de `installation::run`, uma saída diferente de zero não é erro: o
 /// adaptador responde o motivo em JSON no stdout e usa o código para o teste.
 pub fn run_bounded(command: Command, timeout: Duration) -> Result<String> {
-    let mut command = command;
-    let mut child = spawn_piped(&mut command, Stdio::null())?;
-    drain(&mut child, timeout)
+    let output = crate::process::run(command, timeout, 65_536, None, None)?;
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// Como `run_bounded`, mas escreve uma entrada e fecha o stdin do filho.
 ///
 /// Operações sem interação (remover credencial) terminam quando a entrada acaba,
 /// então escrever e fechar é o bastante para o adaptador encerrar sozinho.
-pub fn run_with_stdin(mut command: Command, body: &str, timeout: Duration) -> Result<String> {
-    let mut child = spawn_piped(&mut command, Stdio::piped())?;
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(body.as_bytes());
-        // `stdin` sai de escopo aqui e fecha o cano.
-    }
-    drain(&mut child, timeout)
-}
-
-fn spawn_piped(command: &mut Command, stdin: Stdio) -> Result<std::process::Child> {
-    command.stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::null());
-    crate::platform::hide_console(command);
-    command.spawn().map_err(|_| anyhow!("Não foi possível executar o Node."))
-}
-
-fn drain(child: &mut std::process::Child, timeout: Duration) -> Result<String> {
-    use std::io::Read;
-    let mut stdout = child.stdout.take().ok_or_else(|| anyhow!("Sem saída do adaptador."))?;
-    let reader = std::thread::spawn(move || {
-        let mut kept = Vec::new();
-        let mut buffer = [0; 1024];
-        while let Ok(count) = stdout.read(&mut buffer) {
-            if count == 0 {
-                break;
-            }
-            let remaining = 65_536usize.saturating_sub(kept.len());
-            kept.extend_from_slice(&buffer[..count.min(remaining)]);
-        }
-        kept
-    });
-    let deadline = Instant::now() + timeout;
-    loop {
-        if child.try_wait()?.is_some() {
-            let bytes = reader.join().map_err(|_| anyhow!("Falha ao ler a resposta."))?;
-            return Ok(String::from_utf8_lossy(&bytes).into_owned());
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(anyhow!("O Pi demorou demais para responder."));
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
+pub fn run_with_stdin(command: Command, body: &str, timeout: Duration) -> Result<String> {
+    let output = crate::process::run(command, timeout, 65_536, None, Some(body.as_bytes()))?;
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 #[cfg(test)]

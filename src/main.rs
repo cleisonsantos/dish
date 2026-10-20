@@ -11,8 +11,10 @@
 #![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
 
 mod demand;
+mod limits;
 mod logging;
 mod platform;
+mod process;
 mod editor;
 mod settings;
 mod installation;

@@ -13,7 +13,7 @@
 use anyhow::{anyhow, Result};
 use async_channel::Receiver;
 use serde_json::Value;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 
 /// Qual método de autenticação o usuário escolheu.
@@ -236,12 +236,29 @@ impl LoginSession {
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
         crate::platform::hide_console(&mut command);
+        crate::process::configure_group(&mut command);
         let mut child = command.spawn().map_err(|_| anyhow!("Não foi possível executar o Node."))?;
         let stdin = child.stdin.take().ok_or_else(|| anyhow!("Sem entrada para o adaptador."))?;
         let stdout = child.stdout.take().ok_or_else(|| anyhow!("Sem saída do adaptador."))?;
-        let (tx, events) = async_channel::unbounded::<Message>();
+        let (tx, events) = async_channel::bounded::<Message>(64);
         std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            let mut reader = BufReader::new(stdout);
+            loop {
+                let line = match crate::limits::read_line_limited(
+                    &mut reader,
+                    crate::limits::MAX_LOGIN_FRAME_BYTES,
+                    false,
+                ) {
+                    Ok(crate::limits::BoundedLine::Line(line)) => line,
+                    Ok(crate::limits::BoundedLine::TooLong { .. }) => {
+                        let _ = tx.try_send(Message::Failed(
+                            "O adaptador enviou uma resposta grande demais.".into(),
+                        ));
+                        break;
+                    }
+                    Ok(crate::limits::BoundedLine::Eof) | Err(_) => break,
+                };
+                let line = String::from_utf8_lossy(&line);
                 if tx.send_blocking(parse_message(&line)).is_err() {
                     break;
                 }
@@ -286,6 +303,9 @@ impl LoginSession {
     fn send(&mut self, message: &Value) -> Result<()> {
         let mut line = message.to_string();
         line.push('\n');
+        if line.len() > crate::limits::MAX_LOGIN_COMMAND_BYTES {
+            return Err(anyhow!("A resposta do login é grande demais."));
+        }
         self.stdin
             .write_all(line.as_bytes())
             .and_then(|_| self.stdin.flush())
@@ -295,8 +315,7 @@ impl LoginSession {
 
 impl Drop for LoginSession {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        crate::process::terminate_tree(&mut self.child);
     }
 }
 

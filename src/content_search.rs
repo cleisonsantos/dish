@@ -1,7 +1,7 @@
 //! In-memory content cache. Call from a background executor, never the UI thread.
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::BufReader;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
@@ -41,6 +41,7 @@ struct Cached {
     stamp: (SystemTime, u64),
     messages: Vec<String>,
     bytes: usize,
+    oversized: usize,
 }
 
 #[derive(Default)]
@@ -155,12 +156,16 @@ impl Index {
             if generation.load(Ordering::Relaxed) != ticket {
                 return Results::default();
             }
+            let mut oversized = 0;
             let messages = if let Some(messages) = &doc.messages {
                 messages
             } else if let Some(path) = &doc.path {
                 match self.load(path, generation, ticket) {
                     Ok(true) => match self.files.get(path) {
-                        Some(cached) => &cached.messages,
+                        Some(cached) => {
+                            oversized = cached.oversized;
+                            &cached.messages
+                        }
                         None => continue,
                     },
                     Ok(false) => return Results::default(),
@@ -172,6 +177,12 @@ impl Index {
             } else {
                 continue;
             };
+            if oversized > 0 {
+                result.errors.push(format!(
+                    "{}: {oversized} linha(s) excederam o limite da busca",
+                    doc.title
+                ));
+            }
             for (message, text) in messages.iter().enumerate() {
                 if generation.load(Ordering::Relaxed) != ticket {
                     return Results::default();
@@ -212,12 +223,29 @@ impl Index {
         }
         let mut messages = Vec::new();
         let mut bytes = 0;
-        for line in BufReader::new(fs::File::open(path)?).lines() {
+        let mut oversized = 0;
+        let mut reader = BufReader::new(fs::File::open(path)?);
+        loop {
             if generation.load(Ordering::Relaxed) != ticket {
                 return Ok(false);
             }
-            let line = line?;
-            let Ok(entry) = serde_json::from_str::<Value>(&line) else {
+            let line = match crate::limits::read_line_limited(
+                &mut reader,
+                crate::limits::MAX_SEARCH_LINE_BYTES,
+                true,
+            )? {
+                crate::limits::BoundedLine::Line(line) => line,
+                crate::limits::BoundedLine::TooLong { bytes } => {
+                    oversized += 1;
+                    crate::logging::warn(format_args!(
+                        "dish: search skipped an oversized line ({} bytes)",
+                        bytes
+                    ));
+                    continue;
+                }
+                crate::limits::BoundedLine::Eof => break,
+            };
+            let Ok(entry) = serde_json::from_slice::<Value>(&line) else {
                 continue;
             };
             if entry["type"] != "message" {
@@ -243,6 +271,7 @@ impl Index {
                 stamp,
                 messages,
                 bytes,
+                oversized,
             },
         );
         Ok(true)

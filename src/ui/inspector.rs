@@ -502,12 +502,12 @@ fn actions_section(state: &AppState, cx: &Context<AppState>) -> Div {
                     "Compactar",
                     cx,
                     |state, cx| {
-                        state.compact();
+                        state.compact(cx);
                         cx.notify();
                     },
                 ))
                 .child(action("action-export", "Exportar", cx, |state, cx| {
-                    state.export_html();
+                    state.export_html(cx);
                     cx.notify();
                 }))
                 .child(action("action-new", "Nova sessão", cx, |state, cx| {
@@ -530,7 +530,7 @@ fn actions_section(state: &AppState, cx: &Context<AppState>) -> Div {
                         .cursor_pointer()
                         .hover(|style| style.bg(theme::hover()))
                         .on_click(cx.listener(|state, _: &ClickEvent, _window, cx| {
-                            state.toggle_auto_compaction();
+                            state.toggle_auto_compaction(cx);
                             cx.notify();
                         }))
                         .child(
