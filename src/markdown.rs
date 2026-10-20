@@ -386,36 +386,144 @@ fn image_reference(line: &str) -> Option<(&str, &str)> {
     (!target.is_empty()).then_some((alt, target))
 }
 
-fn local_image_path(target: &str, cwd: &std::path::Path) -> Option<std::path::PathBuf> {
-    // Never turn untrusted remote URLs into automatic network requests.
-    if target.contains("://") || target.starts_with("data:") || target.starts_with("//") {
-        return None;
-    }
-    let path = std::path::Path::new(target);
-    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    if !matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif" | "svg") {
-        return None;
-    }
-    Some(if path.is_absolute() { path.to_owned() } else { cwd.join(path) })
+/// A local image can be opened externally, but previews are restricted to
+/// regular files inside the session project and limited in size. SVG stays
+/// out of the preview path because the decoder can resolve external resources.
+const MAX_IMAGE_PREVIEW_BYTES: u64 = 10 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ImagePathError {
+    Remote,
+    Unsupported,
+    Missing,
+    NotFile,
+    OutsideProject,
 }
 
-fn image_block(alt: &str, target: &str, cwd: &std::path::Path, index: usize, style: &MarkdownStyle) -> AnyElement {
+impl ImagePathError {
+    fn message(self) -> &'static str {
+        match self {
+            Self::Remote => "Prévia indisponível: apenas imagens locais são carregadas.",
+            Self::Unsupported => "Prévia indisponível: formato de imagem não suportado.",
+            Self::Missing => "Prévia indisponível: imagem não encontrada.",
+            Self::NotFile => "Prévia indisponível: o caminho não é um arquivo comum.",
+            Self::OutsideProject => "Prévia indisponível: a imagem está fora do projeto.",
+        }
+    }
+}
+
+fn local_image_path(
+    target: &str,
+    cwd: &std::path::Path,
+) -> Result<std::path::PathBuf, ImagePathError> {
+    // Never turn untrusted remote URLs into automatic network requests.
+    if target.contains("://") || target.starts_with("data:") || target.starts_with("//") {
+        return Err(ImagePathError::Remote);
+    }
+    let path = std::path::Path::new(target);
+    let ext = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .ok_or(ImagePathError::Unsupported)?;
+    if !matches!(
+        ext.as_str(),
+        "png" | "jpg" | "jpeg" | "webp" | "gif" | "svg"
+    ) {
+        return Err(ImagePathError::Unsupported);
+    }
+    let candidate = if path.is_absolute() {
+        path.to_owned()
+    } else {
+        cwd.join(path)
+    };
+    let root = std::fs::canonicalize(cwd).map_err(|_| ImagePathError::Missing)?;
+    let path = std::fs::canonicalize(candidate).map_err(|_| ImagePathError::Missing)?;
+    if !path.starts_with(&root) {
+        return Err(ImagePathError::OutsideProject);
+    }
+    let metadata = std::fs::metadata(&path).map_err(|_| ImagePathError::Missing)?;
+    if !metadata.is_file() {
+        return Err(ImagePathError::NotFile);
+    }
+    Ok(path)
+}
+
+fn preview_problem(path: &std::path::Path) -> Result<(), &'static str> {
+    let ext = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .unwrap_or_default();
+    if ext == "svg" {
+        return Err("Prévia SVG desativada por segurança; use Abrir externamente.");
+    }
+    let metadata = std::fs::metadata(path).map_err(|_| "Imagem indisponível ou inválida.")?;
+    if !metadata.is_file() {
+        return Err("Prévia indisponível: o caminho não é um arquivo comum.");
+    }
+    if metadata.len() > MAX_IMAGE_PREVIEW_BYTES {
+        return Err("Imagem grande demais para prévia (máx. 10 MiB); use Abrir externamente.");
+    }
+    Ok(())
+}
+
+fn image_block(
+    alt: &str,
+    target: &str,
+    cwd: &std::path::Path,
+    index: usize,
+    style: &MarkdownStyle,
+) -> AnyElement {
     let caption = if alt.is_empty() { target.to_owned() } else { format!("{alt} — {target}") };
     let mut block = div().w_full().flex().flex_col().gap(px(8.));
-    if let Some(path) = local_image_path(target, cwd) {
-        let external_path = path.clone();
-        block = block
-            .child(div().w(px(200.)).max_w_full().h(px(200.)).flex_none().overflow_hidden()
-                .child(img(path).size_full().object_fit(ObjectFit::Contain)
-                    .with_fallback(|| div().p(px(12.)).child("Imagem indisponível ou inválida.").into_any_element())))
-            .child(div().id(("markdown-image-open", index)).cursor_pointer().text_color(style.accent)
-                .on_click(move |_, _, cx| cx.open_with_system(&external_path))
-                .child("Abrir externamente"));
-    } else {
-        block = block.child("Prévia não disponível: apenas imagens locais são carregadas.");
+    match local_image_path(target, cwd) {
+        Ok(path) => {
+            let external_path = path.clone();
+            match preview_problem(&path) {
+                Ok(()) => {
+                    block = block.child(
+                        div()
+                            .w(px(200.))
+                            .max_w_full()
+                            .h(px(200.))
+                            .flex_none()
+                            .overflow_hidden()
+                            .child(
+                                img(path)
+                                    .size_full()
+                                    .object_fit(ObjectFit::Contain)
+                                    .with_fallback(|| {
+                                        div()
+                                            .p(px(12.))
+                                            .child("Imagem indisponível ou inválida.")
+                                            .into_any_element()
+                                    }),
+                            ),
+                    );
+                }
+                Err(reason) => {
+                    block = block.child(div().p(px(12.)).child(reason));
+                }
+            }
+            block = block.child(
+                div()
+                    .id(("markdown-image-open", index))
+                    .cursor_pointer()
+                    .text_color(style.accent)
+                    .on_click(move |_, _, cx| cx.open_with_system(&external_path))
+                    .child("Abrir externamente"),
+            );
+        }
+        Err(error) => {
+            block = block.child(div().p(px(12.)).child(error.message()));
+        }
     }
-    block.child(div().text_color(style.dim).child(SharedString::from(caption))).into_any_element()
+    block
+        .child(div().text_color(style.dim).child(SharedString::from(caption)))
+        .into_any_element()
 }
+
 
 /// Render Markdown into a list of block elements.
 pub fn blocks(text: &str, style: &MarkdownStyle, cwd: &std::path::Path, id: gpui::ElementId, search: Option<&str>) -> Vec<AnyElement> {
@@ -684,13 +792,76 @@ mod tests {
     }
 
     #[test]
-    fn image_paths_use_session_directory_and_reject_remote_sources() {
-        let cwd = std::path::Path::new("/projects/dish");
-        assert_eq!(local_image_path("assets/icon.svg", cwd).unwrap(), cwd.join("assets/icon.svg"));
-        assert_eq!(local_image_path("/tmp/icon.PNG", cwd).unwrap(), std::path::PathBuf::from("/tmp/icon.PNG"));
-        for target in ["https://example.com/icon.png", "file:///tmp/icon.png", "//example.com/icon.svg", "data:image/png;base64,abc", "assets/file.rs"] {
-            assert!(local_image_path(target, cwd).is_none(), "{target}");
+    fn image_previews_stay_inside_the_project_and_reject_remote_sources() {
+        let root = std::env::temp_dir().join(format!(
+            "dish-markdown-images-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let project = root.join("project");
+        let assets = project.join("assets");
+        std::fs::create_dir_all(&assets).unwrap();
+        let png = assets.join("icon.PNG");
+        std::fs::write(&png, b"png").unwrap();
+        let svg = assets.join("icon.svg");
+        std::fs::write(&svg, b"<svg/>").unwrap();
+        let outside = root.join("outside.png");
+        std::fs::write(&outside, b"outside").unwrap();
+        let canonical_png = std::fs::canonicalize(&png).unwrap();
+
+        assert_eq!(
+            local_image_path("assets/icon.PNG", &project).unwrap(),
+            canonical_png
+        );
+        assert_eq!(
+            local_image_path(&png.to_string_lossy(), &project).unwrap(),
+            canonical_png
+        );
+        assert_eq!(
+            local_image_path("assets/icon.svg", &project).unwrap(),
+            std::fs::canonicalize(&svg).unwrap()
+        );
+        assert_eq!(
+            local_image_path("../outside.png", &project),
+            Err(ImagePathError::OutsideProject)
+        );
+        assert_eq!(
+            local_image_path(&outside.to_string_lossy(), &project),
+            Err(ImagePathError::OutsideProject)
+        );
+        for target in [
+            "https://example.com/icon.png",
+            "file:///tmp/icon.png",
+            "//example.com/icon.svg",
+            "data:image/png;base64,abc",
+            "assets/file.rs",
+        ] {
+            assert!(local_image_path(target, &project).is_err(), "{target}");
         }
+        assert_eq!(
+            local_image_path("missing.png", &project),
+            Err(ImagePathError::Missing)
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let link = assets.join("link.png");
+            symlink(&outside, &link).unwrap();
+            assert_eq!(
+                local_image_path("assets/link.png", &project),
+                Err(ImagePathError::OutsideProject)
+            );
+        }
+        assert_eq!(preview_problem(&png), Ok(()));
+        assert!(preview_problem(&svg).is_err());
+        let large = assets.join("large.png");
+        let file = std::fs::File::create(&large).unwrap();
+        file.set_len(MAX_IMAGE_PREVIEW_BYTES + 1).unwrap();
+        assert!(preview_problem(&large).is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

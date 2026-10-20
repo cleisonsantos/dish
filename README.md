@@ -143,15 +143,19 @@ colour, so the ladder is visible before you pick from it.
 
 ### Images in conversations
 
-A standalone Markdown image such as `![Dish](assets/dish-icon.svg)`
-shows a local preview in user and assistant messages. PNG, JPEG, WebP, GIF and SVG
-are supported. Relative paths use the conversation's project directory; absolute
-paths also work. Previews are limited to a 200px box and do not open a window
-when clicked. Choose **Abrir externamente** to use the system's default application.
+A standalone Markdown image such as `![Dish](assets/dish-icon.png)`
+shows a local preview in user and assistant messages. PNG, JPEG, WebP and GIF
+are previewed; SVG can be opened externally but is not rendered in the
+transcript. Relative paths use the conversation's project directory, and an
+absolute path must also stay inside that project. Symlinks that resolve outside
+the project are rejected. Previews are limited to a 200px box and 10 MiB per
+image; choose **Abrir externamente** to use the system's default application.
 
-Missing or invalid images retain their caption, path and external-open action.
-Remote URLs and data URLs are not loaded automatically. Images embedded within a
-paragraph and general clickable Markdown links are not yet supported.
+Images that resolve inside the project keep the external-open action,
+including SVG and oversized previews. Missing, unsupported or out-of-project
+paths retain only the caption. Remote URLs and data URLs are not loaded
+automatically. Images embedded within a paragraph and general clickable Markdown
+links are not yet supported.
 
 ## What it does
 
@@ -248,7 +252,8 @@ separate from authentication.
 Paste images directly into the composer with `ctrl-v`: PNG, JPEG, GIF and WebP
 are sent to Pi as image content when you send the message (also while steering a
 running turn). Images are listed above the composer with a remove action; no
-attachment picker is required. The limit is 10 MiB per image. The selected model
+attachment picker is required. The limit is 10 MiB per image and 32 MiB total
+across images waiting in the draft. The selected model
 must support images. Failed RPC submissions restore their images to the draft.
 Other copied files are inserted as quoted local paths for Pi to read, not uploaded
 as binary attachments. For file managers exposing only `text/uri-list`, install

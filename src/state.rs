@@ -38,6 +38,23 @@ pub enum Tone {
     Error,
 }
 
+/// Aggregate payload budget for images waiting in the composer. Each image is
+/// capped separately by `clipboard_image`; this prevents many valid images
+/// from becoming an unbounded RPC command and memory spike.
+const MAX_ATTACHMENT_BYTES: usize = 32 * 1024 * 1024;
+
+fn attachment_bytes(value: &Value) -> usize {
+    value
+        .get("data")
+        .and_then(Value::as_str)
+        .map(|data| data.len().saturating_mul(3) / 4)
+        .unwrap_or(0)
+}
+
+fn fits_attachment_budget(used: usize, new: usize) -> bool {
+    used.saturating_add(new) <= MAX_ATTACHMENT_BYTES
+}
+
 #[derive(Clone)]
 pub struct ToolCard {
     pub id: String,
@@ -944,7 +961,7 @@ impl AppState {
         }
         if let Some((text, images)) = response.id.as_ref().and_then(|id| self.pending_image_prompts.remove(id)) {
             if !response.success {
-                self.pasted_images.extend(images);
+                self.append_images(images, cx);
                 if self.editor.read(cx).is_empty(cx) {
                     self.editor.update(cx, |editor, cx| editor.set_text(text, cx));
                 }
@@ -2030,6 +2047,30 @@ impl AppState {
         cx.notify();
     }
 
+    fn append_images(&mut self, images: Vec<(String, Value)>, cx: &mut Context<Self>) {
+        let mut used: usize = self.pasted_images.iter().map(|(_, value)| attachment_bytes(value)).sum();
+        let mut dropped = 0;
+        for (name, value) in images {
+            let bytes = attachment_bytes(&value);
+            if fits_attachment_budget(used, bytes) {
+                used = used.saturating_add(bytes);
+                self.pasted_images.push((name, value));
+            } else {
+                dropped += 1;
+            }
+        }
+        if dropped > 0 {
+            self.push_toast(
+                format!(
+                    "Imagens acima do limite total de {} MiB foram ignoradas.",
+                    MAX_ATTACHMENT_BYTES / (1024 * 1024)
+                ),
+                Tone::Warning,
+                cx,
+            );
+        }
+    }
+
     pub fn submit(&mut self, cx: &mut Context<Self>) {
         if self.paste_loading || self.disconnected {
             self.push_toast("Aguarde a colagem terminar e verifique a conexão com o Pi.".into(), Tone::Warning, cx);
@@ -3058,7 +3099,7 @@ impl AppState {
                 }).await;
                 let _ = this.update(cx, |state, cx| {
                     state.paste_loading = false;
-                    state.pasted_images.extend(result.0);
+                    state.append_images(result.0, cx);
                     if !result.1.is_empty() {
                         state.editor.update(cx, |editor, cx| editor.insert_text(&result.1.join("\n"), cx));
                     }
@@ -3178,6 +3219,21 @@ mod effort_tests {
             super::reconcile_effort_level(&without_off, Some("max")),
             Some("low")
         );
+    }
+
+    #[test]
+    fn attachment_budget_counts_decoded_payload_size() {
+        let value = serde_json::json!({
+            "type": "image",
+            "mimeType": "image/png",
+            "data": "A".repeat(400)
+        });
+        assert_eq!(super::attachment_bytes(&value), 300);
+        assert!(super::fits_attachment_budget(0, 300));
+        assert!(!super::fits_attachment_budget(
+            super::MAX_ATTACHMENT_BYTES,
+            1
+        ));
     }
 
     #[test]

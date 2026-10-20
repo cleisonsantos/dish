@@ -99,10 +99,8 @@ pub fn save(preferences: Preferences) {
 }
 
 fn write(path: &std::path::Path, preferences: &Preferences) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() { std::fs::create_dir_all(parent)?; }
-    let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
-    std::fs::write(&temporary, serde_json::to_vec_pretty(preferences)?)?;
-    std::fs::rename(temporary, path)?;
+    let bytes = serde_json::to_vec_pretty(preferences)?;
+    crate::fs_security::write_atomic(path, &bytes)?;
     Ok(())
 }
 

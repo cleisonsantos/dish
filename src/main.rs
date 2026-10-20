@@ -15,6 +15,7 @@ mod limits;
 mod logging;
 mod platform;
 mod process;
+mod fs_security;
 mod editor;
 mod settings;
 mod installation;
