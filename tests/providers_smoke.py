@@ -84,12 +84,14 @@ class Harness:
                                        stderr=subprocess.DEVNULL).decode()
 
     def find_label(self, label):
-        """Centro da primeira palavra que começa o rótulo.
+        """Centro da palavra que ancora o rótulo, mesmo que o OCR a cole.
 
-        A âncora é a palavra inicial, não a linha inteira: o OCR do CI já dividiu
-        "Voltar à lista" em duas linhas e leu o "à" como "&". Comparar acentos e
-        espaços para fora resolve as duas coisas, e é o que os outros smokes já
-        fazem (`click_word` em appearance_smoke).
+        O OCR do CI tanto divide um rótulo em palavras ("Voltar à lista" vira
+        duas linhas, com o "à" lido como "&") quanto cola as palavras de um
+        botão ("Confirmar remoção" vira "Confirmarremogéo"). A âncora aceita os
+        dois lados: a palavra pode ser prefixo do rótulo ou começar por ele.
+        Comparar sem acentos e sem espaços resolve as duas coisas, como os
+        outros smokes já fazem (`click_word` em appearance_smoke).
         """
         wanted = normalized(label)
         for _ in range(4):
@@ -101,7 +103,7 @@ class Harness:
                 if len(fields) != 12:
                     continue
                 word = normalized(fields[11])
-                if len(word) >= 4 and wanted.startswith(word):
+                if len(word) >= 4 and (wanted.startswith(word) or word.startswith(wanted)):
                     return (int(fields[6]) + int(fields[8]) // 2, int(fields[7]) + int(fields[9]) // 2)
             time.sleep(0.4)
         return None
