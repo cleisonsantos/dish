@@ -67,6 +67,9 @@ actions!(
 
 /// How many snapshots the undo stack keeps.
 const UNDO_LIMIT: usize = 200;
+/// Total snapshot text budget; a single oversized draft is still kept so undo
+/// remains possible for it.
+const UNDO_BYTES_LIMIT: usize = 8 * 1024 * 1024;
 
 // ------------------------------------------------------------------ selection
 
@@ -133,6 +136,17 @@ enum Edit {
 struct Snapshot {
     text: String,
     selection: Selection,
+}
+
+fn trim_snapshots(stack: &mut Vec<Snapshot>, max_count: usize, max_bytes: usize) {
+    while stack.len() > max_count {
+        stack.remove(0);
+    }
+    let mut bytes: usize = stack.iter().map(|snapshot| snapshot.text.len()).sum();
+    while bytes > max_bytes && stack.len() > 1 {
+        let removed = stack.remove(0);
+        bytes = bytes.saturating_sub(removed.text.len());
+    }
 }
 
 /// A remembered goal column so repeated Up/Down keeps a straight vertical path.
@@ -395,9 +409,7 @@ impl Editor {
         if !continues {
             let snapshot = self.current_snapshot(cx);
             self.undo_stack.push(snapshot);
-            if self.undo_stack.len() > UNDO_LIMIT {
-                self.undo_stack.remove(0);
-            }
+            trim_snapshots(&mut self.undo_stack, UNDO_LIMIT, UNDO_BYTES_LIMIT);
         }
         self.redo_stack.clear();
         self.last_edit = Some(edit);
@@ -471,6 +483,7 @@ impl Editor {
             return;
         };
         self.redo_stack.push(self.current_snapshot(cx));
+        trim_snapshots(&mut self.redo_stack, UNDO_LIMIT, UNDO_BYTES_LIMIT);
         self.restore(snapshot, cx);
     }
 
@@ -479,6 +492,7 @@ impl Editor {
             return;
         };
         self.undo_stack.push(self.current_snapshot(cx));
+        trim_snapshots(&mut self.undo_stack, UNDO_LIMIT, UNDO_BYTES_LIMIT);
         self.restore(snapshot, cx);
     }
 
@@ -1585,7 +1599,30 @@ pub fn standard_actions<E: InteractiveElement>(editor: Entity<Editor>) -> impl F
 
 #[cfg(test)]
 mod tests {
-    use super::{PromptHistory, Selection};
+    use super::{trim_snapshots, PromptHistory, Selection, Snapshot};
+
+    #[test]
+    fn undo_budget_drops_oldest_snapshots_but_keeps_the_latest() {
+        let snapshot = |text: &str| Snapshot {
+            text: text.into(),
+            selection: Selection::caret(0),
+        };
+        let mut stack = vec![snapshot("old1"), snapshot("old2"), snapshot("newest")];
+        trim_snapshots(&mut stack, 10, 8);
+        assert_eq!(stack.last().map(|item| item.text.as_str()), Some("newest"));
+        assert!(stack.iter().map(|item| item.text.len()).sum::<usize>() <= 8);
+
+        let mut stack = vec![snapshot("a"), snapshot("b"), snapshot("c")];
+        trim_snapshots(&mut stack, 2, 100);
+        assert_eq!(
+            stack.iter().map(|item| item.text.as_str()).collect::<Vec<_>>(),
+            ["b", "c"]
+        );
+
+        let mut oversized = vec![snapshot("123456789")];
+        trim_snapshots(&mut oversized, 10, 1);
+        assert_eq!(oversized.len(), 1, "one snapshot is always kept");
+    }
 
     #[test]
     fn history_ignores_blank_and_consecutive_duplicates() {

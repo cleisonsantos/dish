@@ -236,12 +236,15 @@ fn adapter_error(root: &Value) -> String {
 pub(crate) fn materialize_adapter() -> Result<PathBuf> {
     let root = cache_dir().ok_or_else(|| anyhow!("Não encontrei um diretório de cache."))?;
     let directory = root.join("dish");
-    std::fs::create_dir_all(&directory)
+    crate::fs_security::ensure_private_dir(&directory)
         .map_err(|_| anyhow!("Não foi possível criar o diretório de cache."))?;
     let path = directory.join(ADAPTER_FILE);
-    let current = std::fs::read_to_string(&path).ok();
-    if current.as_deref() != Some(ADAPTER) {
-        std::fs::write(&path, ADAPTER)
+    let current = std::fs::metadata(&path)
+        .ok()
+        .filter(|metadata| metadata.is_file() && metadata.len() <= 1024 * 1024)
+        .and_then(|_| std::fs::read(&path).ok());
+    if current.as_deref() != Some(ADAPTER.as_bytes()) {
+        crate::fs_security::write_atomic(&path, ADAPTER.as_bytes())
             .map_err(|_| anyhow!("Não foi possível gravar o adaptador no cache."))?;
     }
     Ok(path)
