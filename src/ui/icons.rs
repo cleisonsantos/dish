@@ -30,6 +30,7 @@ pub enum Icon {
     Minimize,
     Close,
     Trash,
+    Pin,
 }
 
 /// Um ícone desenhado num quadrado de `size` px.
@@ -222,6 +223,19 @@ fn build(icon: Icon, stroke: f32, scale: f32, origin: Point<Pixels>) -> Option<P
             b.line_to(to(7.0, 10.8));
             b.move_to(to(9.2, 6.8));
             b.line_to(to(9.0, 10.8));
+        }
+        Icon::Pin => {
+            // Alfinete visto de lado: cabeça larga, haste até a ponta.
+            b.move_to(to(5., 3.2));
+            b.line_to(to(11., 3.2));
+            b.move_to(to(6., 3.2));
+            b.line_to(to(6., 6.4));
+            b.move_to(to(10., 3.2));
+            b.line_to(to(10., 6.4));
+            b.move_to(to(6., 6.4));
+            b.line_to(to(10., 6.4));
+            b.move_to(to(8., 6.4));
+            b.line_to(to(8., 12.8));
         }
     }
 
