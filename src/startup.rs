@@ -53,6 +53,9 @@ pub struct Startup {
     cwd: PathBuf,
     flags: Vec<String>,
     prompt: Option<String>,
+    /// Aviso da linha de comando (por exemplo, uma pasta que não existe).
+    /// Vira toast quando o espaço de trabalho abre.
+    notice: Option<String>,
     busy: bool,
     message: String,
     step: Step,
@@ -73,6 +76,7 @@ impl Startup {
         cwd: PathBuf,
         flags: Vec<String>,
         prompt: Option<String>,
+        notice: Option<String>,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -80,6 +84,7 @@ impl Startup {
             cwd,
             flags,
             prompt,
+            notice,
             busy: false,
             message: String::new(),
             step: Step::Welcome,
@@ -343,7 +348,7 @@ impl Startup {
             state.start(cx);
             state.editor.read(cx).focus_handle.clone().focus(window, cx);
         });
-        let workspace = cx.new(|cx| Workspace::new(state, self.flags.clone(), nav, cx));
+        let workspace = cx.new(|cx| Workspace::new(state, self.flags.clone(), nav, self.notice.clone(), cx));
         workspace.update(cx, |workspace, cx| workspace.start(window, cx));
         workspace
     }

@@ -71,6 +71,10 @@ cargo run --release -- --continue   # resume the most recent session for a proje
 cargo run --release -- "explain this codebase"   # open and send a first prompt
 ```
 
+A leading path that does not exist is reported instead of being sent as a
+prompt: Dish opens the current folder and shows a notice, and **Abrir projeto…**
+in the navigation header picks another folder without restarting.
+
 Pi can be installed through Dish's first-run setup, or provided on `PATH`
 (`npm install -g --ignore-scripts @earendil-works/pi-coding-agent`).
 Set `DISH_PI_BIN=/path/to/pi` to use a specific binary.
@@ -192,6 +196,10 @@ paragraph and general clickable Markdown links are not yet supported.
   position, tools and queued messages; other conversations keep running.
   Pending extension dialogs appear when you return to their conversation.
   New-session buttons, `ctrl-n` and `/new` open independent conversations.
+  **Abrir projeto…** in the header opens the system folder picker and starts a
+  conversation there; the folders you used most recently are listed under
+  **Projetos recentes** in the sidebar. A folder that cannot be read produces a
+  toast, never a silent fallback.
   Closing a running session or the window asks for confirmation.
 - **Model picker** — a floating panel (click the model name in the header or the
   rail), with the model in use floated to the top and the full list scrollable on

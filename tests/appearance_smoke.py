@@ -90,22 +90,30 @@ with tempfile.TemporaryDirectory(prefix="dish-appearance-") as temporary:
     def click_segment(label):
         """Clica no cursor certo do controle segmentado (Sistema/Escuro/Claro).
 
-        Os rótulos ficam à direita do cartão (x ≥ 840 numa janela de 1240); a
-        OCR agrupa as palavras em linhas diferentes conforme a fonte, então a
-        âncora é a posição e o começo do rótulo, não a linha inteira. Em modo
-        claro a OCR degrada ("Claro" vira "claw", "Escuro" vira "esco").
+        A OCR degrada os rótulos de formas diferentes a cada fonte ("Claro"
+        vira "cir", "Escuro" vira "(Eze)"), então a âncora é a posição: os
+        três segmentos ficam à direita do cartão, na linha cuja primeira
+        palavra nessa faixa começa com "Sis".
         """
-        wanted = label.casefold()
+        order = {"sistema": 0, "escuro": 1, "claro": 2}
+        wanted = order[label.casefold()]
         for _ in range(4):
             for line in ocr_lines():
-                for fields in line:
-                    text = fields[11].strip().casefold()
-                    # 4+ letras: o "Esc" do botão Fechar · Esc também começa
-                    # com "esc" e ficaria no lugar do segmento Escuro.
-                    if int(fields[6]) >= 840 and len(text) >= 4 and text[:3] == wanted[:3]:
-                        click(window, int(fields[6]) + int(fields[8]) // 2,
-                              int(fields[7]) + int(fields[9]) // 2)
-                        return True
+                # A borda do segmento ativo vira "|" ou "{" na OCR: só palavras
+                # com letra entram na contagem, senão o índice desloca.
+                words = [
+                    fields for fields in line
+                    if int(fields[6]) >= 840
+                    and any(character.isalnum() for character in fields[11])
+                ]
+                words.sort(key=lambda fields: int(fields[6]))
+                if not words or not words[0][11].strip().casefold().startswith("sis"):
+                    continue
+                if len(words) > wanted:
+                    fields = words[wanted]
+                    click(window, int(fields[6]) + int(fields[8]) // 2,
+                          int(fields[7]) + int(fields[9]) // 2)
+                    return True
             time.sleep(0.4)  # a pintura/OCR pode estar um quadro atrás
         return False
 

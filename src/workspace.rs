@@ -169,6 +169,8 @@ pub struct Workspace {
     /// O que está sob o mouse na faixa recolhida, para o chip de título.
     hovered: Option<NavHover>,
     preferences: crate::preferences::Preferences,
+    /// Aviso da linha de comando (pasta inexistente), mostrado no rail.
+    notice: Option<String>,
     settings: Option<Entity<crate::settings::Settings>>,
     /// Última lista de modelos enviada às configurações abertas.
     settings_models: Vec<(String, String)>,
@@ -180,6 +182,7 @@ impl Workspace {
         state: Entity<AppState>,
         flags: Vec<String>,
         query: Entity<Editor>,
+        notice: Option<String>,
         cx: &mut Context<Self>,
     ) -> Self {
         let preferences = crate::preferences::load();
@@ -287,6 +290,7 @@ impl Workspace {
             nav_user_choice: preferences.navigation_open.is_some(),
             hovered: None,
             preferences,
+            notice,
             settings: None,
             settings_models: Vec::new(),
             content_search: search::SearchState::default(),
@@ -673,6 +677,50 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Pede uma pasta ao sistema e abre uma conversa nova nela.
+    ///
+    /// O diálogo é o do GPUI (`prompt_for_paths`), sem dependência nova e sem
+    /// mexer no bundle de licenças. A pasta só é usada depois de validada.
+    fn choose_project(&mut self, cx: &mut Context<Self>) {
+        let picker = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Escolher pasta do projeto".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = picker.await else { return; };
+            let Some(path) = paths.first().cloned() else { return; };
+            let _ = this.update(cx, |workspace, cx| workspace.open_project(path, cx));
+        })
+        .detach();
+    }
+
+    /// Abre uma conversa nova numa pasta escolhida, validando antes de gastar
+    /// um processo do Pi. Pasta inválida vira toast; nunca cai na anterior em
+    /// silêncio.
+    fn open_project(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if !path.is_dir() {
+            self.project_error(&path, "não é uma pasta", cx);
+            return;
+        }
+        if let Err(error) = std::fs::read_dir(&path) {
+            self.project_error(&path, &format!("não foi possível ler ({error})"), cx);
+            return;
+        }
+        self.notice = None;
+        let cwd = path.canonicalize().unwrap_or(path);
+        self.spawn_conversation(cwd, None, cx);
+    }
+
+    fn project_error(&mut self, path: &std::path::Path, reason: &str, cx: &mut Context<Self>) {
+        let message = format!("Não foi possível abrir {}: {reason}.", path.display());
+        let state = self.conversations[self.active].state.clone();
+        state.update(cx, |state, cx| {
+            state.push_toast(message, crate::state::Tone::Error, cx);
+        });
+    }
+
     fn spawn_conversation(&mut self, cwd: PathBuf, path: Option<PathBuf>, cx: &mut Context<Self>) {
         if self.opening.is_some() || self.pending.is_some() {
             return;
@@ -1046,6 +1094,12 @@ impl Workspace {
                             .items_center()
                             .gap(px(theme::S1))
                             .child(nav_icon_button(
+                                "nav-open-project",
+                                crate::ui::icons::Icon::Folder,
+                                cx,
+                                |workspace, _window, cx| workspace.choose_project(cx),
+                            ))
+                            .child(nav_icon_button(
                                 "nav-new-session",
                                 crate::ui::icons::Icon::Plus,
                                 cx,
@@ -1169,6 +1223,16 @@ impl Workspace {
                     .child(SharedString::from(error)),
             );
         }
+        if let Some(notice) = self.notice.clone() {
+            rail = rail.child(
+                div()
+                    .px(px(theme::S3))
+                    .pb(px(theme::S2))
+                    .text_size(px(theme::TEXT_XS))
+                    .text_color(theme::warn())
+                    .child(SharedString::from(notice)),
+            );
+        }
 
         let mut list = div()
             .id("nav-list")
@@ -1223,6 +1287,7 @@ impl Workspace {
             );
         }
 
+        let grouped_folders: Vec<PathBuf> = groups.keys().cloned().collect();
         for (cwd, items) in groups {
             let collapsed = self.collapsed.contains(&cwd);
             let click_cwd = cwd.clone();
@@ -1548,6 +1613,74 @@ impl Workspace {
                         ))
                     }),
             );
+        }
+
+        // Projetos recentes que ainda não aparecem na lista de sessões: uma
+        // conversa nova começa aqui sem reiniciar o Dish. A pasta em uso entra
+        // na frente quando a conversa ativa muda.
+        if query.is_empty() {
+            let recents: Vec<PathBuf> = self
+                .preferences
+                .recent_projects
+                .iter()
+                .filter(|path| path.is_dir() && !grouped_folders.contains(path))
+                .take(5)
+                .cloned()
+                .collect();
+            if !recents.is_empty() {
+                let mut section = div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(theme::S1))
+                    .pt(px(theme::S2))
+                    .child(
+                        div()
+                            .px(px(theme::S2))
+                            .py(px(theme::S1))
+                            .text_size(px(theme::TEXT_XS))
+                            .text_color(theme::faint())
+                            .child("Projetos recentes"),
+                    );
+                for path in recents {
+                    let label = folder_of(&path);
+                    let tooltip = path.display().to_string();
+                    let target = path.clone();
+                    section = section.child(
+                        div()
+                            .id(SharedString::from(format!("recent-{}", path.display())))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(theme::S2))
+                            .px(px(theme::S2))
+                            .py(px(theme::S1 + 2.))
+                            .rounded(theme::r_control())
+                            .cursor_pointer()
+                            .hover(|style| style.bg(theme::hover()))
+                            .tooltip(move |_, cx| {
+                                cx.new(|_| crate::ui::copy_button::TextTooltip(tooltip.clone())).into()
+                            })
+                            .on_click(cx.listener(move |workspace, _: &ClickEvent, _, cx| {
+                                workspace.open_project(target.clone(), cx);
+                            }))
+                            .child(crate::ui::icons::icon(
+                                crate::ui::icons::Icon::Folder,
+                                13.,
+                                theme::faint(),
+                            ))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .truncate()
+                                    .text_size(px(theme::TEXT_SM))
+                                    .text_color(theme::dim())
+                                    .child(SharedString::from(label)),
+                            ),
+                    );
+                }
+                list = list.child(section);
+            }
         }
 
         self.row_order = self.nav_entries.iter().map(entry_key).collect();
@@ -2177,6 +2310,7 @@ impl Render for Workspace {
         preferences.collapsed_projects = self.collapsed.clone();
         preferences.last_project = Some(active.cwd.clone());
         preferences.last_session = active.session.file.as_ref().map(PathBuf::from);
+        preferences.remember_project(&active.cwd);
         let bounds = window.bounds();
         preferences.window_size = Some([f32::from(bounds.size.width), f32::from(bounds.size.height)]);
         if preferences != self.preferences {
