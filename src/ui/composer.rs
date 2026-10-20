@@ -206,8 +206,10 @@ fn effort_control(state: &AppState, cx: &Context<AppState>) -> AnyElement {
                 div()
                     .text_size(px(theme::TEXT_SM))
                     .text_color(theme::faint())
-                    .child(if state.loading {
-                        "esforço…"
+                    .child(if state.model_sync.failed {
+                        "esforço indisponível"
+                    } else if state.loading || !state.model_sync.ready {
+                        "atualizando esforço…"
                     } else {
                         "sem raciocínio"
                     }),
@@ -464,11 +466,8 @@ fn queue_item(label: &str, text: &str, color: Hsla) -> AnyElement {
 /// Menu do esforço: cada nível na sua cor do Pi, como no rail antigo.
 fn effort_menu(state: &AppState, cx: &Context<AppState>) -> Div {
     let current = state.thinking_level.clone().unwrap_or_default();
-    let levels: Vec<String> = if state.thinking_levels.is_empty() {
-        vec!["off".into(), "low".into(), "medium".into(), "high".into()]
-    } else {
-        state.thinking_levels.clone()
-    };
+    // Pi owns capabilities. Never invent a fallback ladder for an empty list.
+    let levels = state.thinking_levels.clone();
 
     let rows = levels.iter().enumerate().map(|(index, level)| {
         let selected = *level == current;
