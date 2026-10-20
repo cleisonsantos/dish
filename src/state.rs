@@ -2543,6 +2543,19 @@ impl AppState {
         });
     }
 
+    /// Relê os modelos e os níveis de esforço deste processo do Pi.
+    ///
+    /// Uma credencial de provedor pode mudar nas Configurações enquanto esta
+    /// conversa está aberta; o Pi não emite um evento de catálogo, então a lista
+    /// é pedida de novo em vez de exigir reiniciar a conversa. Só as listas são
+    /// trocadas: rascunho, histórico e streaming não são tocados.
+    pub fn refresh_catalog(&mut self, cx: &mut Context<Self>) {
+        self.client.call("get_available_models", Value::Null);
+        self.client
+            .call("get_available_thinking_levels", Value::Null);
+        cx.notify();
+    }
+
     pub fn open_model_menu(&mut self, cx: &mut Context<Self>) {
         self.model_search.update(cx, |editor, cx| editor.clear(cx));
         self.model_menu = true;

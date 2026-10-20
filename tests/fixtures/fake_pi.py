@@ -150,7 +150,17 @@ for line in sys.stdin:
     elif kind == "get_available_thinking_levels":
         data["levels"] = ["off", "low", "high", "max"]
     elif kind == "get_available_models":
-        data["models"] = [{"id": "fake-model", "provider": "test", "reasoning": True}]
+        models = [{"id": "fake-model", "provider": "test", "reasoning": True}]
+        # O login de provedor grava no auth.json do agente (fixture do SDK).
+        # Reler aqui é o que torna visível a atualização da conversa aberta.
+        try:
+            with open(os.path.join(os.environ.get("PI_CODING_AGENT_DIR", ""), "auth.json")) as auth:
+                stored = json.load(auth)
+        except (OSError, ValueError):
+            stored = {}
+        if "anthropic" in stored:
+            models.append({"id": "claude-fake", "provider": "anthropic", "reasoning": True})
+        data["models"] = models
     elif kind == "get_messages" and os.environ.get("DISH_FAKE_METADATA_HISTORY"):
         with open(os.environ["DISH_FAKE_METADATA_HISTORY"], encoding="utf-8") as history:
             data["messages"] = json.load(history)

@@ -22,6 +22,12 @@ pub enum SettingsEvent {
     ShowAllModels,
     /// Trocar o executável do Pi escolhido.
     ChoosePi,
+    /// Uma credencial de provedor foi adicionada ou removida no Pi.
+    ///
+    /// As conversas abertas precisam reler a lista de modelos: o processo do Pi
+    /// não avisa sozinho quando uma credencial muda, e o usuário deve conseguir
+    /// escolher o novo modelo sem reiniciar a conversa.
+    ProvidersChanged,
 }
 impl EventEmitter<SettingsEvent> for Settings {}
 
@@ -572,6 +578,9 @@ impl Settings {
                     provider: outcome.provider,
                 });
                 self.refresh_providers(cx);
+                // Os modelos das conversas abertas só são atualizados quando
+                // pedimos de novo ao Pi; ver `SettingsEvent::ProvidersChanged`.
+                cx.emit(SettingsEvent::ProvidersChanged);
                 return true;
             }
             Message::Failed(message) => {
@@ -650,12 +659,16 @@ impl Settings {
                 .spawn(async move { crate::provider_login::logout(&target) })
                 .await;
             let _ = this.update(cx, |this, cx| {
+                let removed = result.is_ok();
                 this.provider_notice = Some(match result {
                     Ok(()) => format!(
                         "Credencial de {provider} removida do Pi. Remover aqui não revoga a chave no serviço."
                     ),
                     Err(error) => format!("{error:#}"),
                 });
+                if removed {
+                    cx.emit(SettingsEvent::ProvidersChanged);
+                }
                 this.refresh_providers(cx);
                 cx.notify();
             });

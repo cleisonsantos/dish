@@ -229,16 +229,15 @@ From the same section a provider can be connected: either an API key or the
 provider's own sign-in (a browser page, or a device code to paste back), both
 conducted by Pi. Cancelling stops it, removing a saved credential asks for
 confirmation, and the list is re-read from Pi after every action — nothing is
-shown optimistically. Pi keeps the credential and refreshes it; Dish only asks.
-With no way to talk to Pi (no Node, no package) the section says so and offers to
-open Pi in a terminal instead.
+shown optimistically. Open conversations also re-read their model list after a
+credential changes, so the new provider's models can be selected without
+restarting the conversation or losing a draft. Pi keeps the credential and
+refreshes it; Dish only asks. With no way to talk to Pi (no Node, no package)
+the section says so and offers to open Pi in a terminal instead.
 
-Provider login is managed by Pi itself: open Pi in a terminal and use `/login`.
-Dish uses the credentials already configured in Pi and provides no integrated
-provider login or logout. The read-only probe that tells Dish which providers
-exist — including the ones without a credential — and where each credential
-comes from is specified in [docs/provider-auth.md](docs/provider-auth.md); it
-never reads or prints a credential value.
+The adapter contract and the measured Pi capabilities are specified in
+[docs/provider-auth.md](docs/provider-auth.md); Dish never reads or prints a
+credential value.
 
 Application settings expose the existing details/navigation visibility and
 expanded-thinking preferences. These use the existing Dish preferences store,
