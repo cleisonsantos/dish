@@ -201,47 +201,30 @@ fn is_text_busy(error: &std::io::Error) -> bool {
     { let _ = error; false }
 }
 
-// Drain both pipes while waiting, retaining only bounded version output.
-fn run(mut command: Command, timeout: Duration) -> Result<String> {
-    use std::io::Read;
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    crate::platform::hide_console(&mut command);
-    let deadline = Instant::now() + timeout;
-    let mut child = retry_text_busy(|| command.spawn(), timeout)
-        .context("Não foi possível executar o comando")?;
-    let mut stdout = child.stdout.take().unwrap();
-    let reader = std::thread::spawn(move || {
-        let mut kept = Vec::new();
-        let mut buffer = [0; 1024];
-        while let Ok(count) = stdout.read(&mut buffer) {
-            if count == 0 {
-                break;
-            }
-            let remaining = 4096usize.saturating_sub(kept.len());
-            kept.extend_from_slice(&buffer[..count.min(remaining)]);
+// Keep the bounded runner shared with the other utility processes; only the
+// spawn attempt is retried for the transient ETXTBSY case.  npm can be
+// verbose, so allow a larger bounded buffer even though most callers only
+// read a version line.
+fn run(command: Command, timeout: Duration) -> Result<String> {
+    let output = crate::process::run_with_spawner(
+        command,
+        timeout,
+        8 * 1024 * 1024,
+        None,
+        None,
+        |command| retry_text_busy(|| command.spawn(), timeout),
+    )
+    .map_err(|error| {
+        if error.kind() == std::io::ErrorKind::TimedOut {
+            anyhow!("O comando excedeu o tempo limite.")
+        } else {
+            anyhow!("Não foi possível executar o comando: {error}")
         }
-        kept
-    });
-    loop {
-        if let Some(status) = child.try_wait()? {
-            if !status.success() {
-                bail!("O comando terminou com erro ({status}).");
-            }
-            let bytes = reader
-                .join()
-                .map_err(|_| anyhow!("Falha ao ler a versão"))?;
-            return Ok(String::from_utf8_lossy(&bytes).trim().to_string());
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            bail!("O comando excedeu o tempo limite.");
-        }
-        std::thread::sleep(Duration::from_millis(25));
+    })?;
+    if !output.status.success() {
+        bail!("O comando terminou com erro ({}).", output.status);
     }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 pub fn validate(program: &str) -> Result<String> {

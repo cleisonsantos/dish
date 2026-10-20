@@ -416,9 +416,7 @@ fn queue(state: &AppState, cx: &Context<AppState>) -> Div {
                         .cursor_pointer()
                         .hover(|style| style.text_color(theme::failure()))
                         .on_click(cx.listener(|state, _: &ClickEvent, _window, cx| {
-                            state.clear_queue();
-                            state.steering_queue.clear();
-                            state.follow_up_queue.clear();
+                            state.clear_queue(cx);
                             cx.notify();
                         }))
                         .child("limpar"),
@@ -490,7 +488,7 @@ fn effort_menu(state: &AppState, cx: &Context<AppState>) -> Div {
                 el.hover(|style| style.bg(theme::hover()))
             })
             .on_click(cx.listener(move |state, _: &ClickEvent, _window, cx| {
-                state.set_thinking_level(&level_for_click);
+                state.set_thinking_level(&level_for_click, cx);
                 state.effort_menu = false;
                 cx.notify();
             }))

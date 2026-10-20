@@ -5,9 +5,8 @@
 //! the session is still unnamed. Errors are safe to show without provider output.
 
 use crate::state::ModelInfo;
-use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::Duration;
 
 /// A follow-up like "sim", "ok" or "continue" should not rename the session.
@@ -16,7 +15,7 @@ const MIN_CHARS: usize = 16;
 
 /// A bounded deadline includes both output collection and process exit.
 const TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_OUTPUT: u64 = 64 * 1024;
+const MAX_OUTPUT: usize = 64 * 1024;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum TitleError {
@@ -197,46 +196,22 @@ fn generate_title_with_timeout(
     command
         .args(arguments(model, demand))
         .current_dir(cwd)
-        .env("PI_SKIP_VERSION_CHECK", "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    crate::platform::hide_console(&mut command);
-    let mut child = command.spawn().map_err(|_| TitleError::Start)?;
-    let Some(stdout) = child.stdout.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(TitleError::Output);
-    };
-    // Read on a worker so a hung Pi can be killed instead of blocking forever.
-    let (sender, receiver) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut buffer = String::new();
-        let result = stdout.take(MAX_OUTPUT + 1).read_to_string(&mut buffer);
-        let _ = sender.send((result, buffer));
-    });
-    let deadline = std::time::Instant::now() + timeout;
-    let result = (|| {
-        let (read, raw) = receiver.recv_timeout(timeout).map_err(|_| TitleError::Timeout)?;
-        read.map_err(|_| TitleError::Output)?;
-        if raw.len() as u64 > MAX_OUTPUT {
-            return Err(TitleError::Output);
-        }
-        loop {
-            match child.try_wait().map_err(|_| TitleError::Failed)? {
-                Some(status) if status.success() => break,
-                Some(_) => return Err(TitleError::Failed),
-                None if std::time::Instant::now() >= deadline => return Err(TitleError::Timeout),
-                None => std::thread::sleep(Duration::from_millis(10)),
+        .env("PI_SKIP_VERSION_CHECK", "1");
+    let output = crate::process::run(command, timeout, MAX_OUTPUT, None, None).map_err(|error| {
+        match error.kind() {
+            std::io::ErrorKind::TimedOut => TitleError::Timeout,
+            std::io::ErrorKind::InvalidData => TitleError::Output,
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied => {
+                TitleError::Start
             }
+            _ => TitleError::Failed,
         }
-        title_from_records(&raw, max_chars).ok_or(TitleError::Invalid)
-    })();
-    if result.is_err() {
-        let _ = child.kill();
-        let _ = child.wait();
+    })?;
+    if !output.status.success() {
+        return Err(TitleError::Failed);
     }
-    result
+    let raw = String::from_utf8_lossy(&output.stdout);
+    title_from_records(&raw, max_chars).ok_or(TitleError::Invalid)
 }
 
 #[cfg(test)]

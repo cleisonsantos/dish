@@ -104,7 +104,7 @@ pub fn model_picker(state: &AppState, window: &Window, cx: &Context<AppState>) -
             })
             .on_click(move |_event: &ClickEvent, window: &mut Window, cx: &mut App| {
                 weak.update(cx, |state, cx| {
-                    state.set_model(&click);
+                    state.set_model(&click, cx);
                     let focus = state.editor.read(cx).focus_handle.clone();
                     focus.focus(window, cx);
                     cx.notify();

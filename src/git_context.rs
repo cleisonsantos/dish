@@ -1,8 +1,8 @@
 //! Read-only Git context. All process and filesystem work belongs off the UI thread.
-use std::io::{self, Read};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::process::{Command, Output};
+use std::time::Duration;
 
 const TIMEOUT: Duration = Duration::from_secs(3);
 const OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
@@ -95,28 +95,6 @@ impl GitContext {
     }
 }
 
-fn read_pipe(mut pipe: impl Read + Send + 'static) -> std::thread::JoinHandle<io::Result<Vec<u8>>> {
-    std::thread::spawn(move || {
-        let mut kept = Vec::new();
-        let mut buffer = [0; 8192];
-        let mut truncated = false;
-        loop {
-            let count = pipe.read(&mut buffer)?;
-            if count == 0 {
-                break;
-            }
-            let remaining = OUTPUT_LIMIT.saturating_sub(kept.len());
-            truncated |= count > remaining;
-            kept.extend_from_slice(&buffer[..count.min(remaining)]);
-        }
-        if truncated {
-            Err(io::Error::other("saída do Git excedeu o limite"))
-        } else {
-            Ok(kept)
-        }
-    })
-}
-
 fn run(program: &Path, cwd: &Path, args: &[&str], timeout: Duration) -> io::Result<Output> {
     let mut command = Command::new(program);
     command
@@ -142,50 +120,12 @@ fn run(program: &Path, cwd: &Path, args: &[&str], timeout: Duration) -> io::Resu
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_NO_LAZY_FETCH", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
-        .env("LC_ALL", "C")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    crate::platform::hide_console(&mut command);
-    let mut child = command.spawn()?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| io::Error::other("stdout do Git indisponível"))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| io::Error::other("stderr do Git indisponível"))?;
-    let stdout = read_pipe(stdout);
-    let stderr = read_pipe(stderr);
-    let deadline = Instant::now() + timeout;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "consulta excedeu o tempo limite",
-                ));
-            }
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(error);
-            }
-        }
-    };
+        .env("LC_ALL", "C");
+    let output = crate::process::run(command, timeout, OUTPUT_LIMIT, Some(64 * 1024), None)?;
     Ok(Output {
-        status,
-        stdout: stdout
-            .join()
-            .map_err(|_| io::Error::other("falha ao ler stdout do Git"))??,
-        stderr: stderr
-            .join()
-            .map_err(|_| io::Error::other("falha ao ler stderr do Git"))??,
+        status: output.status,
+        stdout: output.stdout,
+        stderr: output.stderr,
     })
 }
 
@@ -419,6 +359,7 @@ fn parse_status(bytes: &[u8]) -> io::Result<Repository> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 

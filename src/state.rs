@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 
 use crate::editor::Editor;
 use crate::metadata::{TimeOrigin, Timing};
-use crate::rpc::{PiClient, RpcResponse};
+use crate::rpc::{PiClient, RpcResponse, RpcSendError, SendResult};
 use crate::theme;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -576,6 +576,51 @@ impl AppState {
         }).detach();
     }
 
+    /// Accepts a command id or reports a transport error.  The caller only
+    /// updates optimistic UI state when this returns `Some`.
+    fn send_rpc(&mut self, result: SendResult<String>, cx: &mut Context<Self>) -> Option<String> {
+        match result {
+            Ok(id) => Some(id),
+            Err(error) => {
+                self.report_rpc_error(error, cx);
+                None
+            }
+        }
+    }
+
+    fn mark_disconnected(&mut self, message: String, cx: &mut Context<Self>) {
+        if self.disconnected {
+            return;
+        }
+        self.activity = None;
+        self.streaming = false;
+        self.agent_active = false;
+        self.disconnected = true;
+        self.activity_error = true;
+        self.last_activity = Some(std::time::SystemTime::now());
+        self.loading = false;
+        self.push_toast(message, Tone::Error, cx);
+    }
+
+    fn report_rpc_error(&mut self, error: RpcSendError, cx: &mut Context<Self>) {
+        if error == RpcSendError::Closed && self.disconnected {
+            return;
+        }
+        let tone = match error {
+            RpcSendError::QueueFull | RpcSendError::TooLarge => Tone::Warning,
+            RpcSendError::Closed => {
+                self.disconnected = true;
+                self.streaming = false;
+                self.agent_active = false;
+                self.loading = false;
+                self.activity = None;
+                self.activity_error = true;
+                Tone::Error
+            }
+        };
+        self.push_toast(format!("Não foi possível enviar ao Pi: {error}"), tone, cx);
+    }
+
     /// Subscribe to the Pi process and pull the initial session state.
     pub fn start(&mut self, cx: &mut Context<Self>) {
         self.refresh_git(cx);
@@ -588,14 +633,10 @@ impl AppState {
                 }
             }
             let _ = this.update(cx, |state, cx| {
-                state.activity = None;
-                state.streaming = false;
-                state.agent_active = false;
-                state.disconnected = true;
-                state.activity_error = true;
-                state.last_activity = Some(std::time::SystemTime::now());
-                state.loading = false;
-                state.push_toast("O Pi encerrou. Reinicie o Dish para reconectar.".to_string(), Tone::Error, cx);
+                state.mark_disconnected(
+                    "O Pi encerrou. Reinicie o Dish para reconectar.".to_string(),
+                    cx,
+                );
             });
         })
         .detach();
@@ -622,13 +663,28 @@ impl AppState {
         })
         .detach();
 
+        let failures = self.client.failures.clone();
+        cx.spawn(async move |this, cx| {
+            while let Ok(message) = failures.recv().await {
+                let _ = this.update(cx, |state, cx| {
+                    state.mark_disconnected(message, cx);
+                });
+            }
+        })
+        .detach();
+
         // Prime the UI with everything it needs to render a full frame.
-        self.client.call("get_state", Value::Null);
-        self.client.call("get_available_models", Value::Null);
-        self.client.call("get_available_thinking_levels", Value::Null);
-        self.client.call("get_session_stats", Value::Null);
-        self.client.call("get_commands", Value::Null);
-        self.client.call("get_messages", Value::Null);
+        for command in [
+            "get_state",
+            "get_available_models",
+            "get_available_thinking_levels",
+            "get_session_stats",
+            "get_commands",
+            "get_messages",
+        ] {
+            let result = self.client.call(command, Value::Null);
+            self.send_rpc(result, cx);
+        }
 
         if let Some(prompt) = self.initial_prompt.take() {
             self.submit_text(prompt, cx);
@@ -711,7 +767,7 @@ impl AppState {
                 self.agent_active = false;
                 self.streaming = false;
                 self.activity = None;
-                self.refresh_after_settle();
+                self.refresh_after_settle(cx);
                 self.maybe_generate_title(cx);
                 None
             }
@@ -806,7 +862,7 @@ impl AppState {
                 } else {
                     self.banner = None;
                 }
-                self.refresh_after_settle();
+                self.refresh_after_settle(cx);
                 None
             }
             "auto_retry_start" => {
@@ -946,7 +1002,7 @@ impl AppState {
                     .get("thinkingLevel")
                     .and_then(Value::as_str)
                     .map(str::to_string);
-                self.reconcile_effort();
+                self.reconcile_effort(cx);
                 self.sync_effort_accent();
                 self.session.id = data
                     .get("sessionId")
@@ -998,7 +1054,7 @@ impl AppState {
             }
             "get_available_thinking_levels" => {
                 self.thinking_levels = string_array(response.data.get("levels"));
-                self.reconcile_effort();
+                self.reconcile_effort(cx);
                 self.sync_effort_accent();
                 None
             }
@@ -1831,27 +1887,32 @@ impl AppState {
 
     /// Respond to a dialog request from an extension.
     pub fn respond_modal(&mut self, value: ModalAnswer, cx: &mut Context<Self>) {
-        let Some(modal) = self.modal.take() else {
+        let Some(modal) = self.modal.as_ref() else {
             return;
         };
+        let id = modal.id.clone();
         let payload = match value {
             ModalAnswer::Cancelled => json!({
                 "type": "extension_ui_response",
-                "id": modal.id,
+                "id": id,
                 "cancelled": true,
             }),
             ModalAnswer::Value(value) => json!({
                 "type": "extension_ui_response",
-                "id": modal.id,
+                "id": id,
                 "value": value,
             }),
             ModalAnswer::Confirmed(confirmed) => json!({
                 "type": "extension_ui_response",
-                "id": modal.id,
+                "id": id,
                 "confirmed": confirmed,
             }),
         };
-        self.client.send(payload);
+        let result = self.client.send(payload);
+        if self.send_rpc(result, cx).is_none() {
+            return;
+        }
+        self.modal = None;
         self.composer_focus_pending = true;
         cx.notify();
     }
@@ -1933,9 +1994,11 @@ impl AppState {
         }
     }
 
-    fn refresh_after_settle(&mut self) {
-        self.client.call("get_session_stats", Value::Null);
-        self.client.call("get_state", Value::Null);
+    fn refresh_after_settle(&mut self, cx: &mut Context<Self>) {
+        let stats = self.client.call("get_session_stats", Value::Null);
+        self.send_rpc(stats, cx);
+        let state = self.client.call("get_state", Value::Null);
+        self.send_rpc(state, cx);
     }
 
     // --------------------------------------------------------------- actions
@@ -1972,11 +2035,18 @@ impl AppState {
                 self.push_toast("Envie imagens com uma mensagem normal, sem comando / ou !.".into(), Tone::Warning, cx);
                 return;
             }
+            let images: Vec<Value> = self
+                .pasted_images
+                .iter()
+                .map(|(_, value)| value.clone())
+                .collect();
+            let behavior = self.streaming.then_some("steer");
+            let result = self.client.prompt_with_images(&text, behavior, &images);
+            let Some(id) = self.send_rpc(result, cx) else {
+                return;
+            };
             self.editor.update(cx, |editor, _| editor.push_history(&text));
             let images = std::mem::take(&mut self.pasted_images);
-            let payload: Vec<Value> = images.iter().map(|(_, value)| value.clone()).collect();
-            let behavior = self.streaming.then_some("steer");
-            let id = self.client.prompt_with_images(&text, behavior, &payload);
             let display = format!("{}\n{}", text, vec!["[image]"; images.len()].join("\n"));
             self.push_local_user(&display);
             self.pending_image_prompts.insert(id, (text, images));
@@ -2028,7 +2098,7 @@ impl AppState {
         if let Some(command) = text.strip_prefix('!') {
             let command = command.trim().to_string();
             if !command.is_empty() {
-                self.run_bash(command);
+                self.run_bash(command, cx);
             }
             return;
         }
@@ -2038,7 +2108,10 @@ impl AppState {
 
         // While a turn is running, Pi needs to know what to do with the message.
         let behavior = self.streaming.then_some("steer");
-        self.client.prompt(&text, behavior);
+        let result = self.client.prompt(&text, behavior);
+        if self.send_rpc(result, cx).is_none() {
+            return;
+        }
         self.push_local_user(&text);
         if behavior.is_some() {
             self.steering_queue.push(text);
@@ -2065,7 +2138,10 @@ impl AppState {
                 if !argument.is_empty() {
                     command["customInstructions"] = json!(argument);
                 }
-                self.client.send(command);
+                let result = self.client.send(command);
+                if self.send_rpc(result, cx).is_none() {
+                    return true;
+                }
                 self.banner = Some(Banner {
                     text: "Compactando o contexto…".into(),
                     tone: Tone::Info,
@@ -2081,10 +2157,11 @@ impl AppState {
                     let id = fields.next();
                     match id {
                         Some(id) => {
-                            self.client.call(
+                            let result = self.client.call(
                                 "set_model",
                                 json!({ "provider": provider, "modelId": id }),
                             );
+                            self.send_rpc(result, cx);
                         }
                         None => {
                             // Match by model id alone.
@@ -2094,10 +2171,11 @@ impl AppState {
                                 .find(|model| model.id == *provider)
                                 .cloned()
                             {
-                                self.client.call(
+                                let result = self.client.call(
                                     "set_model",
                                     json!({ "provider": model.provider, "modelId": model.id }),
                                 );
+                                self.send_rpc(result, cx);
                             } else {
                                 self.push_toast(
                                     format!("Unknown model: {provider}"),
@@ -2114,8 +2192,10 @@ impl AppState {
                 if argument.is_empty() {
                     self.thinking_menu = true;
                 } else {
-                    self.client
+                    let result = self
+                        .client
                         .call("set_thinking_level", json!({ "level": argument }));
+                    self.send_rpc(result, cx);
                 }
                 true
             }
@@ -2124,17 +2204,22 @@ impl AppState {
                 if !argument.is_empty() {
                     command["outputPath"] = json!(argument);
                 }
-                self.client.send(command);
+                let result = self.client.send(command);
+                self.send_rpc(result, cx);
                 true
             }
             "/name" => {
                 if argument.is_empty() {
                     self.push_toast("Uso: /name <nome da sessão>".into(), Tone::Info, cx);
                 } else {
+                    let result = self
+                        .client
+                        .call("set_session_name", json!({ "name": argument }));
+                    if self.send_rpc(result, cx).is_none() {
+                        return true;
+                    }
                     self.title_revision = self.title_revision.wrapping_add(1);
                     self.title_generation = None;
-                    self.client
-                        .call("set_session_name", json!({ "name": argument }));
                     self.session.name = Some(argument);
                 }
                 true
@@ -2148,9 +2233,10 @@ impl AppState {
                 true
             }
             "/auto-compact" => {
-                self.toggle_auto_compaction();
-                let enabled = if self.session.auto_compaction { "ligada" } else { "desligada" };
-                self.push_toast(format!("Compactação automática {enabled}"), Tone::Info, cx);
+                if self.toggle_auto_compaction(cx) {
+                    let enabled = if self.session.auto_compaction { "ligada" } else { "desligada" };
+                    self.push_toast(format!("Compactação automática {enabled}"), Tone::Info, cx);
+                }
                 true
             }
             "/clear" => {
@@ -2171,7 +2257,10 @@ impl AppState {
                     .any(|command| format!("/{}", command.name) == name);
                 if known {
                     let behavior = self.streaming.then_some("steer");
-                    self.client.prompt(text, behavior);
+                    let result = self.client.prompt(text, behavior);
+                    if self.send_rpc(result, cx).is_none() {
+                        return true;
+                    }
                     self.push_local_user(text);
                     if behavior.is_some() {
                         self.steering_queue.push(text.to_string());
@@ -2189,8 +2278,11 @@ impl AppState {
         }
     }
 
-    pub fn run_bash(&mut self, command: String) {
-        let id = self.client.bash(&command);
+    pub fn run_bash(&mut self, command: String, cx: &mut Context<Self>) {
+        let result = self.client.bash(&command);
+        let Some(id) = self.send_rpc(result, cx) else {
+            return;
+        };
         let mut message = Message::new(Role::Bash);
         message.timestamp = now_ms().unwrap_or(0);
         message.timestamp_origin = TimeOrigin::Dish;
@@ -2330,8 +2422,10 @@ impl AppState {
                 state.title_failure = Some(demand);
                 match generated {
                     Ok(title) => {
-                        let id = state.client.call("set_session_name", json!({ "name": title }));
-                        state.pending_title_name = Some((id, title, revision));
+                        let result = state.client.call("set_session_name", json!({ "name": title }));
+                        if let Some(id) = state.send_rpc(result, cx) {
+                            state.pending_title_name = Some((id, title, revision));
+                        }
                     }
                     Err(error) => state.push_toast(
                         format!("Não foi possível gerar o título: {error}. Mantido o texto do pedido; desative e reative os títulos para tentar novamente."),
@@ -2512,15 +2606,22 @@ impl AppState {
     }
 
     pub fn abort(&mut self, cx: &mut Context<Self>) {
-        self.client.call("abort", Value::Null);
+        let result = self.client.call("abort", Value::Null);
+        if self.send_rpc(result, cx).is_none() {
+            return;
+        }
         self.streaming = false;
         self.activity = None;
         self.banner = None;
         cx.notify();
     }
 
-    pub fn clear_queue(&mut self) {
-        self.client.call("clear_queue", Value::Null);
+    pub fn clear_queue(&mut self, cx: &mut Context<Self>) {
+        let result = self.client.call("clear_queue", Value::Null);
+        if self.send_rpc(result, cx).is_some() {
+            self.steering_queue.clear();
+            self.follow_up_queue.clear();
+        }
     }
 
     pub fn new_session(&mut self) {
@@ -2535,8 +2636,11 @@ impl AppState {
         self.is_executing() || (!self.disconnected && self.modal.is_some())
     }
 
-    pub fn compact(&mut self) {
-        self.client.call("compact", Value::Null);
+    pub fn compact(&mut self, cx: &mut Context<Self>) {
+        let result = self.client.call("compact", Value::Null);
+        if self.send_rpc(result, cx).is_none() {
+            return;
+        }
         self.banner = Some(Banner {
             text: "Compactando o contexto…".into(),
             tone: Tone::Info,
@@ -2553,16 +2657,20 @@ impl AppState {
     }
 
 
-    pub fn set_model(&mut self, model: &ModelInfo) {
-        self.client.call(
+    pub fn set_model(&mut self, model: &ModelInfo, cx: &mut Context<Self>) {
+        let result = self.client.call(
             "set_model",
             json!({ "provider": model.provider, "modelId": model.id }),
         );
+        if self.send_rpc(result, cx).is_none() {
+            return;
+        }
         self.model = Some(model.clone());
         self.model_menu = false;
         // A escada do novo modelo chega em seguida; até lá os níveis atuais
         // continuam visíveis, em vez de o controle esvaziar.
-        self.client.call("get_available_thinking_levels", Value::Null);
+        let levels = self.client.call("get_available_thinking_levels", Value::Null);
+        self.send_rpc(levels, cx);
     }
 
     /// Modelos visíveis para a busca atual, na ordem exibida (o atual primeiro).
@@ -2622,7 +2730,7 @@ impl AppState {
             return;
         };
         let model = self.models[model_index].clone();
-        self.set_model(&model);
+        self.set_model(&model, cx);
         let focus = self.editor.read(cx).focus_handle.clone();
         focus.focus(window, cx);
         cx.notify();
@@ -2635,21 +2743,27 @@ impl AppState {
             self.push_toast("Este modelo não controla o nível de esforço".into(), Tone::Info, cx);
             return;
         };
-        self.set_thinking_level(&level);
-        self.push_toast(format!("Esforço: {}", effort_label(&level)), Tone::Info, cx);
+        if self.set_thinking_level(&level, cx) {
+            self.push_toast(format!("Esforço: {}", effort_label(&level)), Tone::Info, cx);
+        }
     }
 
-    pub fn set_thinking_level(&mut self, level: &str) {
-        self.client
+    pub fn set_thinking_level(&mut self, level: &str, cx: &mut Context<Self>) -> bool {
+        let result = self
+            .client
             .call("set_thinking_level", json!({ "level": level }));
+        if self.send_rpc(result, cx).is_none() {
+            return false;
+        }
         self.thinking_level = Some(level.to_string());
         self.thinking_menu = false;
         self.sync_effort_accent();
+        true
     }
 
     /// Alinha o nível atual com a escada do modelo: um nível que a nova lista
     /// não suporta vira `off` (ou o primeiro disponível) em vez de ficar pendurado.
-    fn reconcile_effort(&mut self) {
+    fn reconcile_effort(&mut self, cx: &mut Context<Self>) {
         let Some(level) =
             reconcile_effort_level(&self.thinking_levels, self.thinking_level.as_deref())
                 .map(str::to_string)
@@ -2657,20 +2771,26 @@ impl AppState {
             return;
         };
         if self.thinking_level.as_deref() != Some(level.as_str()) {
-            self.set_thinking_level(&level);
+            self.set_thinking_level(&level, cx);
         }
     }
 
-    pub fn toggle_auto_compaction(&mut self) {
-        self.session.auto_compaction = !self.session.auto_compaction;
-        self.client.call(
+    pub fn toggle_auto_compaction(&mut self, cx: &mut Context<Self>) -> bool {
+        let enabled = !self.session.auto_compaction;
+        let result = self.client.call(
             "set_auto_compaction",
-            json!({ "enabled": self.session.auto_compaction }),
+            json!({ "enabled": enabled }),
         );
+        if self.send_rpc(result, cx).is_none() {
+            return false;
+        }
+        self.session.auto_compaction = enabled;
+        true
     }
 
-    pub fn export_html(&mut self) {
-        self.client.call("export_html", Value::Null);
+    pub fn export_html(&mut self, cx: &mut Context<Self>) {
+        let result = self.client.call("export_html", Value::Null);
+        self.send_rpc(result, cx);
     }
 
     // ------------------------------------------------------------------ reads
