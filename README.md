@@ -214,8 +214,15 @@ shortcuts do not act on the background while settings is open.
 credential, which the RPC model list cannot show — with its state and where the
 configured credential comes from (a stored credential, an environment variable,
 `models.json`, ambient cloud credentials). It never shows or stores a credential
-value. With nothing connected it says so and offers to open Pi in a terminal for
-`/login`, then re-reads the state.
+value.
+
+From the same section a provider can be connected: either an API key or the
+provider's own sign-in (a browser page, or a device code to paste back), both
+conducted by Pi. Cancelling stops it, removing a saved credential asks for
+confirmation, and the list is re-read from Pi after every action — nothing is
+shown optimistically. Pi keeps the credential and refreshes it; Dish only asks.
+With no way to talk to Pi (no Node, no package) the section says so and offers to
+open Pi in a terminal instead.
 
 Provider login is managed by Pi itself: open Pi in a terminal and use `/login`.
 Dish uses the credentials already configured in Pi and provides no integrated

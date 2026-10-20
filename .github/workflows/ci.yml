@@ -45,8 +45,10 @@ jobs:
       - name: Release tooling tests
         run: python3 -m unittest discover -s tests -p 'test_release_package.py' -v
       - name: Provider adapter contract
-        # Roda contra o SDK falso: sem Pi, sem rede e sem credencial real.
-        run: python3 -m unittest discover -s tests -p 'test_provider_adapter.py' -v
+        # Rodam contra o SDK falso: sem Pi, sem rede e sem credencial real.
+        run: |
+          python3 -m unittest discover -s tests -p 'test_provider_adapter.py' -v
+          python3 -m unittest discover -s tests -p 'test_provider_login.py' -v
       - name: Build and package candidate (with path remapping and license checks)
         run: python3 scripts/package-linux.py --version 0.1.0-alpha.5
       - name: Build Debian package from the verified candidate

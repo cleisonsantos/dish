@@ -40,6 +40,21 @@ enum ProvidersView {
     Unavailable(String),
 }
 
+/// Onde o login está. Um passo por vez, com a lista sempre a um clique atrás.
+#[derive(Clone)]
+enum LoginStep {
+    /// Escolher como entrar nesse provedor.
+    ChoosingMethod { provider: String },
+    /// Login em andamento: uma pergunta pendente ou os avisos já recebidos.
+    Running {
+        provider: String,
+        ask: Option<crate::provider_login::Ask>,
+        notices: Vec<crate::provider_login::Notice>,
+    },
+    Done { provider: String },
+    Failed { message: String, provider: String },
+}
+
 pub struct Settings {
     pub open: bool,
     section: Section,
@@ -59,6 +74,17 @@ pub struct Settings {
     providers: ProvidersView,
     /// Aviso da última ação na seção Provedores (ex.: nenhum terminal).
     provider_notice: Option<String>,
+    /// Fluxo de login em andamento, se houver.
+    login: Option<LoginStep>,
+    /// O processo do adaptador enquanto um login corre; matá-lo é o cancelamento.
+    session: Option<crate::provider_login::LoginSession>,
+    /// Campo da resposta atual — nunca guardado depois de enviado.
+    answer: Entity<Editor>,
+    /// Pedido de foco para o campo, aplicado no próximo quadro (o foco precisa
+    /// de uma janela, e quem recebe a pergunta não tem uma).
+    answer_focus: bool,
+    /// Provedor esperando confirmação de remoção.
+    confirming_logout: Option<String>,
 }
 
 /// O que a tela de configurações precisa mostrar quando abre.
@@ -77,6 +103,8 @@ impl Settings {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let search = cx.new(|cx| Editor::new("", "Buscar atalhos…", window, cx));
         cx.observe(&search, |_, _, cx| cx.notify()).detach();
+        let answer = cx.new(|cx| Editor::new("", "", window, cx));
+        cx.observe(&answer, |_, _, cx| cx.notify()).detach();
         Self {
             open: false, section: Section::App, focus: cx.focus_handle(),
             previous_focus: None, search,
@@ -86,6 +114,11 @@ impl Settings {
             models: Vec::new(), hidden: BTreeSet::new(),
             providers: ProvidersView::Idle,
             provider_notice: None,
+            login: None,
+            session: None,
+            answer,
+            answer_focus: false,
+            confirming_logout: None,
         }
     }
 
@@ -159,10 +192,486 @@ impl Settings {
         self.models.clone()
     }
 
+    /// A seção Provedores: a lista, ou o login em andamento.
+    fn providers_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        // O foco precisa de uma janela, e quem recebe a pergunta não tem uma.
+        if self.answer_focus {
+            self.answer_focus = false;
+            self.answer.read(cx).focus_handle.clone().focus(window, cx);
+        }
+        let mut page = column().child(page_title("Provedores")).child(note(
+            "O estado vem do Pi. O Dish não guarda nem mostra o valor de nenhuma credencial: a resposta vai direto para o Pi e o campo é limpo em seguida.",
+        ));
+        if let Some(notice) = self.provider_notice.clone() {
+            page = page.child(note(&notice));
+        }
+        match self.login.clone() {
+            Some(LoginStep::ChoosingMethod { provider }) => self.method_chooser(page, &provider, cx),
+            Some(LoginStep::Running { provider, ask, notices }) => {
+                self.login_running(page, &provider, ask, &notices, cx)
+            }
+            Some(LoginStep::Done { provider }) => {
+                page.child(note(&format!("Provedor {provider} conectado.")))
+                    .child(actions_row(vec![
+                        control("providers-back", "Voltar à lista", cx.listener(|this, _, _, cx| {
+                            this.login = None;
+                            cx.notify();
+                        })),
+                    ]))
+                    .into_any_element()
+            }
+            Some(LoginStep::Failed { message, provider }) => page
+                .child(note(&message))
+                .child(actions_row(vec![
+                    control("providers-retry-login", "Tentar de novo", cx.listener(
+                        move |this, _, _, cx| {
+                            let provider = provider.clone();
+                            this.login = Some(LoginStep::ChoosingMethod { provider });
+                            cx.notify();
+                        },
+                    )),
+                    control("providers-back", "Voltar à lista", cx.listener(|this, _, _, cx| {
+                        this.login = None;
+                        cx.notify();
+                    })),
+                ]))
+                .into_any_element(),
+            None => self.provider_list(page, cx),
+        }
+    }
+
+    /// Lista de provedores com estado, origem e a ação de cada linha.
+    fn provider_list(&mut self, mut page: Div, cx: &mut Context<Self>) -> AnyElement {
+        let mut actions = div().flex().flex_row().gap(px(8.));
+        match self.providers.clone() {
+            ProvidersView::Idle | ProvidersView::Loading => {
+                page = page.child(note("Consultando o Pi…"));
+            }
+            ProvidersView::Unavailable(reason) => {
+                page = page.child(note(&reason));
+                // Sem Node ou sem pacote, o terminal ainda resolve: o Dish
+                // abre o Pi e a pessoa usa /login lá.
+                actions = actions.child(control("providers-terminal", "Abrir o Pi num terminal", cx.listener(
+                    |this, _, _, cx| {
+                        this.provider_notice = crate::installation::launch_pi_login()
+                            .err()
+                            .map(|error| format!("{error:#}"));
+                        cx.notify();
+                    },
+                )));
+            }
+            ProvidersView::Ready(snapshot) => {
+                if snapshot.empty() {
+                    // Primeiro uso sem credencial: o Pi instalado não basta, e o
+                    // usuário precisa saber o que fazer agora.
+                    page = page.child(note(
+                        "Nenhum provedor conectado, então ainda não há modelo para conversar. Comece pela linha do provedor que você usa.",
+                    ));
+                }
+                let mut providers = snapshot.providers.clone();
+                providers.sort_by(|a, b| b.configured.cmp(&a.configured).then_with(|| a.id.cmp(&b.id)));
+                for provider in providers {
+                    let status = if provider.configured {
+                        provider.source.map(|source| source.label()).unwrap_or("conectado")
+                    } else {
+                        "sem credencial"
+                    };
+                    let methods = provider.methods();
+                    let mut row = div().flex().flex_row().items_center().gap(px(12.))
+                        .px(px(12.)).py(px(8.)).rounded(theme::r_control())
+                        .bg(theme::surface_2()).border_1().border_color(theme::line_soft())
+                        .child(div().flex_1().min_w(px(0.)).truncate()
+                            .font_family(theme::FONT_MONO).text_size(px(theme::TEXT_SM))
+                            .text_color(if provider.configured { theme::text() } else { theme::faint() })
+                            .child(SharedString::from(provider.id.clone())))
+                        .child(div().flex_none().text_size(px(theme::TEXT_XS))
+                            .text_color(if provider.configured { theme::dim() } else { theme::faint() })
+                            .child(SharedString::from(status)))
+                        .child(div().flex_none().font_family(theme::FONT_MONO)
+                            .text_size(px(theme::TEXT_XS)).text_color(theme::faint())
+                            .child(SharedString::from(model_count(provider.models))));
+                    if provider.configured {
+                        if self.confirming_logout.as_deref() == Some(provider.id.as_str()) {
+                            let id = provider.id.clone();
+                            row = row
+                                .child(control(
+                                    SharedString::from(format!("providers-logout-confirm-{}", provider.id)),
+                                    "Confirmar remoção",
+                                    cx.listener(move |this, _, _, cx| this.logout_provider(id.clone(), cx)),
+                                ))
+                                .child(control(
+                                    SharedString::from(format!("providers-logout-cancel-{}", provider.id)),
+                                    "Cancelar",
+                                    cx.listener(|this, _, _, cx| {
+                                        this.confirming_logout = None;
+                                        cx.notify();
+                                    }),
+                                ));
+                        } else {
+                            let id = provider.id.clone();
+                            row = row.child(control(
+                                SharedString::from(format!("providers-logout-{}", provider.id)),
+                                "Remover credencial",
+                                cx.listener(move |this, _, _, cx| {
+                                    this.confirming_logout = Some(id.clone());
+                                    this.provider_notice = None;
+                                    cx.notify();
+                                }),
+                            ));
+                        }
+                    } else if !methods.is_empty() {
+                        let id = provider.id.clone();
+                        row = row.child(control(
+                            SharedString::from(format!("providers-connect-{}", provider.id)),
+                            "Conectar",
+                            cx.listener(move |this, _, _, cx| {
+                                this.login = Some(LoginStep::ChoosingMethod { provider: id.clone() });
+                                this.provider_notice = None;
+                                cx.notify();
+                            }),
+                        ));
+                    }
+                    page = page.child(row);
+                }
+                let mut summary = match snapshot.pi_version.clone() {
+                    Some(version) => format!("Catálogo do Pi {version}"),
+                    None => "Catálogo do Pi".to_string(),
+                };
+                summary.push_str(&format!(
+                    " · {} provedores · {} conectados",
+                    snapshot.providers.len(),
+                    snapshot.ready(),
+                ));
+                page = page.child(note(&summary));
+            }
+        }
+        actions = actions.child(control("providers-retry", "Verificar de novo", cx.listener(
+            |this, _, _, cx| this.refresh_providers(cx),
+        )));
+        page.child(actions).child(note(
+            "Provedores locais e endpoints compatíveis são configurados em models.json, como o Pi descreve em docs/models.md.",
+        )).into_any_element()
+    }
+
+    /// Escolha de como entrar: chave de API ou conta do provedor.
+    fn method_chooser(&self, mut page: Div, provider: &str, cx: &mut Context<Self>) -> AnyElement {
+        let methods = match &self.providers {
+            ProvidersView::Ready(snapshot) => snapshot
+                .providers
+                .iter()
+                .find(|entry| entry.id == provider)
+                .map(crate::providers::Provider::methods)
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        page = page.child(note(&format!("Como entrar em {provider}?")));
+        let provider_owned = provider.to_string();
+        for (kind, label) in methods {
+            let provider = provider_owned.clone();
+            page = page.child(
+                div().flex().flex_row().items_center().gap(px(12.))
+                    .px(px(12.)).py(px(8.)).rounded(theme::r_control())
+                    .bg(theme::surface_2()).border_1().border_color(theme::line_soft())
+                    .child(div().flex_1().min_w(px(0.)).truncate()
+                        .text_size(px(theme::TEXT_SM)).text_color(theme::text())
+                        .child(SharedString::from(label)))
+                    .child(control(
+                        SharedString::from(format!("providers-method-{}", kind.wire())),
+                        "Usar",
+                        cx.listener(move |this, _, _, cx| {
+                            this.start_login(provider.clone(), kind, cx);
+                        }),
+                    )),
+            );
+        }
+        page.child(actions_row(vec![control("providers-back", "Voltar", cx.listener(
+            |this, _, _, cx| {
+                this.login = None;
+                cx.notify();
+            },
+        ))])).into_any_element()
+    }
+
+    /// O login em andamento: pergunta pendente, avisos e a saída de emergência.
+    fn login_running(
+        &self,
+        mut page: Div,
+        provider: &str,
+        ask: Option<crate::provider_login::Ask>,
+        notices: &[crate::provider_login::Notice],
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use crate::provider_login::{AskKind, Notice};
+        page = page.child(note(&format!("Conectando {provider}…")));
+        for notice in notices {
+            match notice {
+                Notice::Info { message, links } => {
+                    if let Some(message) = message {
+                        page = page.child(note(message));
+                    }
+                    for link in links {
+                        let url = link.clone();
+                        page = page.child(actions_row(vec![control(
+                            "providers-open-link",
+                            "Abrir ajuda no navegador",
+                            cx.listener(move |_, _, _, _| crate::platform::open_url(&url)),
+                        )]));
+                    }
+                }
+                Notice::AuthUrl { url, instructions } => {
+                    if let Some(instructions) = instructions {
+                        page = page.child(note(instructions));
+                    }
+                    let open = url.clone();
+                    page = page.child(note(url)).child(actions_row(vec![control(
+                        "providers-open-url",
+                        "Abrir no navegador",
+                        cx.listener(move |_, _, _, _| crate::platform::open_url(&open)),
+                    )]));
+                }
+                Notice::DeviceCode { user_code, verification_uri, .. } => {
+                    page = page.child(note(&format!("Código: {user_code}")));
+                    if let Some(uri) = verification_uri {
+                        let uri = uri.clone();
+                        page = page.child(note(&format!("Em {uri}"))).child(actions_row(vec![control(
+                            "providers-open-device",
+                            "Abrir a página do código",
+                            cx.listener(move |_, _, _, _| crate::platform::open_url(&uri)),
+                        )]));
+                    }
+                }
+                Notice::Progress { message } => {
+                    page = page.child(note(message.as_deref().unwrap_or("Aguardando o provedor…")));
+                }
+            }
+        }
+        match ask {
+            Some(ask) => {
+                page = page.child(note(&ask.message));
+                if ask.kind == AskKind::Select {
+                    // Cada opção é uma resposta: o valor vai como o id do Pi.
+                    for option in &ask.options {
+                        let id = option.id.clone();
+                        let mut row = div().flex().flex_row().items_center().gap(px(12.))
+                            .px(px(12.)).py(px(8.)).rounded(theme::r_control())
+                            .bg(theme::surface_2()).border_1().border_color(theme::line_soft())
+                            .child(div().flex_1().min_w(px(0.)).child(div().truncate()
+                                .text_size(px(theme::TEXT_SM)).text_color(theme::text())
+                                .child(SharedString::from(option.label.clone()))));
+                        if let Some(description) = &option.description {
+                            row = row.child(div().flex_none().font_family(theme::FONT_MONO)
+                                .text_size(px(theme::TEXT_XS)).text_color(theme::faint())
+                                .child(SharedString::from(description.clone())));
+                        }
+                        page = page.child(row.child(control(
+                            SharedString::from(format!("providers-option-{}", option.id)),
+                            "Escolher",
+                            cx.listener(move |this, _, _, cx| this.submit_answer(Some(id.clone()), cx)),
+                        )));
+                    }
+                } else {
+                    let placeholder = ask.placeholder.clone().unwrap_or_default();
+                    let hint = match ask.kind {
+                        AskKind::Secret => "O valor não é guardado pelo Dish nem aparece em registro.",
+                        AskKind::ManualCode => "Cole o código devolvido pelo provedor.",
+                        _ => "",
+                    };
+                    page = page.child(
+                        div().id("providers-answer").p(px(8.)).rounded(theme::r_technical())
+                            .bg(theme::inset()).border_1().border_color(theme::line_soft())
+                            .child(self.answer.clone()),
+                    );
+                    if !placeholder.is_empty() {
+                        page = page.child(note(&format!("Exemplo: {placeholder}")));
+                    }
+                    if !hint.is_empty() {
+                        page = page.child(note(hint));
+                    }
+                    page = page.child(actions_row(vec![control(
+                        "providers-send",
+                        "Enviar",
+                        cx.listener(|this, _, _, cx| this.submit_answer(None, cx)),
+                    )]));
+                }
+            }
+            None => {
+                page = page.child(note("Aguardando o provedor…"));
+            }
+        }
+        page.child(actions_row(vec![control(
+            "providers-cancel",
+            "Cancelar",
+            cx.listener(|this, _, _, cx| this.cancel_login(cx)),
+        )]))
+        .into_any_element()
+    }
+
+    /// Abre o processo do adaptador e começa o login de um provedor.
+    fn start_login(
+        &mut self,
+        provider: String,
+        kind: crate::provider_login::AuthKind,
+        cx: &mut Context<Self>,
+    ) {
+        match crate::provider_login::LoginSession::start(&provider, kind) {
+            Ok(session) => {
+                let events = session.events();
+                self.session = Some(session);
+                self.login = Some(LoginStep::Running {
+                    provider,
+                    ask: None,
+                    notices: Vec::new(),
+                });
+                self.answer.update(cx, |editor, cx| editor.clear(cx));
+                cx.notify();
+                cx.spawn(async move |this, cx| {
+                    while let Ok(message) = events.recv().await {
+                        let finished = this
+                            .update(cx, |this, cx| this.apply_login_message(message, cx))
+                            .unwrap_or(true);
+                        if finished {
+                            break;
+                        }
+                    }
+                })
+                .detach();
+            }
+            Err(error) => {
+                self.login = Some(LoginStep::Failed {
+                    provider,
+                    message: format!("{error:#}"),
+                });
+                cx.notify();
+            }
+        }
+    }
+
+    /// Aplica uma mensagem do adaptador. Devolve `true` quando o login terminou.
+    fn apply_login_message(
+        &mut self,
+        message: crate::provider_login::Message,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        use crate::provider_login::Message;
+        match message {
+            Message::Ask(ask) => {
+                if let Some(LoginStep::Running { ask: slot, .. }) = self.login.as_mut() {
+                    *slot = Some(ask);
+                }
+                self.answer.update(cx, |editor, cx| editor.clear(cx));
+                self.answer_focus = true;
+            }
+            Message::Notice(notice) => {
+                if let Some(LoginStep::Running { notices, .. }) = self.login.as_mut() {
+                    notices.push(notice);
+                }
+            }
+            Message::Done(outcome) => {
+                self.session = None;
+                self.login = Some(LoginStep::Done {
+                    provider: outcome.provider,
+                });
+                self.refresh_providers(cx);
+                return true;
+            }
+            Message::Failed(message) => {
+                let provider = self.current_provider().unwrap_or_default();
+                self.session = None;
+                self.login = Some(LoginStep::Failed { message, provider });
+                return true;
+            }
+            Message::Ignored => {}
+        }
+        cx.notify();
+        false
+    }
+
+    fn current_provider(&self) -> Option<String> {
+        match self.login.as_ref()? {
+            LoginStep::Running { provider, .. }
+            | LoginStep::Failed { provider, .. }
+            | LoginStep::Done { provider } => Some(provider.clone()),
+            LoginStep::ChoosingMethod { .. } => None,
+        }
+    }
+
+    /// Envia a resposta de uma pergunta. `None` usa o que está no campo.
+    ///
+    /// O valor sai daqui direto para o Pi: não é copiado para o estado, para as
+    /// preferências nem para registro, e o campo é limpo logo depois.
+    fn submit_answer(&mut self, value: Option<String>, cx: &mut Context<Self>) {
+        let Some(LoginStep::Running { ask: Some(ask), .. }) = self.login.as_ref() else {
+            return;
+        };
+        let prompt = ask.prompt;
+        let value = value.unwrap_or_else(|| self.answer.read(cx).text(cx));
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        if let Err(error) = session.reply(prompt, &value) {
+            let provider = self.current_provider().unwrap_or_default();
+            self.session = None;
+            self.login = Some(LoginStep::Failed {
+                provider,
+                message: format!("{error:#}"),
+            });
+            cx.notify();
+            return;
+        }
+        self.answer.update(cx, |editor, cx| editor.clear(cx));
+        if let Some(LoginStep::Running { ask, .. }) = self.login.as_mut() {
+            *ask = None;
+        }
+        cx.notify();
+    }
+
+    /// Cancela o login e encerra o processo do adaptador.
+    fn cancel_login(&mut self, cx: &mut Context<Self>) {
+        if let Some(session) = self.session.as_mut() {
+            let _ = session.cancel();
+        }
+        // Descartar a sessão mata o processo filho (ver `Drop`).
+        self.session = None;
+        self.answer.update(cx, |editor, cx| editor.clear(cx));
+        // Cancelar volta para a lista: a seção não fecha nem fica presa.
+        self.login = None;
+        cx.notify();
+    }
+
+    /// Remove a credencial guardada de um provedor, no Pi.
+    fn logout_provider(&mut self, provider: String, cx: &mut Context<Self>) {
+        self.confirming_logout = None;
+        self.provider_notice = Some(format!("Removendo a credencial de {provider}…"));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let target = provider.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move { crate::provider_login::logout(&target) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.provider_notice = Some(match result {
+                    Ok(()) => format!(
+                        "Credencial de {provider} removida do Pi. Remover aqui não revoga a chave no serviço."
+                    ),
+                    Err(error) => format!("{error:#}"),
+                });
+                this.refresh_providers(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     pub fn suspend(&mut self, cx: &mut Context<Self>) {
         self.open = false;
         self.previous_focus = None;
         self.search.update(cx, |editor, cx| editor.clear(cx));
+        // Fechar a tela não pode deixar um login pendurado nem um processo vivo.
+        self.session = None;
+        self.login = None;
+        self.confirming_logout = None;
+        self.answer.update(cx, |editor, cx| editor.clear(cx));
         // Reabrir a tela relê o estado: a credencial pode ter mudado no Pi.
         self.providers = ProvidersView::Idle;
         cx.notify();
@@ -244,6 +753,11 @@ fn note(value: &str) -> Div {
         .text_color(theme::dim())
         .child(SharedString::from(value.to_owned()))
 }
+/// Fileira de ações: mesma medida em toda a seção.
+fn actions_row(actions: Vec<Stateful<Div>>) -> Div {
+    div().flex().flex_row().items_center().gap(px(8.)).children(actions)
+}
+
 fn control(id: impl Into<ElementId>, label: impl Into<SharedString>, click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Stateful<Div> {
     // O padding desconta a borda: a caixa final fica com as mesmas medidas da
     // versão sem fio, e o conteúdo abaixo não desliza um pixel.
@@ -505,91 +1019,7 @@ impl Render for Settings {
                 );
                 page.into_any_element()
             }
-            Section::Providers => {
-                let mut page = column().child(page_title("Provedores")).child(note(
-                    "O estado vem do Pi e é lido sem tocar no valor de nenhuma credencial. Conectar ou remover uma credencial continua sendo /login e /logout no Pi.",
-                ));
-                if let Some(notice) = self.provider_notice.clone() {
-                    page = page.child(note(&notice));
-                }
-                match self.providers.clone() {
-                    ProvidersView::Idle | ProvidersView::Loading => {
-                        page = page.child(note("Consultando o Pi…"));
-                    }
-                    ProvidersView::Unavailable(reason) => {
-                        page = page.child(note(&reason));
-                    }
-                    ProvidersView::Ready(snapshot) => {
-                        if snapshot.empty() {
-                            // Primeiro uso sem credencial: o Pi instalado não
-                            // basta, e o usuário precisa saber o que fazer agora.
-                            page = page.child(note(
-                                "Nenhum provedor conectado, então ainda não há modelo para conversar. O Dish abre o Pi no terminal: use /login lá e volte para verificar de novo.",
-                            ));
-                        }
-                        let mut providers = snapshot.providers.clone();
-                        providers.sort_by(|a, b| {
-                            b.configured.cmp(&a.configured).then_with(|| a.id.cmp(&b.id))
-                        });
-                        for provider in providers {
-                            // Uma linha por provedor: nome técnico, estado por
-                            // extenso e a origem da credencial quando existe.
-                            let status = if provider.configured {
-                                provider.source.map(|source| source.label()).unwrap_or("conectado")
-                            } else {
-                                "sem credencial"
-                            };
-                            page = page.child(
-                                div().flex().flex_row().items_center().gap(px(12.))
-                                    .px(px(12.)).py(px(8.)).rounded(theme::r_control())
-                                    .bg(theme::surface_2()).border_1().border_color(theme::line_soft())
-                                    .child(div().flex_1().min_w(px(0.)).truncate()
-                                        .font_family(theme::FONT_MONO).text_size(px(theme::TEXT_SM))
-                                        .text_color(if provider.configured { theme::text() } else { theme::faint() })
-                                        .child(SharedString::from(provider.id.clone())))
-                                    .child(div().flex_none().text_size(px(theme::TEXT_XS))
-                                        .text_color(if provider.configured { theme::dim() } else { theme::faint() })
-                                        .child(SharedString::from(status)))
-                                    .child(div().flex_none().font_family(theme::FONT_MONO)
-                                        .text_size(px(theme::TEXT_XS)).text_color(theme::faint())
-                                        .child(SharedString::from(model_count(provider.models))))
-                            );
-                        }
-                        let mut summary = match snapshot.pi_version.clone() {
-                            Some(version) => format!("Catálogo do Pi {version}"),
-                            None => "Catálogo do Pi".to_string(),
-                        };
-                        summary.push_str(&format!(
-                            " · {} provedores · {} conectados",
-                            snapshot.providers.len(),
-                            snapshot.ready(),
-                        ));
-                        page = page.child(note(&summary));
-                    }
-                }
-                let mut actions = div().flex().flex_row().gap(px(8.));
-                if matches!(self.providers, ProvidersView::Ready(_)) {
-                    if let ProvidersView::Ready(snapshot) = &self.providers {
-                        if snapshot.empty() {
-                            actions = actions.child(control("providers-login", "Conectar um provedor", cx.listener(
-                                |this, _, _, cx| {
-                                    this.provider_notice = crate::installation::launch_pi_login()
-                                        .err()
-                                        .map(|error| format!("{error:#}"));
-                                    cx.notify();
-                                },
-                            )));
-                        }
-                    }
-                }
-                actions = actions.child(control("providers-retry", "Verificar de novo", cx.listener(
-                    |this, _, _, cx| this.refresh_providers(cx),
-                )));
-                page = page.child(actions).child(note(
-                    "Provedores locais e endpoints compatíveis são configurados em models.json, como o Pi descreve em docs/models.md.",
-                ));
-                page.into_any_element()
-            }
+            Section::Providers => self.providers_page(window, cx),
             Section::Models => {
                 let mut page = column().child("Modelos").child(note(
                     "Oculta modelos apenas no seletor do Dish. O Pi continua com a lista completa; nada é alterado na configuração dele.",

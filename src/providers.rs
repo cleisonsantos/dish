@@ -10,6 +10,7 @@
 
 use anyhow::{anyhow, Result};
 use serde_json::Value;
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -70,11 +71,40 @@ impl Source {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthMethod {
+    /// Nome que o provedor dá ao método, exibido na escolha.
+    pub name: String,
+    /// Rótulo preferido do provedor para o login, quando existe.
+    pub label: Option<String>,
+    /// O acesso é por assinatura, não por chave.
+    pub subscription: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Provider {
     pub id: String,
     pub models: usize,
     pub configured: bool,
     pub source: Option<Source>,
+    /// Login interativo por chave de API, quando o provedor oferece.
+    pub api_key: Option<AuthMethod>,
+    /// Login interativo por conta do provedor (OAuth), quando oferece.
+    pub oauth: Option<AuthMethod>,
+}
+
+impl Provider {
+    /// Métodos que a interface pode oferecer para conectar este provedor.
+    pub fn methods(&self) -> Vec<(crate::provider_login::AuthKind, String)> {
+        let mut methods = Vec::new();
+        if let Some(method) = &self.api_key {
+            methods.push((crate::provider_login::AuthKind::ApiKey, method.name.clone()));
+        }
+        if let Some(method) = &self.oauth {
+            let label = method.label.clone().unwrap_or_else(|| method.name.clone());
+            methods.push((crate::provider_login::AuthKind::OAuth, label));
+        }
+        methods
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -154,6 +184,7 @@ pub fn parse(stdout: &str) -> Result<Snapshot> {
                 return None;
             }
             let configured = entry.get("configured").and_then(Value::as_bool).unwrap_or(false);
+            let auth = entry.get("auth");
             Some(Provider {
                 id: id.to_string(),
                 models: entry.get("models").and_then(Value::as_u64).unwrap_or(0) as usize,
@@ -164,10 +195,26 @@ pub fn parse(stdout: &str) -> Result<Snapshot> {
                     .map(Source::parse)
                     // Sem credencial não há origem a mostrar.
                     .filter(|_| configured),
+                api_key: auth.and_then(|auth| method(auth, "api_key")),
+                oauth: auth.and_then(|auth| method(auth, "oauth")),
             })
         })
         .collect();
     Ok(Snapshot { pi_version, providers })
+}
+
+/// Um método de login só entra se o Pi oferecer um login interativo para ele.
+fn method(auth: &Value, key: &str) -> Option<AuthMethod> {
+    let entry = auth.get(key)?;
+    if entry.is_null() {
+        return None;
+    }
+    let name = entry.get("name").and_then(Value::as_str)?.to_string();
+    Some(AuthMethod {
+        name,
+        label: entry.get("label").and_then(Value::as_str).map(str::to_string),
+        subscription: entry.get("subscription").and_then(Value::as_bool).unwrap_or(false),
+    })
 }
 
 /// Código fechado do adaptador vira uma frase; o `detail` cru não é exibido,
@@ -187,7 +234,7 @@ fn adapter_error(root: &Value) -> String {
 ///
 /// O conteúdo é o do binário: comparar antes de escrever evita reescrever a cada
 /// consulta e mantém a cópia em sincronia quando o Dish é atualizado.
-fn materialize_adapter() -> Result<PathBuf> {
+pub(crate) fn materialize_adapter() -> Result<PathBuf> {
     let root = cache_dir().ok_or_else(|| anyhow!("Não encontrei um diretório de cache."))?;
     let directory = root.join("dish");
     std::fs::create_dir_all(&directory)
@@ -227,14 +274,33 @@ pub fn find_node() -> Option<PathBuf> {
 ///
 /// Diferente de `installation::run`, uma saída diferente de zero não é erro: o
 /// adaptador responde o motivo em JSON no stdout e usa o código para o teste.
-pub fn run_bounded(mut command: Command, timeout: Duration) -> Result<String> {
+pub fn run_bounded(command: Command, timeout: Duration) -> Result<String> {
+    let mut command = command;
+    let mut child = spawn_piped(&mut command, Stdio::null())?;
+    drain(&mut child, timeout)
+}
+
+/// Como `run_bounded`, mas escreve uma entrada e fecha o stdin do filho.
+///
+/// Operações sem interação (remover credencial) terminam quando a entrada acaba,
+/// então escrever e fechar é o bastante para o adaptador encerrar sozinho.
+pub fn run_with_stdin(mut command: Command, body: &str, timeout: Duration) -> Result<String> {
+    let mut child = spawn_piped(&mut command, Stdio::piped())?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(body.as_bytes());
+        // `stdin` sai de escopo aqui e fecha o cano.
+    }
+    drain(&mut child, timeout)
+}
+
+fn spawn_piped(command: &mut Command, stdin: Stdio) -> Result<std::process::Child> {
+    command.stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::null());
+    crate::platform::hide_console(command);
+    command.spawn().map_err(|_| anyhow!("Não foi possível executar o Node."))
+}
+
+fn drain(child: &mut std::process::Child, timeout: Duration) -> Result<String> {
     use std::io::Read;
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    crate::platform::hide_console(&mut command);
-    let mut child = command.spawn().map_err(|_| anyhow!("Não foi possível executar o Node."))?;
     let mut stdout = child.stdout.take().ok_or_else(|| anyhow!("Sem saída do adaptador."))?;
     let reader = std::thread::spawn(move || {
         let mut kept = Vec::new();
@@ -275,7 +341,10 @@ mod tests {
             "pi":{"version":"1.2.0","package":"/home/alguem/.pi"},
             "providers":[
                 {"id":"openai","models":44,"configured":true,"source":"stored",
-                 "label":"OpenAI","key":"sk-live-NAO-PODE-VAZAR","env":{"OPENAI_API_KEY":"sk-live-NAO-PODE-VAZAR"}},
+                 "label":"OpenAI","key":"sk-live-NAO-PODE-VAZAR","env":{"OPENAI_API_KEY":"sk-live-NAO-PODE-VAZAR"},
+                 "auth":{"api_key":{"name":"OpenAI API key"},
+                         "oauth":{"name":"OpenAI","label":"Entrar com a conta","subscription":true,
+                                  "token":"eyJhbGciNAO-PODE-VAZAR"}}},
                 {"id":"groq","models":2,"configured":false,"source":null,
                  "token":"eyJhbGciNAO-PODE-VAZAR"}],
             "credentials":[{"providerId":"openai","type":"oauth","secret":"sk-live-NAO-PODE-VAZAR"}]
@@ -293,8 +362,18 @@ mod tests {
         assert_eq!(openai.models, 44);
         assert_eq!(openai.source, Some(Source::Stored));
         assert_eq!(openai.source.map(Source::label), Some("credencial salva"));
-        // Sem credencial não se anuncia origem.
+        // O que a interface pode oferecer para conectar.
+        assert_eq!(
+            openai.methods(),
+            vec![
+                (crate::provider_login::AuthKind::ApiKey, "OpenAI API key".to_string()),
+                (crate::provider_login::AuthKind::OAuth, "Entrar com a conta".to_string()),
+            ]
+        );
+        assert_eq!(openai.oauth.as_ref().map(|method| method.subscription), Some(true));
+        // Sem credencial não se anuncia origem; sem método não se oferece botão.
         assert_eq!(snapshot.providers[1].source, None);
+        assert!(snapshot.providers[1].methods().is_empty());
     }
 
     #[test]
