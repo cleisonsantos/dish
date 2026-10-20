@@ -119,10 +119,17 @@ with tempfile.TemporaryDirectory(prefix="dish-effort-") as temporary:
         wait_for(lambda: any(item.get("duplicate_sent") == "alpha" for item in events()), "Stale response not replayed")
         assert_beta_menu()
 
+        # A transient toast may expire or wrap differently under CI fonts.
+        # Hold the recovery query so the error UI is stable until observed.
+        recovery = temp / "hold-recovery"
+        recovery.touch()
         slash("failure")
-        wait_for(lambda: "atualizar o modelo" in text(), "Switch failure not shown")
-        assert_beta_menu()  # Failure re-reads Pi instead of guessing the active model.
+        wait_for(lambda: any(item.get("waiting") == "hold-recovery" for item in events()),
+                 "Rejected switch did not trigger a recovery query")
+        wait_for(lambda: "indisponivel" in text(), "Switch failure not shown")
         assert not find_word(window, "failure", last=True), "Failed target shown as confirmed model"
+        recovery.unlink()
+        assert_beta_menu()  # Failure re-reads Pi instead of guessing the active model.
         slash("beta")
         assert_beta_menu()
         (temp / "fail-levels").touch()

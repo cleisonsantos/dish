@@ -90,6 +90,9 @@ for line in sys.stdin:
         switching = True
         threading.Thread(target=switch, args=(command,), daemon=True).start()
     elif kind == "get_state":
+        # Let the smoke observe a rejected switch before recovery replaces its
+        # persistent error state. No timing dependency on the short-lived toast.
+        wait_gate("hold-recovery")
         response(command, {"model": info(model), "thinkingLevel": level,
                  "sessionId": "synthetic-effort", "isStreaming": False})
     elif kind == "get_available_thinking_levels":
