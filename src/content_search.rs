@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::BufReader;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
@@ -17,7 +18,8 @@ pub struct Document {
     pub live: Option<usize>,
     pub title: String,
     /// Live content wins over the persisted file, including streaming messages.
-    pub messages: Option<Vec<String>>,
+    /// Shared so a query snapshot is not copied again into the worker.
+    pub messages: Option<Arc<Vec<String>>>,
 }
 
 #[derive(Clone)]
@@ -115,28 +117,32 @@ pub fn match_ranges(text: &str, folded_query: &str) -> Vec<std::ops::Range<usize
 
 fn snippet(text: &str, needle: &str) -> Option<String> {
     // Keep original Unicode characters; folding can change byte offsets.
-    let line = text
-        .lines()
-        .find(|line| line.to_lowercase().contains(needle))?;
-    let chars: Vec<char> = line.chars().collect();
-    let folded_offset = line.to_lowercase().find(needle)?;
-    let mut folded_bytes = 0;
-    let mut character: usize = 0;
-    for ch in &chars {
-        if folded_bytes >= folded_offset {
-            break;
+    for line in text.lines() {
+        let folded = line.to_lowercase();
+        let Some(folded_offset) = folded.find(needle) else {
+            continue;
+        };
+        let mut folded_bytes = 0;
+        let mut character: usize = 0;
+        for ch in line.chars() {
+            if folded_bytes >= folded_offset {
+                break;
+            }
+            folded_bytes += ch.to_lowercase().map(char::len_utf8).sum::<usize>();
+            character += 1;
         }
-        folded_bytes += ch.to_lowercase().map(char::len_utf8).sum::<usize>();
-        character += 1;
+        let start = character.saturating_sub(60);
+        let mut chars = line.chars().skip(start);
+        let snippet: String = chars.by_ref().take(240).collect();
+        let truncated = chars.next().is_some();
+        return Some(format!(
+            "{}{}{}",
+            if start > 0 { "…" } else { "" },
+            snippet,
+            if truncated { "…" } else { "" }
+        ));
     }
-    let start = character.saturating_sub(60);
-    let end = (start + 240).min(chars.len());
-    Some(format!(
-        "{}{}{}",
-        if start > 0 { "…" } else { "" },
-        chars[start..end].iter().collect::<String>(),
-        if end < chars.len() { "…" } else { "" }
-    ))
+    None
 }
 
 impl Index {
@@ -288,7 +294,7 @@ mod tests {
             path: None,
             live: Some(3),
             title: "sessão".into(),
-            messages: Some(vec!["ação feita".into(); 250]),
+            messages: Some(Arc::new(vec!["ação feita".into(); 250])),
         }];
         let result = Index::default().search(&docs, "AÇÃO", &AtomicU64::new(1), 1);
         assert_eq!(result.hits.len(), RESULT_LIMIT);
@@ -303,7 +309,7 @@ mod tests {
             path: None,
             live: Some(0),
             title: "test".into(),
-            messages: Some(vec!["found".into()]),
+            messages: Some(Arc::new(vec!["found".into()])),
         }];
         assert!(
             Index::default()
@@ -366,7 +372,7 @@ mod tests {
                 path: None,
                 live: Some(0),
                 title: "live".into(),
-                messages: Some(vec!["found".into()]),
+                messages: Some(Arc::new(vec!["found".into()])),
             },
         ];
         let result = Index::default().search(&docs, "found", &AtomicU64::new(1), 1);

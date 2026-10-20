@@ -2750,6 +2750,7 @@ mod tests {
             title: path.into(),
             named: false,
             modified: std::time::UNIX_EPOCH + std::time::Duration::from_secs(modified),
+            scan: Default::default(),
         }
     }
 

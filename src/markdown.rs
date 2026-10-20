@@ -81,6 +81,13 @@ fn run_for(style: &MarkdownStyle, inline: Inline) -> TextRun {
 /// Walk a line of Markdown and emit the *plain* text plus the runs that style
 /// it. Markers are consumed here, so the runs always cover the emitted text
 /// exactly — `StyledText::with_runs` requires that.
+///
+/// The scanner remembers a delimiter that has no closing partner and stops
+/// searching for that construct. This keeps malformed streaming text linear:
+/// a line with thousands of unmatched `[` or `*` cannot restart a full scan at
+/// every character. Recursion is bounded for the same reason.
+const MAX_INLINE_DEPTH: usize = 32;
+
 fn push_runs(
     text: &str,
     inline: Inline,
@@ -88,11 +95,34 @@ fn push_runs(
     out_text: &mut String,
     out_runs: &mut Vec<TextRun>,
 ) {
+    push_runs_depth(text, inline, style, out_text, out_runs, 0);
+}
+
+fn push_runs_depth(
+    text: &str,
+    inline: Inline,
+    style: &MarkdownStyle,
+    out_text: &mut String,
+    out_runs: &mut Vec<TextRun>,
+    depth: usize,
+) {
     if text.is_empty() {
+        return;
+    }
+    if depth >= MAX_INLINE_DEPTH {
+        let mut run = run_for(style, inline);
+        run.len = text.len();
+        out_text.push_str(text);
+        out_runs.push(run);
         return;
     }
     let mut plain_start = 0usize;
     let mut index = 0usize;
+    let mut bold_open = true;
+    let mut code_open = true;
+    let mut link_open = true;
+    let mut italic_star = true;
+    let mut italic_under = true;
 
     let push_plain = |from: usize, to: usize, out_text: &mut String, out_runs: &mut Vec<TextRun>| {
         if from >= to {
@@ -109,39 +139,67 @@ fn push_runs(
         let mut consumed = None::<(usize, usize, String, Inline)>;
 
         if !inline.code {
-            if let Some(after) = rest.strip_prefix("**") {
-                if let Some(end) = after.find("**") {
-                    let inner = &after[..end];
-                    if !inner.is_empty() {
-                        consumed = Some((index, index + 2 + end + 2, inner.to_string(), inline.bold()));
+            if bold_open && rest.starts_with("**") {
+                let after = &rest[2..];
+                match after.find("**") {
+                    Some(end) => {
+                        let inner = &after[..end];
+                        if !inner.is_empty() {
+                            consumed =
+                                Some((index, index + 2 + end + 2, inner.to_string(), inline.bold()));
+                        }
                     }
+                    None => bold_open = false,
                 }
-            } else if let Some(after) = rest.strip_prefix("`") {
-                if let Some(end) = after.find('`') {
-                    let inner = &after[..end];
-                    consumed = Some((index, index + 1 + end + 1, inner.to_string(), inline.code()));
-                }
-            } else if rest.starts_with('[') {
-                if let Some(close) = rest.find("](") {
-                    if let Some(end) = rest[close + 2..].find(')') {
-                        let label = &rest[1..close];
-                        let target = &rest[close + 2..close + 2 + end];
-                        let label = if label.is_empty() { target } else { label };
-                        consumed = Some((
-                            index,
-                            index + close + 2 + end + 1,
-                            label.to_string(),
-                            inline.link(),
-                        ));
+            } else if code_open && rest.starts_with('`') {
+                let after = &rest[1..];
+                match after.find('`') {
+                    Some(end) => {
+                        let inner = &after[..end];
+                        consumed =
+                            Some((index, index + 1 + end + 1, inner.to_string(), inline.code()));
                     }
+                    None => code_open = false,
                 }
-            } else if rest.starts_with('*') || rest.starts_with('_') {
-                let marker = &rest[..1];
-                if let Some(end) = rest[1..].find(marker) {
-                    let inner = &rest[1..1 + end];
-                    if !inner.is_empty() && !inner.contains('\n') {
-                        consumed = Some((index, index + 1 + end + 1, inner.to_string(), inline.italic()));
+            } else if link_open && rest.starts_with('[') {
+                match rest.find("](") {
+                    Some(close) => match rest[close + 2..].find(')') {
+                        Some(end) => {
+                            let label = &rest[1..close];
+                            let target = &rest[close + 2..close + 2 + end];
+                            let label = if label.is_empty() { target } else { label };
+                            consumed = Some((
+                                index,
+                                index + close + 2 + end + 1,
+                                label.to_string(),
+                                inline.link(),
+                            ));
+                        }
+                        None => link_open = false,
+                    },
+                    None => link_open = false,
+                }
+            } else if italic_star && rest.starts_with('*') {
+                match rest[1..].find('*') {
+                    Some(end) => {
+                        let inner = &rest[1..1 + end];
+                        if !inner.is_empty() && !inner.contains('\n') {
+                            consumed =
+                                Some((index, index + 1 + end + 1, inner.to_string(), inline.italic()));
+                        }
                     }
+                    None => italic_star = false,
+                }
+            } else if italic_under && rest.starts_with('_') {
+                match rest[1..].find('_') {
+                    Some(end) => {
+                        let inner = &rest[1..1 + end];
+                        if !inner.is_empty() && !inner.contains('\n') {
+                            consumed =
+                                Some((index, index + 1 + end + 1, inner.to_string(), inline.italic()));
+                        }
+                    }
+                    None => italic_under = false,
                 }
             }
         }
@@ -149,7 +207,7 @@ fn push_runs(
         match consumed {
             Some((start, end, inner, nested)) => {
                 push_plain(plain_start, start, out_text, out_runs);
-                push_runs(&inner, nested, style, out_text, out_runs);
+                push_runs_depth(&inner, nested, style, out_text, out_runs, depth + 1);
                 index = end;
                 plain_start = end;
             }
@@ -633,6 +691,36 @@ mod tests {
         for target in ["https://example.com/icon.png", "file:///tmp/icon.png", "//example.com/icon.svg", "data:image/png;base64,abc", "assets/file.rs"] {
             assert!(local_image_path(target, cwd).is_none(), "{target}");
         }
+    }
+
+    #[test]
+    fn inline_markup_still_styles_after_the_linear_scan() {
+        let style = crate::ui::markdown_style();
+        let mut out = String::new();
+        let mut runs = Vec::new();
+        push_runs(
+            "**negrito** *itálico* `código` [link](https://example.invalid)",
+            Inline::default(),
+            &style,
+            &mut out,
+            &mut runs,
+        );
+        assert_eq!(out, "negrito itálico código link");
+        assert!(runs.iter().any(|run| run.font.weight == FontWeight::BOLD));
+        assert!(runs.iter().any(|run| run.background_color.is_some()));
+        assert!(runs.iter().any(|run| run.color == style.accent));
+    }
+
+    #[test]
+    fn malformed_inline_brackets_do_not_rescan_or_hide_later_markup() {
+        let style = crate::ui::markdown_style();
+        let text = format!("{} **bold**", "[".repeat(20_000));
+        let mut out = String::new();
+        let mut runs = Vec::new();
+        push_runs(&text, Inline::default(), &style, &mut out, &mut runs);
+        assert_eq!(out, format!("{} bold", "[".repeat(20_000)));
+        assert_eq!(runs.iter().map(|run| run.len).sum::<usize>(), out.len());
+        assert!(runs.iter().any(|run| run.font.weight == FontWeight::BOLD));
     }
 
     #[test]
