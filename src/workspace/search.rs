@@ -22,6 +22,8 @@ pub(super) struct SearchState {
     generation: Arc<AtomicU64>,
     index: Arc<Mutex<Index>>,
     pending_jump: Option<(PathBuf, String)>,
+    /// Live text snapshots keyed by conversation entity and revision.
+    live_snapshots: std::collections::HashMap<EntityId, (u64, Arc<Vec<String>>)>,
 }
 
 impl SearchState {
@@ -86,6 +88,22 @@ fn message_text(message: &crate::state::Message) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn cached_snapshot<K: std::hash::Hash + Eq + Copy>(
+    cache: &mut std::collections::HashMap<K, (u64, Arc<Vec<String>>)>,
+    key: K,
+    revision: u64,
+    messages: &[crate::state::Message],
+) -> Arc<Vec<String>> {
+    match cache.get(&key) {
+        Some((cached, snapshot)) if *cached == revision => snapshot.clone(),
+        _ => {
+            let snapshot = Arc::new(messages.iter().map(message_text).collect::<Vec<_>>());
+            cache.insert(key, (revision, snapshot.clone()));
+            snapshot
+        }
+    }
 }
 
 fn reveal_match(state: &mut AppState, index: usize, query: &str, cx: &mut Context<AppState>) {
@@ -286,21 +304,36 @@ impl Workspace {
         .detach();
     }
 
-    /// Snapshot live content only after debounce; file content is never copied
-    /// or parsed on the UI thread.
-    fn search_documents(&self, cx: &mut Context<Self>) -> Vec<Document> {
+    /// Snapshot live content only after debounce. The per-conversation cache
+    /// is keyed by the transcript revision, so typing another query reuses the
+    /// previous snapshot instead of rebuilding every message on the UI thread.
+    fn search_documents(&mut self, cx: &mut Context<Self>) -> Vec<Document> {
         let cwd = self.conversations[self.active].state.read(cx).cwd.clone();
         let mut documents = Vec::new();
+        let mut snapshots = std::mem::take(&mut self.content_search.live_snapshots);
+        let live: std::collections::HashSet<_> = self
+            .conversations
+            .iter()
+            .map(|conversation| conversation.state.entity_id())
+            .collect();
+        snapshots.retain(|entity, _| live.contains(entity));
         for (i, conversation) in self.conversations.iter().enumerate() {
+            let entity = conversation.state.entity_id();
             let state = conversation.state.read(cx);
             if (self.content_search.project && state.cwd == cwd)
                 || (!self.content_search.project && i == self.active)
             {
+                let snapshot = cached_snapshot(
+                    &mut snapshots,
+                    entity,
+                    state.transcript_revision(),
+                    &state.messages,
+                );
                 documents.push(Document {
                     path: conversation.path.clone(),
                     live: Some(i),
                     title: self.conversation_title(i, cx),
-                    messages: Some(state.messages.iter().map(message_text).collect()),
+                    messages: Some(snapshot),
                 });
             }
         }
@@ -333,6 +366,7 @@ impl Workspace {
                 cx.notify();
             });
         }
+        self.content_search.live_snapshots = snapshots;
         documents
     }
 
@@ -624,8 +658,12 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
-    use super::{Hit, Results, SearchState};
-    use std::{path::PathBuf, sync::atomic::Ordering};
+    use super::{cached_snapshot, Hit, Results, SearchState};
+    use crate::state::{Block, Message, Role};
+    use std::{
+        path::PathBuf,
+        sync::{atomic::Ordering, Arc},
+    };
 
     fn hit(message: usize) -> Hit {
         Hit {
@@ -688,6 +726,33 @@ mod tests {
         assert!(state.results.hits.is_empty());
         assert_eq!(state.selected, None);
         assert!(state.begin_query("needle").is_some());
+    }
+
+    #[test]
+    fn live_snapshots_are_reused_until_the_transcript_revision_changes() {
+        let mut cache = std::collections::HashMap::new();
+        let message = Message {
+            role: Role::User,
+            blocks: vec![Block::Text("snapshot text".into())],
+            streaming: false,
+            timestamp: 0,
+            timestamp_origin: Default::default(),
+            timing: Default::default(),
+            finished_at: 0,
+            usage: None,
+            stop_reason: None,
+            error: None,
+            local: false,
+            model: None,
+        };
+
+        let first = cached_snapshot(&mut cache, 7usize, 1, std::slice::from_ref(&message));
+        let second = cached_snapshot(&mut cache, 7usize, 1, std::slice::from_ref(&message));
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(first.as_slice(), ["snapshot text"]);
+
+        let changed = cached_snapshot(&mut cache, 7usize, 2, std::slice::from_ref(&message));
+        assert!(!Arc::ptr_eq(&first, &changed));
     }
 
     #[test]

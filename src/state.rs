@@ -355,6 +355,8 @@ pub struct AppState {
     pub search_query: Option<String>,
     pub list_state: ListState,
     list_count: usize,
+    /// Bumped whenever the transcript changes; content search caches snapshots.
+    transcript_revision: u64,
     /// toolCallId -> (message index, block index)
     tool_slots: HashMap<String, (usize, usize)>,
     /// content index -> block index, for the message currently streaming
@@ -492,6 +494,7 @@ impl AppState {
             search_query: None,
             list_state,
             list_count: 0,
+            transcript_revision: 0,
             tool_slots: HashMap::new(),
             content_slots: HashMap::new(),
             streaming_message: None,
@@ -695,6 +698,7 @@ impl AppState {
     // ----------------------------------------------------------------- records
 
     fn handle_record(&mut self, record: Value, cx: &mut Context<Self>) {
+        self.transcript_revision = self.transcript_revision.wrapping_add(1);
         let kind = record
             .get("type")
             .and_then(Value::as_str)
@@ -1947,6 +1951,7 @@ impl AppState {
     }
 
     fn push_local_user(&mut self, text: &str) {
+        self.transcript_revision = self.transcript_revision.wrapping_add(1);
         let mut message = Message::new(Role::User);
         message.local = true;
         message.timestamp = now_ms().unwrap_or(0);
@@ -1957,6 +1962,7 @@ impl AppState {
     }
 
     fn reset_transcript(&mut self) {
+        self.transcript_revision = self.transcript_revision.wrapping_add(1);
         self.title_revision = self.title_revision.wrapping_add(1);
         self.title_generation = None;
         self.title_failure = None;
@@ -2626,6 +2632,11 @@ impl AppState {
 
     pub fn new_session(&mut self) {
         self.new_session_requested = true;
+    }
+
+    /// Revision of the transcript used by the content-search snapshot cache.
+    pub fn transcript_revision(&self) -> u64 {
+        self.transcript_revision
     }
 
     pub fn is_executing(&self) -> bool {
