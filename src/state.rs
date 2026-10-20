@@ -2654,9 +2654,12 @@ impl AppState {
     /// é pedida de novo em vez de exigir reiniciar a conversa. Só as listas são
     /// trocadas: rascunho, histórico e streaming não são tocados.
     pub fn refresh_catalog(&mut self, cx: &mut Context<Self>) {
-        self.client.call("get_available_models", Value::Null);
-        self.client
+        let models = self.client.call("get_available_models", Value::Null);
+        self.send_rpc(models, cx);
+        let levels = self
+            .client
             .call("get_available_thinking_levels", Value::Null);
+        self.send_rpc(levels, cx);
         cx.notify();
     }
 
