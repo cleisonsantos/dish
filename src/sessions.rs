@@ -1,6 +1,6 @@
 use serde_json::Value;
 use std::fs;
-use std::io::{self, BufReader, Write};
+use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug)]
@@ -12,6 +12,25 @@ pub struct SessionInfo {
     /// de uma demanda do usuário. Nome explícito nunca é substituído.
     pub named: bool,
     pub modified: std::time::SystemTime,
+    /// What was already parsed, so an append can resume at the last complete
+    /// line. This is presentation metadata only and is never serialized.
+    pub(crate) scan: SessionScan,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SessionScan {
+    /// Bytes up to and including the last complete line.
+    offset: u64,
+    /// Length at the time of the scan, to detect same-mtime rewrites.
+    file_len: u64,
+    /// Stable file identity where the platform exposes one; detects an
+    /// atomic replacement even when mtime and length are preserved.
+    identity: u64,
+    /// First bytes, used to distinguish an append from a replacement.
+    prefix: Vec<u8>,
+    name: Option<String>,
+    last: Option<String>,
+    last_substantive: Option<String>,
 }
 
 /// A session file waiting in Dish's trash.
@@ -249,12 +268,17 @@ pub fn discover_cached(roots: &[PathBuf], previous: &[SessionInfo]) -> Vec<Sessi
     let mut sessions: Vec<_> = paths
         .iter()
         .filter_map(|path| {
+            let metadata = fs::metadata(path).ok()?;
             if let Some(info) = cached.get(path) {
-                if fs::metadata(path).ok()?.modified().ok()? == info.modified {
+                if metadata.modified().ok()? == info.modified
+                    && metadata.len() == info.scan.file_len
+                    && file_identity(&metadata) == info.scan.identity
+                    && read_prefix(path).as_deref() == Some(info.scan.prefix.as_slice())
+                {
                     return Some((*info).clone());
                 }
             }
-            read_session(path)
+            read_session(path, cached.get(path).copied())
         })
         .collect();
     sessions.sort_by(|a, b| b.modified.cmp(&a.modified).then(a.path.cmp(&b.path)));
@@ -275,33 +299,60 @@ fn collect_files(dir: &Path, depth: usize, paths: &mut std::collections::BTreeSe
     }
 }
 
-fn read_session(path: &Path) -> Option<SessionInfo> {
+fn read_session(path: &Path, previous: Option<&SessionInfo>) -> Option<SessionInfo> {
     let file = fs::File::open(path).ok()?;
-    let modified = file.metadata().ok()?.modified().ok()?;
+    let metadata = file.metadata().ok()?;
+    let modified = metadata.modified().ok()?;
+    let file_len = metadata.len();
+    let prefix = read_prefix(path)?;
+    let identity = file_identity(&metadata);
+    let previous = previous.filter(|info| {
+        info.scan.file_len > 0
+            && file_len >= info.scan.file_len
+            && info.scan.identity == identity
+            && info.scan.prefix == prefix
+    });
+
     let mut reader = BufReader::new(file);
-    let header = match crate::limits::read_line_limited(
-        &mut reader,
-        crate::limits::MAX_SESSION_LINE_BYTES,
-        true,
-    )
-    .ok()?
-    {
-        crate::limits::BoundedLine::Line(line) => line,
-        crate::limits::BoundedLine::TooLong { .. } | crate::limits::BoundedLine::Eof => {
+    let (mut scan, cwd, mut position) = if let Some(info) = previous {
+        reader.seek(SeekFrom::Start(info.scan.offset)).ok()?;
+        (
+            info.scan.clone(),
+            info.cwd.clone(),
+            info.scan.offset,
+        )
+    } else {
+        let raw_header = match crate::limits::read_line_limited(
+            &mut reader,
+            crate::limits::MAX_SESSION_LINE_BYTES,
+            true,
+        )
+        .ok()?
+        {
+            crate::limits::BoundedLine::Line(line) => line,
+            crate::limits::BoundedLine::TooLong { .. } | crate::limits::BoundedLine::Eof => {
+                return None;
+            }
+        };
+        let header_complete = raw_header.ends_with(b"\n");
+        let header: Value = serde_json::from_slice(&raw_header).ok()?;
+        if header.get("type")?.as_str()? != "session" {
             return None;
         }
+        let cwd = PathBuf::from(header.get("cwd")?.as_str()?);
+        if !cwd.is_absolute() {
+            return None;
+        }
+        let position = raw_header.len() as u64;
+        let scan = SessionScan {
+            offset: if header_complete { position } else { 0 },
+            identity,
+            prefix: prefix.clone(),
+            ..Default::default()
+        };
+        (scan, cwd, position)
     };
-    let header: Value = serde_json::from_slice(&header).ok()?;
-    if header.get("type")?.as_str()? != "session" {
-        return None;
-    }
-    let cwd = PathBuf::from(header.get("cwd")?.as_str()?);
-    if !cwd.is_absolute() {
-        return None;
-    }
-    let mut name = None;
-    let mut last = None;
-    let mut last_substantive = None;
+
     loop {
         let line = match crate::limits::read_line_limited(
             &mut reader,
@@ -310,47 +361,36 @@ fn read_session(path: &Path) -> Option<SessionInfo> {
         ) {
             Ok(crate::limits::BoundedLine::Line(line)) => line,
             Ok(crate::limits::BoundedLine::TooLong { bytes }) => {
+                // The drain consumed the tail; do not advance the checkpoint,
+                // so a later scan can retry from the last complete line.
+                position = position.saturating_add(bytes as u64);
                 crate::logging::warn(format_args!(
                     "dish: session line exceeded the limit ({} bytes)",
                     bytes
                 ));
                 continue;
             }
-            Ok(crate::limits::BoundedLine::Eof) | Err(_) => break,
+            Ok(crate::limits::BoundedLine::Eof) => break,
+            Err(_) => return None,
         };
-        let Ok(value) = serde_json::from_slice::<Value>(&line) else {
-            continue;
-        };
-        if value["type"] == "session_info" {
-            name = value["name"].as_str().map(str::to_owned);
-        } else if value["type"] == "message" && value["message"]["role"] == "user" {
-            let content = &value["message"]["content"];
-            let text = content.as_str().map(str::to_owned).unwrap_or_else(|| {
-                content
-                    .as_array()
-                    .map(|parts| {
-                        parts
-                            .iter()
-                            .filter_map(|part| part["text"].as_str())
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    })
-                    .unwrap_or_default()
-            });
-            let Some(title) = crate::demand::clip(&text, 80) else {
-                continue;
-            };
-            if crate::demand::is_substantive(&text) {
-                last_substantive = Some(title.clone());
-            }
-            last = Some(title);
+        let complete = line.ends_with(b"\n");
+        apply_session_line(&line, &mut scan);
+        position = position.saturating_add(line.len() as u64);
+        if complete {
+            scan.offset = position;
         }
     }
-    let named = name.as_deref().is_some_and(|name| !name.trim().is_empty());
-    let title = name
+
+    scan.file_len = file_len;
+    scan.identity = identity;
+    scan.prefix = prefix;
+    let named = scan.name.as_deref().is_some_and(|name| !name.trim().is_empty());
+    let title = scan
+        .name
+        .clone()
         .filter(|name| !name.trim().is_empty())
-        .or(last_substantive)
-        .or(last)
+        .or_else(|| scan.last_substantive.clone())
+        .or_else(|| scan.last.clone())
         .unwrap_or_else(|| "Untitled session".into());
     Some(SessionInfo {
         path: path.to_owned(),
@@ -358,7 +398,58 @@ fn read_session(path: &Path) -> Option<SessionInfo> {
         named,
         title,
         modified,
+        scan,
     })
+}
+
+fn file_identity(metadata: &fs::Metadata) -> u64 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        metadata.dev().wrapping_mul(31).wrapping_add(metadata.ino())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        0
+    }
+}
+
+fn read_prefix(path: &Path) -> Option<Vec<u8>> {
+    let file = fs::File::open(path).ok()?;
+    let mut prefix = Vec::with_capacity(256);
+    file.take(256).read_to_end(&mut prefix).ok()?;
+    Some(prefix)
+}
+
+fn apply_session_line(line: &[u8], scan: &mut SessionScan) {
+    let Ok(value) = serde_json::from_slice::<Value>(line) else {
+        return;
+    };
+    if value["type"] == "session_info" {
+        scan.name = value["name"].as_str().map(str::to_owned);
+    } else if value["type"] == "message" && value["message"]["role"] == "user" {
+        let content = &value["message"]["content"];
+        let text = content.as_str().map(str::to_owned).unwrap_or_else(|| {
+            content
+                .as_array()
+                .map(|parts| {
+                    parts
+                        .iter()
+                        .filter_map(|part| part["text"].as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .unwrap_or_default()
+        });
+        let Some(title) = crate::demand::clip(&text, 80) else {
+            return;
+        };
+        if crate::demand::is_substantive(&text) {
+            scan.last_substantive = Some(title.clone());
+        }
+        scan.last = Some(title);
+    }
 }
 
 /// Keep tool/model configuration, but never inherit the initial session selector.
@@ -442,6 +533,7 @@ mod tests {
             title: "Named thread".into(),
             named: true,
             modified: fs::metadata(&path).unwrap().modified().unwrap(),
+            scan: SessionScan::default(),
         };
 
         let entry = trash_into(&trash, &info).unwrap();
@@ -471,6 +563,7 @@ mod tests {
             title: "Conflict".into(),
             named: true,
             modified: fs::metadata(&path).unwrap().modified().unwrap(),
+            scan: SessionScan::default(),
         };
 
         let entry = trash_into(&trash, &info).unwrap();
@@ -504,6 +597,7 @@ mod tests {
             title: "Unrepresentable".into(),
             named: true,
             modified: fs::metadata(&path).unwrap().modified().unwrap(),
+            scan: SessionScan::default(),
         };
 
         assert!(trash_into(&trash, &info).is_err());
@@ -540,6 +634,7 @@ mod tests {
             title: "notes".into(),
             named: false,
             modified: fs::metadata(&path).unwrap().modified().unwrap(),
+            scan: SessionScan::default(),
         };
 
         assert!(trash_into(&root.join("trash"), &info).is_err());
@@ -575,6 +670,147 @@ mod tests {
         );
         fs::remove_dir_all(root).unwrap();
         assert!(discover(&[PathBuf::from("/nonexistent/dish-test-sessions")]).is_empty());
+    }
+
+    fn user_record(text: &str) -> String {
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "type": "message",
+                "message": { "role": "user", "content": text }
+            })
+        )
+    }
+
+    #[test]
+    fn an_atomic_replacement_with_preserved_mtime_is_rescanned() {
+        let root = std::env::temp_dir().join(format!("dish-atomic-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("a.jsonl");
+        fs::write(
+            &path,
+            format!(
+                "{{\"type\":\"session\",\"cwd\":\"/project/a\"}}\n{}",
+                user_record("primeira demanda do projeto")
+            ),
+        )
+        .unwrap();
+        let old_modified = fs::metadata(&path).unwrap().modified().unwrap();
+        let first = discover(std::slice::from_ref(&root));
+
+        let replacement = root.join("replacement.jsonl");
+        fs::write(
+            &replacement,
+            format!(
+                "{{\"type\":\"session\",\"cwd\":\"/project/b\"}}\n{}",
+                user_record("segunda demanda do projeto!")
+            ),
+        )
+        .unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&replacement)
+            .unwrap()
+            .set_modified(old_modified)
+            .unwrap();
+        fs::rename(&replacement, &path).unwrap();
+
+        let second = discover_cached(std::slice::from_ref(&root), &first);
+        assert_eq!(second[0].cwd, PathBuf::from("/project/b"));
+        assert_eq!(second[0].title, "segunda demanda do projeto!");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn append_resumes_at_the_last_complete_line() {
+        let root = std::env::temp_dir().join(format!("dish-append-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("a.jsonl");
+        fs::write(
+            &path,
+            format!(
+                "{{\"type\":\"session\",\"cwd\":\"/project/a\"}}\n{}",
+                user_record("arruma o bug do login")
+            ),
+        )
+        .unwrap();
+        let first = discover(std::slice::from_ref(&root));
+        let before = first[0].scan.offset;
+
+        use std::io::Write as _;
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(user_record("agora exporta o relatório em PDF").as_bytes())
+            .unwrap();
+
+        let second = discover_cached(std::slice::from_ref(&root), &first);
+        assert_eq!(second[0].title, "agora exporta o relatório em PDF");
+        assert!(second[0].scan.offset > before);
+        assert_eq!(second[0].scan.offset, fs::metadata(&path).unwrap().len());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_partial_last_line_is_reprocessed_after_append() {
+        let root = std::env::temp_dir().join(format!("dish-partial-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("a.jsonl");
+        let message = serde_json::json!({
+            "type": "message",
+            "message": { "role": "user", "content": "agora exporta o relatorio em PDF" }
+        })
+        .to_string();
+        let split = message.len() / 2;
+        fs::write(
+            &path,
+            format!(
+                "{{\"type\":\"session\",\"cwd\":\"/project/a\"}}\n{}{}",
+                user_record("arruma o bug do login"),
+                &message[..split]
+            ),
+        )
+        .unwrap();
+        let first = discover(std::slice::from_ref(&root));
+        assert_eq!(first[0].title, "arruma o bug do login");
+        assert!(first[0].scan.offset < fs::metadata(&path).unwrap().len());
+
+        use std::io::Write as _;
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(format!("{}\n", &message[split..]).as_bytes())
+            .unwrap();
+        let second = discover_cached(std::slice::from_ref(&root), &first);
+        assert_eq!(second[0].title, "agora exporta o relatorio em PDF");
+        assert_eq!(second[0].scan.offset, fs::metadata(&path).unwrap().len());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn replacing_a_session_with_the_same_length_rescans_it() {
+        let root = std::env::temp_dir().join(format!("dish-replace-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("a.jsonl");
+        fs::write(
+            &path,
+            format!(
+                "{{\"type\":\"session\",\"cwd\":\"/project/a\"}}\n{}",
+                user_record("primeira demanda do projeto")
+            ),
+        )
+        .unwrap();
+        let first = discover(std::slice::from_ref(&root));
+        assert_eq!(first[0].cwd, PathBuf::from("/project/a"));
+
+        fs::write(
+            &path,
+            format!(
+                "{{\"type\":\"session\",\"cwd\":\"/project/b\"}}\n{}",
+                user_record("segunda demanda do projeto!")
+            ),
+        )
+        .unwrap();
+        let second = discover_cached(std::slice::from_ref(&root), &first);
+        assert_eq!(second[0].cwd, PathBuf::from("/project/b"));
+        assert_eq!(second[0].title, "segunda demanda do projeto!");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
