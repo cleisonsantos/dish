@@ -741,6 +741,27 @@ impl Workspace {
         });
     }
 
+    /// Fixa ou desafixa uma sessão no topo do grupo. O pino é só apresentação
+    /// do Dish; os arquivos de sessão do Pi não mudam.
+    fn toggle_pin(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if !self.preferences.pinned_sessions.remove(&path) {
+            self.preferences.pinned_sessions.insert(path);
+        }
+        crate::preferences::save(self.preferences.clone());
+        cx.notify();
+    }
+
+    /// Uma conversa ainda sem arquivo salvo não tem identidade para fixar; o
+    /// aviso explica quando o pino fica disponível.
+    fn explain_unpinned_session(&mut self, cx: &mut Context<Self>) {
+        let message = "A sessão é salva pelo Pi no primeiro turno; depois disso dá para fixá-la."
+            .to_string();
+        let state = self.conversations[self.active].state.clone();
+        state.update(cx, |state, cx| {
+            state.push_toast(message, crate::state::Tone::Info, cx);
+        });
+    }
+
     fn spawn_conversation(&mut self, cwd: PathBuf, path: Option<PathBuf>, cx: &mut Context<Self>) {
         if self.opening.is_some() || self.pending.is_some() {
             return;
@@ -1089,6 +1110,16 @@ impl Workspace {
         for items in groups.values_mut() {
             sort_session_rows(items, &self.row_order,
                 self.nav_hovered || self.query.read(cx).focus_handle.is_focused(window));
+            // Fixadas primeiro dentro do grupo, preservando a ordem por
+            // atividade entre elas. `sort_by_key` é estável.
+            let pinned = &self.preferences.pinned_sessions;
+            items.sort_by_key(|row| {
+                let path = match row.2 {
+                    Some(index) => self.conversations[index].path.clone(),
+                    None => row.1.as_ref().map(|info| info.path.clone()),
+                };
+                !path.is_some_and(|path| pinned.contains(&path))
+            });
         }
         let mut entries: Vec<NavEntry> = Vec::new();
         for (cwd, items) in &groups {
@@ -1510,6 +1541,84 @@ impl Workspace {
                                     relative_time(activity_time, std::time::SystemTime::now())
                                 );
                                 let pulse_id = format!("nav-pulse-{key}");
+                                let session_path = match live {
+                                    Some(index) => self.conversations[index].path.clone(),
+                                    None => info.as_ref().map(|info| info.path.clone()),
+                                };
+                                let pinned = session_path.as_ref().is_some_and(|path| {
+                                    self.preferences.pinned_sessions.contains(path)
+                                });
+                                // O pino fica antes de fechar/apagar. Sem arquivo de
+                                // sessão ainda não há identidade estável: o botão
+                                // explica quando ele fica disponível.
+                                let pin = {
+                                    let id = SharedString::from(format!("pin-{key}"));
+                                    let pin_weak = weak.clone();
+                                    match session_path {
+                                        Some(path) => {
+                                            let pinned_now = pinned;
+                                            let weak = pin_weak;
+                                            Some(div()
+                                                .id(id)
+                                                .size(px(22.))
+                                                .rounded(theme::r_control())
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .when(!pinned_now, |el| el.opacity(0.0).hover(|s| s.opacity(1.0)))
+                                                .when(pinned_now, |el| el.opacity(1.0))
+                                                .cursor_pointer()
+                                                .tooltip(move |_, cx| {
+                                                    let label = if pinned_now { "Desafixar sessão" } else { "Fixar sessão" };
+                                                    cx.new(|_| crate::ui::copy_button::TextTooltip(label.into())).into()
+                                                })
+                                                .on_click(move |_event: &ClickEvent, _, cx: &mut App| {
+                                                    cx.stop_propagation();
+                                                    weak.update(cx, |workspace, cx| {
+                                                        workspace.toggle_pin(path.clone(), cx)
+                                                    })
+                                                    .ok();
+                                                })
+                                                .child(crate::ui::icons::icon(
+                                                    crate::ui::icons::Icon::Pin,
+                                                    12.,
+                                                    if pinned_now { theme::accent() } else { theme::faint() },
+                                                ))
+                                                .into_any_element())
+                                        }
+                                        None => {
+                                            let weak = pin_weak;
+                                            Some(div()
+                                                .id(id)
+                                                .size(px(22.))
+                                                .rounded(theme::r_control())
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .opacity(0.0)
+                                                .hover(|s| s.opacity(1.0))
+                                                .cursor_pointer()
+                                                .tooltip(move |_, cx| {
+                                                    cx.new(|_| crate::ui::copy_button::TextTooltip(
+                                                        "A sessão é salva pelo Pi no primeiro turno".into(),
+                                                    )).into()
+                                                })
+                                                .on_click(move |_event: &ClickEvent, _, cx: &mut App| {
+                                                    cx.stop_propagation();
+                                                    weak.update(cx, |workspace, cx| {
+                                                        workspace.explain_unpinned_session(cx)
+                                                    })
+                                                    .ok();
+                                                })
+                                                .child(crate::ui::icons::icon(
+                                                    crate::ui::icons::Icon::Pin,
+                                                    12.,
+                                                    theme::faint(),
+                                                ))
+                                                .into_any_element())
+                                        }
+                                    }
+                                };
                                 div()
                                     .id(SharedString::from(key))
                                     .anchor_scroll(anchor)
@@ -1657,8 +1766,9 @@ impl Workspace {
                                             .when(running, |el| {
                                                 el.child(div().truncate().text_size(px(theme::TEXT_XS)).text_color(theme::dim())
                                                     .child(SharedString::from(live.and_then(|i| self.conversations[i].state.read(cx).activity.clone()).unwrap_or_default())))
-                                            }),
+                                            })
                                     )
+                                    .when_some(pin, |el, pin| el.child(pin))
                                     .when_some(live_index, |el, index| {
                                         let weak = cx.entity().downgrade();
                                         el.child(

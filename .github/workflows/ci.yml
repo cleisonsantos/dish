@@ -68,7 +68,7 @@ jobs:
                              tests/startup_smoke.py tests/settings_smoke.py \
                              tests/providers_smoke.py tests/session_titles_smoke.py \
                              tests/session_activity_smoke.py tests/appearance_smoke.py \
-                             tests/project_folder_smoke.py tests/diagnostic_privacy_smoke.py
+                             tests/project_folder_smoke.py tests/pinned_sessions_smoke.py tests/diagnostic_privacy_smoke.py
       - name: Install the Debian package and smoke-test /usr/bin/dish-pi
         run: |
           # Simula o pacote `dish` do Debian, que instala /usr/bin/dish: o nosso

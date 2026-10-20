@@ -204,6 +204,8 @@ links are not yet supported.
   conversation there; the folders you used most recently are listed under
   **Projetos recentes** in the sidebar. A folder that cannot be read produces a
   toast, never a silent fallback.
+  **Pin a session** to the top of its folder with the pin on the row; pins are
+  local to Dish, survive restarts and never touch Pi's session files.
   Closing a running session or the window asks for confirmation.
 - **Model picker** — a floating panel (click the model name in the header or the
   rail), with the model in use floated to the top and the full list scrollable on

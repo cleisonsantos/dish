@@ -23,6 +23,9 @@ pub struct Preferences {
     /// Pastas usadas recentemente, da mais recente para a mais antiga.
     /// Limitada: é atalho de navegação, não histórico.
     pub recent_projects: Vec<PathBuf>,
+    /// Sessões fixadas no topo do grupo da pasta, por caminho do arquivo.
+    /// Só apresentação do Dish: os arquivos do Pi não mudam.
+    pub pinned_sessions: BTreeSet<PathBuf>,
     pub window_size: Option<[f32; 2]>,
     pub pi_executable: Option<PathBuf>,
     /// Client-observed completion time for responses not yet viewed.
@@ -168,6 +171,7 @@ mod tests {
             collapsed_projects: [PathBuf::from("/tmp/projeto-á")].into(),
             last_project: Some("/tmp/projeto-á".into()), last_session: Some("/tmp/session.jsonl".into()),
             recent_projects: [PathBuf::from("/tmp/projeto-á"), PathBuf::from("/tmp/outro")].into(),
+            pinned_sessions: [PathBuf::from("/tmp/session.jsonl")].into(),
             window_size: Some([1240., 860.]),
             pi_executable: None,
             unread_sessions: [(PathBuf::from("/tmp/session.jsonl"), 123456)].into(),
