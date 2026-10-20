@@ -435,6 +435,16 @@ impl Workspace {
                             });
                         }
                     }
+                    SettingsEvent::ProvidersChanged => {
+                        // A credencial mudou no Pi. Cada conversa tem o próprio
+                        // processo e a própria lista; reler não toca em rascunho
+                        // nem em streaming.
+                        for conversation in &this.conversations {
+                            conversation
+                                .state
+                                .update(cx, |state, cx| state.refresh_catalog(cx));
+                        }
+                    }
                     SettingsEvent::ChoosePi => {
                         let picker = cx.prompt_for_paths(PathPromptOptions {
                             files: true,

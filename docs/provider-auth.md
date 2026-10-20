@@ -156,7 +156,10 @@ cancelar.
    (`prompt` do tipo `secret`), login por conta do provedor (avisos `auth_url`,
    `device_code` e `progress`, com o código colado de volta), cancelamento,
    remoção com confirmação e releitura do estado depois de cada ação. Sem UI
-   otimista: a lista só muda quando o Pi confirma.
+   otimista: a lista só muda quando o Pi confirma. Depois de um login ou remoção,
+   as conversas abertas releem `get_available_models` e
+   `get_available_thinking_levels`; o modelo novo aparece no seletor sem
+   reiniciar a conversa e sem tocar em rascunho ou streaming.
 4. **Fase 4** — provedores locais/compatíveis (`models.json`), preservando o
    arquivo existente. Separado de propósito: não bloqueia a fase 3.
 5. **Fase 5** — pedir ao Pi `pi auth login|logout` e aposentar o adaptador, se
@@ -188,6 +191,12 @@ python3 -m unittest discover -s tests -p 'test_provider_adapter.py' -v
 # contra o Pi instalado, só estado e origem
 node scripts/pi-auth-adapter.mjs --status | jq '.data.providers[] | select(.configured)'
 ```
+
+O smoke `tests/providers_smoke.py` cobre, com Pi e SDK sintéticos, o catálogo,
+o primeiro uso, a falha honesta, o login/remoção por chave e o fluxo completo de
+primeiro uso: conectar um provedor com um rascunho na conversa, fechar as
+Configurações e selecionar o modelo recém-disponibilizado no seletor da mesma
+conversa.
 
 Privacidade: `--status` lê o `auth.json` do usuário, como o Pi faria, e imprime
 apenas estado e origem. Ainda assim, ao colar a saída em um relatório, confira

@@ -130,6 +130,24 @@ class Harness:
             time.sleep(0.4)
         raise AssertionError(f"{self.name}: {needle!r} continuou na tela")
 
+    def close_settings(self):
+        """Fecha as Configurações e espera o foco voltar para a conversa.
+
+        Escape funciona na maioria dos casos, mas depois do login o foco pode
+        ficar no editor de resposta que saiu da tela. O botão Fechar não depende
+        de foco e é o fallback determinístico.
+        """
+        press("Escape")
+        for _ in range(10):
+            if "configura" not in self.capture().lower():
+                time.sleep(0.2)
+                return
+            position = self.find_label("Fechar")
+            if position:
+                click(self.window, position[0], position[1])
+            time.sleep(0.4)
+        raise AssertionError(f"{self.name}: Configurações não fecharam")
+
 
 def check_catalog():
     """Catálogo com um provedor conectado; nenhum segredo plantado aparece."""
@@ -177,8 +195,53 @@ def check_login_and_logout():
         print("providers smoke ok: login e remoção", flush=True)
 
 
+def check_provider_refreshes_open_conversation():
+    """Conectar um provedor atualiza o seletor da conversa já aberta.
+
+    É o primeiro uso completo da #69: o usuário conecta a credencial sem sair
+    do Dish, volta para a conversa e escolhe o modelo novo sem reiniciar nada.
+    O rascunho digitado antes de abrir as Configurações também precisa sobreviver.
+    """
+    with Harness("refresh", {"DISH_PI_PACKAGE": FIXTURE, "FAKE_PI_EMPTY": "1"}) as h:
+        h.wait_text(["sem credencial"])
+        # Deixa um rascunho na conversa e volta para as Configurações.
+        h.close_settings()
+        chord("Control_L", "l")
+        type_text("rascunho-preservado")
+        wait_for(lambda: find_word(h.window, "rascunho"), "Rascunho não apareceu")
+        press("F1")
+        h.wait_text(["Provedores"])
+        h.click("Provedores")
+        h.wait_text(["sem credencial"])
+        # Conecta a anthropic, como no caso de login.
+        h.click("Conectar")
+        h.wait_text(["Como entrar em anthropic", "Anthropic API key"])
+        h.click("Usar")
+        h.wait_text(["Cole a chave de API da Anthropic"])
+        type_text("sk-ant-chave-de-teste")
+        time.sleep(0.3)
+        h.click("Enviar")
+        h.wait_text(["Provedor anthropic conectado"])
+        h.click("Voltar à lista")
+        h.wait_text(["credencial salva", "1 conectados"])
+        # As Configurações não podem apagar o rascunho, e o catálogo da conversa
+        # precisa ser relido para incluir o modelo do provedor recém-conectado.
+        h.close_settings()
+        wait_for(lambda: find_word(h.window, "rascunho"), "Rascunho perdido após conectar")
+        chord("Control_L", "Shift_L", "m")
+        h.wait_text(["Selecionar modelo", "claude", "anthropic"])
+        h.click("claude-fake")
+        wait_for(lambda: any(
+            item.get("command", {}).get("type") == "set_model"
+            and item["command"].get("provider") == "anthropic"
+            and item["command"].get("modelId") == "claude-fake"
+            for item in h.events()), "Modelo recém-conectado não foi selecionado")
+        print("providers smoke ok: modelos atualizados na conversa aberta", flush=True)
+
+
 check_catalog()
 check_first_use()
 check_unavailable()
 check_login_and_logout()
-print("Providers smoke passed: catálogo, primeiro uso, falha honesta, login e remoção")
+check_provider_refreshes_open_conversation()
+print("Providers smoke passed: catálogo, primeiro uso, falha honesta, login, remoção e atualização da conversa")
