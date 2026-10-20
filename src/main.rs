@@ -27,6 +27,7 @@ mod markdown;
 mod metadata;
 mod rpc;
 mod state;
+mod model_sync;
 mod sessions;
 mod content_search;
 mod git_context;

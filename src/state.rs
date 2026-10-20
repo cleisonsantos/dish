@@ -405,6 +405,7 @@ pub struct AppState {
     pub hidden_models: BTreeSet<String>,
     pub thinking_level: Option<String>,
     pub thinking_levels: Vec<String>,
+    pub model_sync: crate::model_sync::ModelSync,
     pub stats: Option<Value>,
     pub commands: Vec<CommandInfo>,
 
@@ -536,6 +537,7 @@ impl AppState {
             hidden_models: BTreeSet::new(),
             thinking_level: None,
             thinking_levels: Vec::new(),
+            model_sync: crate::model_sync::ModelSync::default(),
             stats: None,
             commands: Vec::new(),
             steering_queue: Vec::new(),
@@ -609,6 +611,10 @@ impl AppState {
     }
 
     fn mark_disconnected(&mut self, message: String, cx: &mut Context<Self>) {
+        self.model_sync.transport_failed();
+        self.thinking_levels.clear();
+        self.effort_menu = false;
+        self.thinking_menu = false;
         if self.disconnected {
             return;
         }
@@ -694,10 +700,9 @@ impl AppState {
         .detach();
 
         // Prime the UI with everything it needs to render a full frame.
+        self.request_model_sync(crate::model_sync::Request::State, cx);
         for command in [
-            "get_state",
             "get_available_models",
-            "get_available_thinking_levels",
             "get_session_stats",
             "get_commands",
             "get_messages",
@@ -829,6 +834,14 @@ impl AppState {
                 None
             }
             "thinking_level_changed" => {
+                if !self.model_sync.ready {
+                    // A state snapshot already in flight may predate this event.
+                    // During set_model itself the following state query suffices.
+                    if self.model_sync.querying() {
+                        self.request_model_sync(crate::model_sync::Request::State, cx);
+                    }
+                    return None;
+                }
                 self.thinking_level = record
                     .get("level")
                     .and_then(Value::as_str)
@@ -947,6 +960,29 @@ impl AppState {
     }
 
     fn apply_response(&mut self, response: RpcResponse, cx: &mut Context<Self>) -> Option<usize> {
+        let sync_owned = self.model_sync.owns(response.id.as_deref());
+        if matches!(response.command.as_str(), "set_model" | "get_state" | "get_available_thinking_levels") && !sync_owned {
+            return None;
+        }
+        let outcome = self.model_sync.respond(response.id.as_deref(), response.success);
+        if let Some(next) = outcome.next {
+            self.send_model_sync(next, cx);
+        }
+        if outcome.failed {
+            if response.command == "set_model" {
+                // A superseded intermediate choice may now be active in Pi.
+                self.model = None;
+                self.thinking_level = None;
+            }
+            self.push_toast("Não foi possível atualizar o modelo e seus níveis de esforço. Tente selecionar o modelo novamente.".into(), Tone::Warning, cx);
+            return None;
+        }
+        if sync_owned && outcome.accepted.is_none() {
+            // This transaction was superseded. Do not apply its failure or data.
+            return None;
+        }
+        let accept_model_state = matches!(outcome.accepted, Some(crate::model_sync::Request::State));
+        let accept_levels = matches!(outcome.accepted, Some(crate::model_sync::Request::Levels));
         if self.pending_title_name.as_ref().is_some_and(|(id, _, _)| response.id.as_ref() == Some(id)) {
             if let Some((_, title, revision)) = self.pending_title_name.take() {
                 if revision == self.title_revision {
@@ -970,6 +1006,9 @@ impl AppState {
             }
         }
         if !response.success {
+            if response.command == "set_thinking_level" {
+                self.request_model_sync(crate::model_sync::Request::State, cx);
+            }
             self.activity_error = true;
             if response.command == "get_messages" {
                 self.loading = false;
@@ -1014,17 +1053,21 @@ impl AppState {
             return None;
         }
         match response.command.as_str() {
+            "set_model" => {
+                // This is Pi's confirmed model, not the user's optimistic choice.
+                self.model = ModelInfo::from_value(&response.data);
+                self.thinking_level = None;
+                None
+            }
             "get_state" => {
                 let data = &response.data;
-                if let Some(model) = data.get("model").and_then(ModelInfo::from_value) {
-                    self.model = Some(model);
+                if accept_model_state {
+                    self.model = data.get("model").and_then(ModelInfo::from_value);
+                    self.thinking_level = data.get("thinkingLevel")
+                        .and_then(Value::as_str).map(str::to_string);
+                    // Reconcile only after the corresponding ladder arrives.
+                    self.sync_effort_accent();
                 }
-                self.thinking_level = data
-                    .get("thinkingLevel")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                self.reconcile_effort(cx);
-                self.sync_effort_accent();
                 self.session.id = data
                     .get("sessionId")
                     .and_then(Value::as_str)
@@ -1074,6 +1117,15 @@ impl AppState {
                 None
             }
             "get_available_thinking_levels" => {
+                if !accept_levels {
+                    return None;
+                }
+                if !response.data.get("levels").and_then(Value::as_array)
+                    .is_some_and(|levels| levels.iter().all(Value::is_string)) {
+                    self.model_sync.transport_failed();
+                    self.push_toast("O Pi retornou uma lista de esforços inválida. Selecione o modelo novamente para atualizar.".into(), Tone::Warning, cx);
+                    return None;
+                }
                 self.thinking_levels = string_array(response.data.get("levels"));
                 self.reconcile_effort(cx);
                 self.sync_effort_accent();
@@ -2020,8 +2072,7 @@ impl AppState {
     fn refresh_after_settle(&mut self, cx: &mut Context<Self>) {
         let stats = self.client.call("get_session_stats", Value::Null);
         self.send_rpc(stats, cx);
-        let state = self.client.call("get_state", Value::Null);
-        self.send_rpc(state, cx);
+        self.request_model_sync(crate::model_sync::Request::State, cx);
     }
 
     // --------------------------------------------------------------- actions
@@ -2204,11 +2255,9 @@ impl AppState {
                     let id = fields.next();
                     match id {
                         Some(id) => {
-                            let result = self.client.call(
-                                "set_model",
-                                json!({ "provider": provider, "modelId": id }),
-                            );
-                            self.send_rpc(result, cx);
+                            self.request_model_sync(crate::model_sync::Request::Switch {
+                                provider: provider.to_string(), model: id.to_string(),
+                            }, cx);
                         }
                         None => {
                             // Match by model id alone.
@@ -2218,11 +2267,7 @@ impl AppState {
                                 .find(|model| model.id == *provider)
                                 .cloned()
                             {
-                                let result = self.client.call(
-                                    "set_model",
-                                    json!({ "provider": model.provider, "modelId": model.id }),
-                                );
-                                self.send_rpc(result, cx);
+                                self.set_model(&model, cx);
                             } else {
                                 self.push_toast(
                                     format!("Unknown model: {provider}"),
@@ -2239,10 +2284,7 @@ impl AppState {
                 if argument.is_empty() {
                     self.thinking_menu = true;
                 } else {
-                    let result = self
-                        .client
-                        .call("set_thinking_level", json!({ "level": argument }));
-                    self.send_rpc(result, cx);
+                    self.set_thinking_level(&argument, cx);
                 }
                 true
             }
@@ -2708,10 +2750,7 @@ impl AppState {
     pub fn refresh_catalog(&mut self, cx: &mut Context<Self>) {
         let models = self.client.call("get_available_models", Value::Null);
         self.send_rpc(models, cx);
-        let levels = self
-            .client
-            .call("get_available_thinking_levels", Value::Null);
-        self.send_rpc(levels, cx);
+        self.request_model_sync(crate::model_sync::Request::State, cx);
         cx.notify();
     }
 
@@ -2726,19 +2765,35 @@ impl AppState {
 
 
     pub fn set_model(&mut self, model: &ModelInfo, cx: &mut Context<Self>) {
-        let result = self.client.call(
-            "set_model",
-            json!({ "provider": model.provider, "modelId": model.id }),
-        );
-        if self.send_rpc(result, cx).is_none() {
-            return;
-        }
-        self.model = Some(model.clone());
         self.model_menu = false;
-        // A escada do novo modelo chega em seguida; até lá os níveis atuais
-        // continuam visíveis, em vez de o controle esvaziar.
-        let levels = self.client.call("get_available_thinking_levels", Value::Null);
-        self.send_rpc(levels, cx);
+        self.request_model_sync(crate::model_sync::Request::Switch {
+            provider: model.provider.clone(), model: model.id.clone(),
+        }, cx);
+    }
+
+    fn request_model_sync(&mut self, request: crate::model_sync::Request, cx: &mut Context<Self>) {
+        self.thinking_levels.clear();
+        self.effort_menu = false;
+        self.thinking_menu = false;
+        if let Some(request) = self.model_sync.enqueue(request) {
+            self.send_model_sync(request, cx);
+        }
+        cx.notify();
+    }
+
+    fn send_model_sync(&mut self, request: crate::model_sync::Request, cx: &mut Context<Self>) {
+        use crate::model_sync::Request;
+        let result = match &request {
+            Request::Switch { provider, model } => self.client.call("set_model",
+                json!({ "provider": provider, "modelId": model })),
+            Request::State => self.client.call("get_state", Value::Null),
+            Request::Levels => self.client.call("get_available_thinking_levels", Value::Null),
+        };
+        if let Some(id) = self.send_rpc(result, cx) {
+            self.model_sync.track(id, request);
+        } else {
+            self.model_sync.transport_failed();
+        }
     }
 
     /// Modelos visíveis para a busca atual, na ordem exibida (o atual primeiro).
@@ -2805,6 +2860,10 @@ impl AppState {
     }
 
     pub fn cycle_effort(&mut self, cx: &mut Context<Self>) {
+        if !self.model_sync.ready {
+            self.push_toast("Aguarde a atualização dos níveis de esforço do modelo.".into(), Tone::Info, cx);
+            return;
+        }
         let Some(level) = next_effort_level(&self.thinking_levels, self.thinking_level.as_deref())
             .map(str::to_string)
         else {
@@ -2817,6 +2876,14 @@ impl AppState {
     }
 
     pub fn set_thinking_level(&mut self, level: &str, cx: &mut Context<Self>) -> bool {
+        if !self.model_sync.ready {
+            self.push_toast("Aguarde a atualização dos níveis de esforço do modelo.".into(), Tone::Info, cx);
+            return false;
+        }
+        if !self.thinking_levels.iter().any(|supported| supported == level) {
+            self.push_toast("Este nível de esforço não está disponível para o modelo atual.".into(), Tone::Warning, cx);
+            return false;
+        }
         let result = self
             .client
             .call("set_thinking_level", json!({ "level": level }));
@@ -2832,6 +2899,9 @@ impl AppState {
     /// Alinha o nível atual com a escada do modelo: um nível que a nova lista
     /// não suporta vira `off` (ou o primeiro disponível) em vez de ficar pendurado.
     fn reconcile_effort(&mut self, cx: &mut Context<Self>) {
+        if !self.model_sync.ready {
+            return;
+        }
         let Some(level) =
             reconcile_effort_level(&self.thinking_levels, self.thinking_level.as_deref())
                 .map(str::to_string)
