@@ -606,10 +606,7 @@ fn effort_menu(state: &AppState, cx: &Context<AppState>) -> Div {
             .px(px(theme::S3))
             .py(px(theme::S1 + 2.))
             .rounded(theme::r_small())
-            .when(selected, |el| el.bg(theme::hover()))
-            .when(!selected, |el| {
-                el.hover(|style| style.bg(theme::hover()))
-            })
+            .hover(|style| style.bg(theme::hover()))
             .on_click(cx.listener(move |state, _: &ClickEvent, window, cx| {
                 state.set_thinking_level(&level_for_click, cx);
                 state.effort_menu = false;
@@ -619,13 +616,13 @@ fn effort_menu(state: &AppState, cx: &Context<AppState>) -> Div {
             .child(
                 div()
                     .flex_none()
-                    .w(px(10.))
+                    .w(px(14.))
                     .child(crate::ui::dot(color, if selected { 8. } else { 6. })),
             )
             .child(
                 div()
-                    .text_size(px(theme::TEXT_SM))
-                    .text_color(if selected { color } else { theme::dim() })
+                    .text_size(px(theme::TEXT))
+                    .text_color(if selected { theme::text() } else { theme::dim() })
                     .child(SharedString::from(crate::state::effort_label(level))),
             )
             .child(div().flex_1())

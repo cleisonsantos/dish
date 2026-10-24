@@ -188,7 +188,7 @@ fn empty_state(weak: &WeakEntity<AppState>) -> AnyElement {
                 .child(
                     div().flex().flex_col().gap(px(theme::S3))
                         .child(div().text_size(px(theme::DISPLAY)).line_height(px(38.))
-                            .font_weight(FontWeight::MEDIUM).child("Qual é o próximo passo?"))
+                            .font_weight(FontWeight::MEDIUM).child("Por onde começamos?"))
                         .child(div().text_size(px(theme::PROSE)).line_height(px(25.))
                             .text_color(theme::dim())
                             .child("Use o contexto deste projeto para investigar, revisar ou implementar.")),

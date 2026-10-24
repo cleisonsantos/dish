@@ -255,6 +255,7 @@ fn main() {
         keys.extend(editor_bindings("DishNavSearch"));
         keys.extend(editor_bindings("DishContentSearch"));
         keys.extend(editor_bindings("DishHelpSearch"));
+        keys.extend(editor_bindings("DishSettings"));
         keys.extend([
             // The composer owns up/down so the slash menu can take them over;
             // the menu handler forwards to the caret when it is closed.

@@ -219,8 +219,9 @@ impl Settings {
             Some(LoginStep::Done { provider }) => {
                 page.child(note(&format!("Provedor {provider} conectado.")))
                     .child(actions_row(vec![
-                        control("providers-back", "Voltar à lista", cx.listener(|this, _, _, cx| {
+                        control("providers-back", "Voltar à lista", cx.listener(|this, _, window, cx| {
                             this.login = None;
+                            this.focus.focus(window, cx);
                             cx.notify();
                         })),
                     ]))
@@ -230,14 +231,16 @@ impl Settings {
                 .child(note(&message))
                 .child(actions_row(vec![
                     control("providers-retry-login", "Tentar de novo", cx.listener(
-                        move |this, _, _, cx| {
+                        move |this, _, window, cx| {
                             let provider = provider.clone();
                             this.login = Some(LoginStep::ChoosingMethod { provider });
+                            this.focus.focus(window, cx);
                             cx.notify();
                         },
                     )),
-                    control("providers-back", "Voltar à lista", cx.listener(|this, _, _, cx| {
+                    control("providers-back", "Voltar à lista", cx.listener(|this, _, window, cx| {
                         this.login = None;
+                        this.focus.focus(window, cx);
                         cx.notify();
                     })),
                 ]))
@@ -496,7 +499,10 @@ impl Settings {
                     page = page.child(actions_row(vec![control(
                         "providers-send",
                         "Enviar",
-                        cx.listener(|this, _, _, cx| this.submit_answer(None, cx)),
+                        cx.listener(|this, _, window, cx| {
+                            this.focus.focus(window, cx);
+                            this.submit_answer(None, cx);
+                        }),
                     )]));
                 }
             }
@@ -507,7 +513,10 @@ impl Settings {
         page.child(actions_row(vec![control(
             "providers-cancel",
             "Cancelar",
-            cx.listener(|this, _, _, cx| this.cancel_login(cx)),
+            cx.listener(|this, _, window, cx| {
+                this.focus.focus(window, cx);
+                this.cancel_login(cx);
+            }),
         )]))
         .into_any_element()
     }
@@ -889,8 +898,8 @@ fn model_count(models: usize) -> String {
 /// do menu à esquerda.
 fn page_title(label: &str) -> Div {
     div()
-        .text_size(px(theme::TITLE))
-        .font_weight(FontWeight::SEMIBOLD)
+        .text_size(px(14.))
+        .font_weight(FontWeight::MEDIUM)
         .text_color(theme::text())
         .child(SharedString::from(label.to_owned()))
 }
@@ -899,7 +908,7 @@ impl Render for Settings {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.open { return div().into_any_element(); }
         let height = (f32::from(window.bounds().size.height) - 48.).max(300.);
-        let width = (f32::from(window.bounds().size.width) - 48.).min(920.);
+        let width = (f32::from(window.bounds().size.width) - 48.).min(840.);
         let compact = width < 680.;
         let mut menu = column().w(px(184.)).flex_none()
             .when(compact, |el| el.w_full().flex_row().flex_wrap().gap(px(theme::S1)));

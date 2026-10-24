@@ -2685,6 +2685,9 @@ impl AppState {
 
     pub fn set_activity(&mut self, message_index: usize, open: bool, cx: &mut Context<Self>) {
         self.activity_override.insert(message_index, open);
+        if !self.streaming {
+            self.list_state.set_follow_mode(FollowMode::Normal);
+        }
         if message_index < self.list_count {
             self.list_state
                 .remeasure_items(message_index..message_index + 1);
@@ -2697,6 +2700,9 @@ impl AppState {
             if let Some(Block::Tool(card)) = message.blocks.get_mut(block_index) {
                 card.expanded = !card.expanded;
             }
+        }
+        if !self.streaming {
+            self.list_state.set_follow_mode(FollowMode::Normal);
         }
         if message_index < self.list_count {
             self.list_state
@@ -2715,6 +2721,9 @@ impl AppState {
             if let Some(Block::Thinking { expanded, .. }) = message.blocks.get_mut(block_index) {
                 *expanded = !*expanded;
             }
+        }
+        if !self.streaming {
+            self.list_state.set_follow_mode(FollowMode::Normal);
         }
         if message_index < self.list_count {
             self.list_state

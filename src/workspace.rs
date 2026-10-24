@@ -1002,7 +1002,7 @@ impl Workspace {
         let click_focus = focus.clone();
         let key_focus = focus.clone();
         div().id(SharedString::from(format!("session-actions-{key}")))
-            .relative().flex_none().size(px(theme::S6)).rounded(theme::r_control())
+            .relative().flex_none().w(px(24.)).h(px(theme::S6)).rounded(theme::r_control())
             .track_focus(&focus).flex().items_center().justify_center()
             .cursor_pointer().hover(|style| style.bg(theme::hover()).text_color(theme::text()))
             .focus(|style| style.shadow(theme::focus_ring()))
@@ -1979,12 +1979,30 @@ impl Render for Workspace {
                             .items_center()
                             .gap(px(2.))
                             .when(pending_count > 0, |el| {
-                                el.child(div().text_size(px(theme::TEXT_SM)).font_weight(FontWeight::MEDIUM).text_color(theme::warn())
-                                    .child(SharedString::from(format!("{pending_count}P"))))
+                                el.child(
+                                    div()
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .gap(px(3.))
+                                        .text_size(px(theme::TEXT))
+                                        .text_color(theme::warn())
+                                        .child(SharedString::from(pending_count.to_string()))
+                                        .child("P"),
+                                )
                             })
                             .when(new_count > 0, |el| {
-                                el.child(div().text_size(px(theme::TEXT_SM)).font_weight(FontWeight::MEDIUM).text_color(theme::attention())
-                                    .child(SharedString::from(format!("{new_count}N"))))
+                                el.child(
+                                    div()
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .gap(px(3.))
+                                        .text_size(px(theme::TEXT))
+                                        .text_color(theme::attention())
+                                        .child(SharedString::from(new_count.to_string()))
+                                        .child("N"),
+                                )
                             }),
                     );
                 }

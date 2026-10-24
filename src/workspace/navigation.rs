@@ -137,8 +137,6 @@ impl Workspace {
         let focus = self.query.read(cx).focus_handle.clone();
         let query_editor = self.query.clone();
         let focus_for_click = focus.clone();
-        // Com largura de sobra os filtros usam o nome inteiro, sem abreviar.
-        let roomy = self.nav_width >= 250.;
 
         let mut rail = div()
             .id("sessions-navigation")
@@ -155,7 +153,7 @@ impl Workspace {
             .child(
                 div()
                     .flex_none()
-                    .h(px(theme::HEADER_HEIGHT))
+                    .h(px(52.))
                     .pl(px(theme::S4))
                     .pr(px(theme::S2))
                     .flex()
@@ -198,6 +196,14 @@ impl Workspace {
                                 crate::ui::icons::Icon::Folder,
                                 cx,
                                 |workspace, _window, cx| workspace.choose_project(cx),
+                            ))
+                            .child(nav_icon_button(
+                                "nav-top-help",
+                                crate::ui::icons::Icon::Dots,
+                                cx,
+                                |workspace, window, cx| {
+                                    workspace.open_settings(crate::settings::Section::App, window, cx);
+                                },
                             )),
                     ),
             )
@@ -299,7 +305,7 @@ impl Workspace {
                                     cx.notify();
                                 },
                             ))
-                            .child(nav_segment("nav-filter-input", if roomy { "Pendentes" } else { "Pend." }, "sessões que precisam de você", self.filter == SessionFilter::NeedsInput, cx, |workspace, cx| {
+                            .child(nav_segment("nav-filter-input", "Pend.", "sessões que precisam de você", self.filter == SessionFilter::NeedsInput, cx, |workspace, cx| {
                                 workspace.filter = SessionFilter::NeedsInput; cx.notify();
                             }))
                             .child(nav_segment("nav-filter-unread", "Novas", "respostas ainda não lidas", self.filter == SessionFilter::Unread, cx, |workspace, cx| {
@@ -307,7 +313,7 @@ impl Workspace {
                             }))
                             .child(nav_segment(
                                 "nav-filter-running",
-                                if roomy { "Rodando" } else { "Exec." },
+                                "Exec.",
                                 "tarefas em execução agora",
                                 self.filter == SessionFilter::Running,
                                 cx,
@@ -469,11 +475,11 @@ impl Workspace {
                                     .child(SharedString::from(folder_of(&cwd))),
                             )
                             .when(needs_input > 0, |el| {
-                                el.child(div().text_size(px(theme::TEXT_XS)).text_color(theme::warn())
+                                el.child(div().text_size(px(theme::TEXT_SM)).text_color(theme::warn())
                                     .child(SharedString::from(format!("{needs_input} pend."))))
                             })
                             .when(unread_count > 0, |el| {
-                                el.child(div().text_size(px(theme::TEXT_XS)).text_color(theme::attention())
+                                el.child(div().text_size(px(theme::TEXT_SM)).text_color(theme::attention())
                                     .child(SharedString::from(format!("{unread_count} {}", if unread_count == 1 { "nova" } else { "novas" }))))
                             })
                             .when(running > 0, |el| {
@@ -548,6 +554,76 @@ impl Workspace {
                                 let pinned = session_path.as_ref().is_some_and(|path| {
                                     self.preferences.pinned_sessions.contains(path)
                                 });
+                                let pin_button = {
+                                    let id = SharedString::from(format!("pin-{key}"));
+                                    let pin_weak = weak.clone();
+                                    match session_path.clone() {
+                                        Some(path) => {
+                                            let pinned_now = pinned;
+                                            let weak = pin_weak;
+                                            Some(div()
+                                                .id(id)
+                                                .w(px(24.))
+                                                .h(px(theme::S6))
+                                                .rounded(theme::r_control())
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .when(!pinned_now, |el| el.opacity(0.0).hover(|s| s.opacity(1.0)))
+                                                .when(pinned_now, |el| el.opacity(1.0))
+                                                .cursor_pointer()
+                                                .tooltip(move |_, cx| {
+                                                    let label = if pinned_now { "Desafixar sessão" } else { "Fixar sessão" };
+                                                    cx.new(|_| crate::ui::copy_button::TextTooltip(label.into())).into()
+                                                })
+                                                .on_click(move |_event: &ClickEvent, _, cx: &mut App| {
+                                                    cx.stop_propagation();
+                                                    weak.update(cx, |workspace, cx| {
+                                                        workspace.toggle_pin(path.clone(), cx)
+                                                    })
+                                                    .ok();
+                                                })
+                                                .child(crate::ui::icons::icon(
+                                                    crate::ui::icons::Icon::Pin,
+                                                    12.,
+                                                    if pinned_now { theme::accent() } else { theme::faint() },
+                                                ))
+                                                .into_any_element())
+                                        }
+                                        None => {
+                                            let weak = pin_weak;
+                                            Some(div()
+                                                .id(id)
+                                                .w(px(24.))
+                                                .h(px(theme::S6))
+                                                .rounded(theme::r_control())
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .opacity(0.0)
+                                                .hover(|s| s.opacity(1.0))
+                                                .cursor_pointer()
+                                                .tooltip(move |_, cx| {
+                                                    cx.new(|_| crate::ui::copy_button::TextTooltip(
+                                                        "A sessão é salva pelo Pi no primeiro turno".into(),
+                                                    )).into()
+                                                })
+                                                .on_click(move |_event: &ClickEvent, _, cx: &mut App| {
+                                                    cx.stop_propagation();
+                                                    weak.update(cx, |workspace, cx| {
+                                                        workspace.explain_unpinned_session(cx)
+                                                    })
+                                                    .ok();
+                                                })
+                                                .child(crate::ui::icons::icon(
+                                                    crate::ui::icons::Icon::Pin,
+                                                    12.,
+                                                    theme::faint(),
+                                                ))
+                                                .into_any_element())
+                                        }
+                                    }
+                                };
                                 let action_target = live.map(|index| SessionTarget::Live(self.conversations[index].state.entity_id()))
                                     .or_else(|| info.as_ref().map(|info| SessionTarget::Saved(info.path.clone())));
                                 let action_button = action_target.map(|target| self.session_actions_button(target, cx));
@@ -574,8 +650,7 @@ impl Workspace {
                                             .border_color(theme::accent())
                                     })
                                     .when(!active && unread, |el| {
-                                        el.bg(theme::wash(theme::attention(), 0.12))
-                                            .border_l_2()
+                                        el.border_l_2()
                                             .border_color(theme::attention())
                                     })
                                     // Bloqueada esperando você é mais urgente que
@@ -653,15 +728,17 @@ impl Workspace {
                                                     .flex_wrap()
                                                     .items_center()
                                                     .gap(px(theme::S1 + 1.))
-                                                    .child(div().text_size(px(theme::TEXT_XS))
-                                                        .text_color(if active { theme::accent() } else { theme::dim() })
-                                                        .child(if loading_session {
-                                                            "carregando…"
-                                                        } else {
-                                                            lifecycle_label(live.is_some(), active)
-                                                        }))
+                                                    .when(loading_session || (!running && !needs_input && !signals.error && !signals.interrupted && !unread), |el| {
+                                                        el.child(div().text_size(px(theme::TEXT_XS))
+                                                            .text_color(if active { theme::accent() } else { theme::dim() })
+                                                            .child(if loading_session {
+                                                                "carregando…"
+                                                            } else {
+                                                                lifecycle_label(live.is_some(), active)
+                                                            }))
+                                                    })
                                                     .when(pinned, |el| el.child(crate::ui::icons::icon(crate::ui::icons::Icon::Pin, 12., theme::accent())))
-                                                    .when(running, |el| {
+                                                    .when(running && !signals.needs_input, |el| {
                                                         el.child(crate::ui::icons::icon(
                                                             crate::ui::icons::Icon::Activity,
                                                             11.,
@@ -669,7 +746,7 @@ impl Workspace {
                                                         ))
                                                         .child(
                                                             div()
-                                                                .text_size(px(theme::TEXT_XS))
+                                                                .text_size(px(theme::TEXT_SM))
                                                                 .text_color(theme::running())
                                                                 .child("executando"),
                                                         )
@@ -677,23 +754,46 @@ impl Workspace {
                                                     .when(unread, |el| {
                                                         el.child(crate::ui::icons::icon(
                                                             crate::ui::icons::Icon::File, 11., theme::attention(),
-                                                        )).child(div().text_size(px(theme::TEXT_XS))
-                                                            .text_color(theme::attention()).child("resposta nova"))
+                                                        )).child(
+                                                            div()
+                                                                .flex()
+                                                                .flex_row()
+                                                                .items_center()
+                                                                .gap(px(5.))
+                                                                .text_size(px(theme::TEXT_SM))
+                                                                .text_color(theme::attention())
+                                                                .child("resposta")
+                                                                .child("nova"),
+                                                        )
                                                     })
                                                     .when(signals.needs_input, |el| {
-                                                        el.child(crate::ui::icons::icon(crate::ui::icons::Icon::Alert, 11., theme::warn())).child(div().text_size(px(theme::TEXT_XS))
-                                                            .text_color(theme::warn()).child("precisa de você"))
+                                                        el.child(crate::ui::icons::icon(crate::ui::icons::Icon::Alert, 11., theme::warn())).child(
+                                                            div()
+                                                                .text_size(px(theme::TEXT_XS))
+                                                                .text_color(theme::warn())
+                                                                .child("precisa de você"),
+                                                        )
                                                     })
                                                     .when(signals.queued > 0, |el| {
-                                                        el.child(div().text_size(px(theme::TEXT_XS))
-                                                            .text_color(theme::dim()).child(SharedString::from(format!("{} em fila", signals.queued))))
+                                                        el.child(
+                                                            div()
+                                                                .flex()
+                                                                .flex_row()
+                                                                .items_center()
+                                                                .gap(px(5.))
+                                                                .text_size(px(theme::TEXT_SM))
+                                                                .text_color(theme::text())
+                                                                .child(SharedString::from(format!("{}", signals.queued)))
+                                                                .child("em")
+                                                                .child("fila"),
+                                                        )
                                                     })
                                                     .when(signals.error, |el| {
-                                                        el.child(crate::ui::icons::icon(crate::ui::icons::Icon::Alert, 11., theme::failure())).child(div().text_size(px(theme::TEXT_XS))
+                                                        el.child(crate::ui::icons::icon(crate::ui::icons::Icon::Alert, 11., theme::failure())).child(div().text_size(px(theme::TEXT))
                                                             .text_color(theme::failure()).child("erro"))
                                                     })
                                                     .when(signals.interrupted, |el| {
-                                                        el.child(crate::ui::icons::icon(crate::ui::icons::Icon::Stop, 11., theme::dim())).child(div().text_size(px(theme::TEXT_XS)).text_color(theme::dim()).child("interrompida"))
+                                                        el.child(crate::ui::icons::icon(crate::ui::icons::Icon::Stop, 11., theme::dim())).child(div().text_size(px(theme::TEXT_SM)).text_color(theme::dim()).child("interrompida"))
                                                     })
                                                     .when(!running && !needs_input && !signals.error && !signals.interrupted && !unread, |el| {
                                                         if signals.completed {
@@ -701,15 +801,26 @@ impl Workspace {
                                                                 .child(div().text_size(px(theme::TEXT_XS)).text_color(theme::ok()).child("concluída"))
                                                         } else { el }
                                                     })
-                                                    .child(div().text_size(px(theme::TEXT_XS)).text_color(theme::faint())
-                                                        .child(SharedString::from(relative_time(activity_time, std::time::SystemTime::now())))),
+                                                    .when(!signals.needs_input, |el| {
+                                                        el.child(div().text_size(px(theme::TEXT_XS)).text_color(theme::faint())
+                                                            .child(SharedString::from(relative_time(activity_time, std::time::SystemTime::now()))))
+                                                    }),
                                             )
                                             .when(running, |el| {
                                                 el.child(div().truncate().text_size(px(theme::TEXT_XS)).text_color(theme::dim())
                                                     .child(SharedString::from(live.and_then(|i| self.conversations[i].state.read(cx).activity.clone()).unwrap_or_default())))
                                             })
                                     )
-                                    .when_some(action_button, |el, button| el.child(button))
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .flex()
+                                            .flex_row()
+                                            .items_center()
+                                            .gap(px(2.))
+                                            .when_some(pin_button, |el, button| el.child(button))
+                                            .when_some(action_button, |el, button| el.child(button)),
+                                    )
                             },
                         ))
                     }),
@@ -877,18 +988,6 @@ impl Workspace {
                     )
                 }),
         )
-        .child(
-            div().id("nav-help")
-                .mx(px(theme::S2)).mb(px(theme::S2)).px(px(theme::S3)).py(px(theme::S3))
-                .rounded(theme::r_control()).flex().items_center().gap(px(theme::S3))
-                .cursor_pointer().hover(|style| style.bg(theme::hover()))
-                .on_click(cx.listener(|workspace, _: &ClickEvent, window, cx| {
-                    workspace.open_settings(crate::settings::Section::App, window, cx);
-                }))
-                .child(crate::ui::icons::icon(crate::ui::icons::Icon::Settings, 16., theme::dim()))
-                .child(div().flex_1().text_size(px(theme::TEXT)).text_color(theme::dim()).child("Configurações"))
-                .child(crate::ui::keycap_all("F1")),
-        )
     }
 }
 
@@ -901,18 +1000,13 @@ pub(super) fn nav_icon_button(
 ) -> AnyElement {
     div()
         .id(id)
-        .size(px(30.))
+        .size(px(28.))
         .rounded(theme::r_control())
         .flex()
         .items_center()
         .justify_center()
         .cursor_pointer()
         .hover(|style| style.bg(theme::hover()))
-        .tooltip(move |_, cx| cx.new(|_| crate::ui::copy_button::TextTooltip(match id {
-            "nav-new-session" => "Nova sessão",
-            "nav-open-project" => "Abrir projeto",
-            _ => "Configurações",
-        }.into())).into())
         .on_click(cx.listener(move |workspace, _: &ClickEvent, window, cx| {
             run(workspace, window, cx);
         }))
@@ -936,8 +1030,8 @@ fn nav_segment(
         .flex_1()
         .flex()
         .justify_center()
-        .px(px(theme::S1 + 1.))
-        .py(px(4.))
+        .px(px(theme::S2))
+        .py(px(3.))
         .rounded(theme::r_small())
         .when(active, |el| {
             el.bg(theme::surface_2())

@@ -587,7 +587,7 @@ fn banner_element(banner: &crate::state::Banner, cx: &mut Context<AppState>) -> 
         .py(px(8.))
         .border_l_2()
         .border_color(color)
-        .bg(theme::wash(color, 0.07))
+        .bg(theme::wash(color, 0.14))
         .text_size(px(theme::TEXT_SM))
         .text_color(theme::dim())
         .child(div().text_color(color).child("●"))

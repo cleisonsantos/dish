@@ -55,7 +55,7 @@ pub const WRITING_HEIGHT: f32 = 52.0;
 /// Header rhythm shared by the conversation and inspector.
 pub const HEADER_HEIGHT: f32 = 72.0;
 /// Default expanded navigation width.
-pub const NAV_WIDTH: f32 = 280.0;
+pub const NAV_WIDTH: f32 = 264.0;
 /// Secondary interface text: rows, values.
 pub const TEXT_SM: f32 = 12.0;
 /// Metadata: paths, durations, counts.
@@ -363,7 +363,7 @@ fn lavender_theme() -> Theme {
         line_strong: c(0xbeb0ceff),
         text: c(0x2c2538ff),
         dim: c(0x51475eff),
-        faint: c(0x685d75ff),
+        faint: c(0x5d526bff),
         ok: c(0x51475eff),
         ..base_theme("dish-lavender", "Lavanda", false)
     }

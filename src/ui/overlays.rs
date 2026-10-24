@@ -122,14 +122,13 @@ pub fn model_picker(state: &AppState, window: &Window, cx: &Context<AppState>) -
                     .min_w(px(0.))
                     .flex()
                     .flex_col()
-                    .gap(px(1.))
+                    .gap(px(4.))
                     .child(
                         div()
                             .truncate()
                             .font_family(theme::FONT_MONO)
                             .text_size(px(theme::TEXT_SM))
-                            .when(selected, |el| el.text_color(theme::text()))
-                            .when(!selected, |el| el.text_color(theme::dim()))
+                            .text_color(theme::text())
                             .child(SharedString::from(model.id.clone())),
                     )
                     .child(
