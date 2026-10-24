@@ -96,8 +96,9 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
         type_text("zzznomatch")
         wait_for(lambda: "Nenhum atalho" in capture(), "Shortcut filter did not show its empty state")
         press("Escape")
-        time.sleep(0.4)
-        assert "Configura" not in capture(), "Escape did not close settings"
+        # O fechamento é animado: no runner sem GPU o modal ainda aparece por
+        # alguns frames, então espera-se sumir em vez de dormir um valor fixo.
+        wait_for(lambda: "Configura" not in capture(), "Escape did not close settings", timeout=20)
         click(window, 239, 25)
         time.sleep(1)
         page = capture()

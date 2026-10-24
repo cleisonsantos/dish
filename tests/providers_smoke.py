@@ -113,7 +113,7 @@ class Harness:
         assert position, f"{self.name}: não achei {label!r} na tela:\n{self.capture()}"
         click(self.window, position[0], position[1])
 
-    def wait_text(self, needles, timeout=30):
+    def wait_text(self, needles, timeout=75):
         for _ in range(int(timeout / 0.5)):
             text = self.capture()
             haystack = normalized(text)

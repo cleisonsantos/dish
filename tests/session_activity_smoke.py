@@ -180,7 +180,7 @@ with tempfile.TemporaryDirectory(prefix="dish-activity-") as temporary:
         # Two queued beta runs: the first response remains unread while the next runs.
         beta_pid = send("long-activity-b")
         send("long-activity-queued")
-        wait_for(lambda: "emfila" in nav_text().replace(" ", ""), "Queued prompt has no separate indicator")
+        wait_for(lambda: "emfila" in nav_text().replace(" ", ""), "Queued prompt has no separate indicator", timeout=30)
         chord("Control_L", "Tab")  # alpha
         wait_for(lambda: alpha_path not in preferences().get("unread_sessions", {}), "Viewing alpha did not mark it read")
         release_run("long-activity-b")

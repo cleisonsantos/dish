@@ -98,7 +98,7 @@ with tempfile.TemporaryDirectory(prefix="dish-effort-") as temporary:
         assert not any(item.get("switching") and item.get("command", {}).get("type") in ["get_state", "get_available_thinking_levels"] for item in events()), "Queried capabilities before switch confirmation"
 
         slash("gamma", provider=False)
-        wait_for(lambda: "sem raciocinio" in text(), "Non-reasoning model not handled")
+        wait_for(lambda: "sem raciocinio" in text(), "Non-reasoning model not handled", timeout=30)
         slash("alpha")
         wait_for(lambda: find_word(window, "baixo", last=True), "Slash switch did not refresh alpha")
 

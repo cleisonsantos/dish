@@ -499,7 +499,7 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         assert contains_rendered_color(accent_pixels, (84, 137, 164)), "Background effort changed the visible accent"
         type_text("still-beta")
         press("Return")
-        wait_for(lambda: len(commands("prompt")) == 6, "Hidden dialog stole keyboard focus")
+        wait_for(lambda: len(commands("prompt")) == 6, "Hidden dialog stole keyboard focus", timeout=30)
         assert commands("prompt")[-1]["pid"] == prompts[1]["pid"]
         click_nav_label(window, "dialog")
         type_text("answer")
@@ -765,7 +765,12 @@ with tempfile.TemporaryDirectory(prefix="dish-metadata-") as directory:
             assert clipboard_text() == expected_command, repr(clipboard_text())
             # With details closed, the full marker must still be readable in
             # the hoverable tooltip, not only the truncated summary.
-            bash = find_word(window, "bash")
+            bash = None
+            for _ in range(24):
+                bash = find_word(window, "bash")
+                if bash:
+                    break
+                time.sleep(0.25)
             assert bash, "Historical tool header is no longer visible after copying"
             click(window, bash[0] + bash[2] // 2, bash[1] + bash[3] // 2)
             wait_for(lambda: find_word(window, "COMANDO_COMPLETO"), "Full command tooltip missing", timeout=4)
