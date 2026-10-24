@@ -277,6 +277,7 @@ fn code_block(language: Option<&str>, code: &str, style: &MarkdownStyle, selecti
                         .child(language.unwrap_or("code").to_uppercase()),
                 )
                 .child(crate::ui::copy_button::CopyButton {
+                    group: None,
                     id: ("copy-code", index).into(),
                     text: copy_code,
                     label: "Copiar código",

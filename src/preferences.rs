@@ -33,6 +33,8 @@ pub struct Preferences {
     pub session_filter: crate::session_activity::SessionFilter,
     /// Aparência escolhida: escuro, claro ou seguindo o desktop.
     pub appearance: crate::theme::AppearanceMode,
+    /// `None` preserves GPUI's platform preference; `Some` is an explicit override.
+    pub reduce_motion: Option<bool>,
     /// Tema fixado pelo usuário, por id (`dish-paper`, `user:meu-tema`…).
     /// `None` usa o tema padrão da aparência resolvida.
     pub theme: Option<String>,
@@ -129,6 +131,17 @@ mod tests {
         assert!(preferences.collapsed_projects.is_empty());
         assert_eq!(preferences.appearance, crate::theme::AppearanceMode::System);
         assert_eq!(preferences.theme, None);
+        assert_eq!(preferences.reduce_motion, None, "preserve platform motion setting");
+    }
+
+    #[test]
+    fn motion_preference_preserves_explicit_choices() {
+        for reduced in [false, true] {
+            let preferences = Preferences { reduce_motion: Some(reduced), ..Preferences::default() };
+            let json = serde_json::to_string(&preferences).unwrap();
+            let restored: Preferences = serde_json::from_str(&json).unwrap();
+            assert_eq!(restored.reduce_motion, Some(reduced));
+        }
     }
     #[test]
     fn remember_project_moves_to_front_dedupes_and_caps() {
@@ -177,6 +190,7 @@ mod tests {
             unread_sessions: [(PathBuf::from("/tmp/session.jsonl"), 123456)].into(),
             session_filter: crate::session_activity::SessionFilter::Unread,
             appearance: crate::theme::AppearanceMode::Dark,
+            reduce_motion: Some(true),
             theme: Some("user:meu-tema".to_string()),
         };
         let bytes = serde_json::to_vec(&preferences).unwrap();

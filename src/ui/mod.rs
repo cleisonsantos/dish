@@ -14,6 +14,7 @@ use crate::theme;
 use crate::ui::icons::{Icon, icon};
 
 pub mod composer;
+pub mod motion;
 pub mod icons;
 pub mod inspector;
 pub mod metadata_view;
@@ -47,14 +48,15 @@ impl Render for AppState {
         let viewport = f32::from(window.bounds().size.width);
         if !self.inspector_initialized {
             self.inspector_initialized = true;
-            self.sidebar = viewport >= inspector::NARROW;
+            self.sidebar = !inspector::uses_overlay(viewport);
         }
-        let narrow = viewport < inspector::NARROW;
+        let narrow = inspector::uses_overlay(viewport);
 
         let (slash, slash_index) = self.slash_state(cx);
         let mut main_column = div()
             .flex_1()
             .min_w(px(0.))
+            .min_h(px(0.))
             .flex()
             .flex_col()
             .child(conversation_header(self, cx))
@@ -74,6 +76,7 @@ impl Render for AppState {
             .flex()
             .flex_col()
             .overflow_hidden()
+            .rounded(theme::r_surface_inner())
             .bg(theme::bg())
             .text_color(theme::text())
             .font_family(theme::FONT_UI)
@@ -240,34 +243,38 @@ impl Render for AppState {
 /// compositor; as métricas ficam no inspetor.
 fn conversation_header(state: &AppState, cx: &Context<AppState>) -> Div {
     let (glyph, color, label) = conversation_state(state);
+    let loading = state.is_loading_session();
+    let busy = state.streaming || state.is_busy();
     let folder = state
         .title_override
         .clone()
         .unwrap_or_else(|| crate::rpc::folder_label(&state.cwd));
 
     div()
+        .w_full()
+        .min_w(px(0.))
         .flex_none()
+        .min_h(px(theme::HEADER_HEIGHT))
         .flex()
         .flex_row()
-        .items_start()
+        .items_center()
         .justify_between()
-        .gap(px(theme::S4))
-        .px(px(theme::S5))
-        .pt(px(theme::S4))
-        .pb(px(theme::S3))
-        .border_b_1()
-        .border_color(theme::line_soft())
+        .gap(px(theme::S3))
+        .px(px(theme::CHAT_INSET))
+        .py(px(theme::S3))
         .child(
             div()
                 .flex()
                 .flex_col()
                 .gap(px(theme::S1))
                 .min_w(px(0.))
+                .flex_1()
                 .child(
                     div()
                         .truncate()
                         .text_size(px(theme::TITLE))
-                        .font_weight(FontWeight::MEDIUM)
+                        .line_height(px(24.))
+                        .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme::text())
                         .child(SharedString::from(state.display_title())),
                 )
@@ -279,8 +286,10 @@ fn conversation_header(state: &AppState, cx: &Context<AppState>) -> Div {
                         .gap(px(theme::S2))
                         .child(
                             div()
+                                .min_w(px(0.))
+                                .truncate()
                                 .font_family(theme::FONT_MONO)
-                                .text_size(px(theme::TEXT_SM))
+                                .text_size(px(theme::TEXT_XS))
                                 .text_color(theme::faint())
                                 .child(SharedString::from(folder)),
                         )
@@ -305,8 +314,7 @@ fn conversation_header(state: &AppState, cx: &Context<AppState>) -> Div {
                 .gap(px(theme::S2))
                 .flex_none()
                 .child(
-                    // Estado sem pílmulo: a leitura vem da palavra com o ícone;
-                    // caixa escrita aqui só aumentaria o ruído do cabeçalho.
+                    // One status, sourced from Pi. Motion only while busy or loading.
                     div()
                         .flex()
                         .flex_row()
@@ -315,11 +323,27 @@ fn conversation_header(state: &AppState, cx: &Context<AppState>) -> Div {
                         .px(px(theme::S2))
                         .py(px(theme::S1 + 3.))
                         .rounded(theme::r_control())
-                        .child(icon(glyph, 13., color))
+                        .border_1()
+                        .border_color(gpui::transparent_black())
+                        .when(loading, |el| {
+                            el.bg(theme::wash(color, 0.12))
+                                .border_color(theme::wash(color, 0.35))
+                                .child(icons::spinner("header-loading", 13., color))
+                        })
+                        .when(!loading && busy, |el| {
+                            el.bg(theme::wash(color, 0.12))
+                                .border_color(theme::wash(color, 0.35))
+                                .child(pulse("header-live", 6., color))
+                        })
+                        .when(!loading && !busy, |el| {
+                            el.child(icon(glyph, 13., color))
+                        })
                         .child(
                             div()
+                                .max_w(px(124.))
+                                .truncate()
                                 .text_size(px(theme::TEXT_SM))
-                                .text_color(if state.streaming {
+                                .text_color(if state.streaming || loading {
                                     color
                                 } else {
                                     theme::dim()
@@ -345,7 +369,21 @@ fn conversation_header(state: &AppState, cx: &Context<AppState>) -> Div {
                         })
                         .when(state.sidebar, |el| el.bg(theme::surface_2()))
                         .cursor_pointer()
+                        .focusable()
+                        .tab_index(0)
                         .hover(|style| style.bg(theme::hover()))
+                        .active(|style| style.opacity(0.8))
+                        .focus(|style| style.shadow(theme::focus_ring()))
+                        .on_key_down(cx.listener(|state, event: &KeyDownEvent, window, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                state.sidebar = !state.sidebar;
+                                cx.notify();
+                                cx.stop_propagation();
+                            } else if event.keystroke.key == "tab" {
+                                if event.keystroke.modifiers.shift { window.focus_prev(cx); } else { window.focus_next(cx); }
+                                cx.stop_propagation();
+                            }
+                        }))
                         .on_click(cx.listener(|state, _: &ClickEvent, _window, cx| {
                             state.sidebar = !state.sidebar;
                             cx.notify();
@@ -359,6 +397,92 @@ fn conversation_header(state: &AppState, cx: &Context<AppState>) -> Div {
                         ),
                 ),
         )
+}
+
+/// Superfície da conversa exibida imediatamente ao clicar numa sessão salva,
+/// enquanto o processo do Pi está sendo iniciado em background.
+pub fn opening_session_view(cwd: &std::path::Path, title: Option<&str>) -> Stateful<Div> {
+    let header_title = title
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .unwrap_or("Carregando sessão…");
+    let folder = crate::rpc::folder_label(cwd);
+    let color = theme::accent();
+
+    div()
+        .id("dish-root-opening")
+        .relative()
+        .size_full()
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        .rounded(theme::r_surface_inner())
+        .bg(theme::bg())
+        .text_color(theme::text())
+        .font_family(theme::FONT_UI)
+        .text_size(px(theme::TEXT))
+        .line_height(theme::body_line_height())
+        .child(
+            div()
+                .w_full()
+                .min_w(px(0.))
+                .flex_none()
+                .min_h(px(theme::HEADER_HEIGHT))
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(theme::S3))
+                .px(px(theme::CHAT_INSET))
+                .py(px(theme::S3))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(theme::S1))
+                        .min_w(px(0.))
+                        .flex_1()
+                        .child(
+                            div()
+                                .truncate()
+                                .text_size(px(theme::TITLE))
+                                .line_height(px(24.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(theme::text())
+                                .child(SharedString::from(header_title.to_string())),
+                        )
+                        .child(
+                            div()
+                                .min_w(px(0.))
+                                .truncate()
+                                .font_family(theme::FONT_MONO)
+                                .text_size(px(theme::TEXT_XS))
+                                .text_color(theme::faint())
+                                .child(SharedString::from(folder)),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(theme::S1 + 2.))
+                        .px(px(theme::S2))
+                        .py(px(theme::S1 + 3.))
+                        .rounded(theme::r_control())
+                        .border_1()
+                        .bg(theme::wash(color, 0.12))
+                        .border_color(theme::wash(color, 0.35))
+                        .child(icons::spinner("header-opening", 13., color))
+                        .child(
+                            div()
+                                .text_size(px(theme::TEXT_SM))
+                                .text_color(color)
+                                .child("carregando…"),
+                        ),
+                ),
+        )
+        .child(transcript::loading_state(title))
 }
 
 /// Barra de título separada do conteúdo, apenas onde não há moldura nativa.
@@ -424,6 +548,9 @@ fn window_controls() -> Div {
 
 /// Estado em um único ponto: ícone + texto, nunca só cor.
 fn conversation_state(state: &AppState) -> (Icon, Hsla, String) {
+    if state.is_loading_session() {
+        return (Icon::Activity, theme::accent(), "carregando…".to_string());
+    }
     if state.streaming || state.is_busy() {
         return (
             Icon::Activity,
@@ -452,8 +579,9 @@ fn banner_element(banner: &crate::state::Banner, cx: &mut Context<AppState>) -> 
         .flex_row()
         .items_center()
         .gap(px(10.))
-        .mx(px(24.))
+        .mx(px(theme::CHAT_INSET))
         .mb(px(10.))
+        .rounded(theme::r_control())
         .pl(px(12.))
         .pr(px(6.))
         .py(px(8.))
@@ -537,9 +665,9 @@ pub fn pulse(id: impl Into<ElementId>, size: f32, color: Hsla) -> impl IntoEleme
                 let wave = (delta * std::f32::consts::PI).sin().abs();
                 div()
                     .size(px(size))
-                    .rounded(px((size / 4.0).max(1.0)))
+                    .rounded(px(size / 2.0))
                     .bg(color)
-                    .opacity(0.35 + 0.65 * wave)
+                    .opacity(0.65 + 0.35 * wave)
             },
         )
 }
@@ -552,22 +680,56 @@ pub fn rule() -> Div {
 
 
 
-/// A progress rail. `ratio` is clamped to 0..1.
+/// A progress rail. `ratio` is clamped to 0..1. The fill is a short gradient
+/// so the head of the bar reads as "where we are now".
 pub fn meter(ratio: f32, color: Hsla) -> Div {
     let ratio = ratio.clamp(0.0, 1.0);
     div()
         .w_full()
-        .h(px(3.))
-        .rounded(px(1.))
-        .bg(theme::line())
-        .overflow_hidden()
+        .h(px(6.))
+        .rounded(px(3.))
+        .bg(theme::inset())
+        .border_1()
+        .border_color(theme::line_soft())
         .child(
             div()
                 .h_full()
                 .w(relative(ratio))
-                .rounded(px(1.))
-                .bg(color),
+                .rounded(px(3.))
+                .bg(linear_gradient(
+                    90.,
+                    linear_color_stop(theme::wash(color, 0.45), 0.0),
+                    linear_color_stop(color, 1.0),
+                )),
         )
+}
+
+/// The sliding knob of an on/off switch. `on` picks the travel direction and
+/// the animation restarts only when the id (which carries the state) changes,
+/// so a switch at rest costs nothing. Reduced motion is honoured by GPUI.
+///
+/// The track must be `relative()`, 34×18 with a 1px border.
+pub fn switch_knob(id: impl Into<ElementId>, on: bool, color: Hsla) -> impl IntoElement {
+    div()
+        .absolute()
+        .top(px(2.))
+        .size(px(12.))
+        .rounded(px(6.))
+        .bg(color)
+        .with_animation(
+            id,
+            Animation::new(std::time::Duration::from_millis(motion::ENTER_MS))
+                .with_easing(motion::settle),
+            move |knob, progress| {
+                let place = if on { progress } else { 1. - progress };
+                knob.left(px(2. + 16. * place))
+            },
+        )
+}
+
+/// Resting position of a mixed (indeterminate) knob: centred on the track.
+pub fn switch_knob_mixed(color: Hsla) -> Div {
+    div().absolute().top(px(2.)).left(px(10.)).size(px(12.)).rounded(px(6.)).bg(color)
 }
 
 /// A stable element id derived from content, for scroll containers that have no
@@ -578,16 +740,6 @@ pub fn micro(label: impl Into<SharedString>) -> Div {
         .text_size(px(theme::TEXT_XS))
         .text_color(theme::faint())
         .child(label.into())
-}
-
-/// A hollow marker, for the unselected half of a set.
-pub fn ring(color: Hsla, size: f32) -> Div {
-    div()
-        .flex_none()
-        .size(px(size))
-        .rounded(px((size / 4.).max(1.)))
-        .border_1()
-        .border_color(color)
 }
 
 /// A key chip for the help sheet.

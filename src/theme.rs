@@ -14,8 +14,9 @@
 //!    the tests at the bottom of this file, not by opinion.
 //!
 //! The palette is a [`Theme`] value. `dish-dark` is the original look and
-//! `dish-light` is its light counterpart; `dish-paper` and `dish-dim` are
-//! presets, and `$XDG_CONFIG_HOME/dish/themes/*.json` adds user themes (see
+//! `dish-light` is its light counterpart. Six additional presets cover warm,
+//! dim, blue, plum, lavender and sage surfaces. User themes live in
+//! `$XDG_CONFIG_HOME/dish/themes/*.json` (see
 //! `docs/themes.md`). The active one is resolved at render time from the
 //! user's choice and the desktop, so switching never needs a restart.
 
@@ -26,7 +27,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU8, AtomicU32, AtomicUsize, Ordering};
 
 /// Interface font.
-pub const FONT_UI: &str = "Roboto";
+pub const FONT_UI: &str = "Noto Sans";
 /// Monospace font, used for anything a machine wrote.
 pub const FONT_MONO: &str = "JetBrains Mono";
 
@@ -34,10 +35,27 @@ pub const FONT_MONO: &str = "JetBrains Mono";
 
 /// Reading text: the assistant's answer and the user's request.
 pub const PROSE: f32 = 15.0;
+/// Leading for reading text: 1.55 of the prose size, comfortable for long answers.
+pub const PROSE_LINE: f32 = 23.0;
 /// Session title.
-pub const TITLE: f32 = 16.5;
+pub const TITLE: f32 = 20.0;
 /// Default interface text.
 pub const TEXT: f32 = 13.0;
+/// Welcome heading: the only display-sized type in the workspace.
+pub const DISPLAY: f32 = 32.0;
+/// Fixed inset, shared by header, transcript and composer at any window width.
+pub const CHAT_INSET: f32 = 16.0;
+/// Popup controls keep their own measure when the writing area grows.
+pub const EFFORT_MENU_WIDTH: f32 = 360.0;
+pub const COMPOSER_PICKER_WIDTH: f32 = 640.0;
+/// User bubbles stay compact but long requests can use a wide workspace.
+pub const REQUEST_MAX_FRACTION: f32 = 0.9;
+/// The writing surface reserves space without growing on every short draft.
+pub const WRITING_HEIGHT: f32 = 52.0;
+/// Header rhythm shared by the conversation and inspector.
+pub const HEADER_HEIGHT: f32 = 72.0;
+/// Default expanded navigation width.
+pub const NAV_WIDTH: f32 = 280.0;
 /// Secondary interface text: rows, values.
 pub const TEXT_SM: f32 = 12.0;
 /// Metadata: paths, durations, counts.
@@ -48,7 +66,7 @@ pub const TEXT_MICRO: f32 = 11.0;
 pub const MONO: f32 = 12.5;
 
 pub fn body_line_height() -> Pixels {
-    px(18.)
+    px(20.)
 }
 
 // -------------------------------------------------------------------- espaço
@@ -70,7 +88,12 @@ pub fn r_small() -> Pixels {
 }
 /// Radius for surfaces: composer, code, panels.
 pub fn r_surface() -> Pixels {
-    px(12.)
+    px(14.)
+}
+/// The paint inside a 1px surface border shares its corner's centre.
+/// GPUI's overflow mask is rectangular, so opaque children need their own radius.
+pub fn r_surface_inner() -> Pixels {
+    px(13.)
 }
 /// Radius for the isolated actions: send, stop, primary setup action.
 pub fn r_action() -> Pixels {
@@ -107,8 +130,7 @@ pub enum AppearanceMode {
 /// `off, minimal, low, medium, high, xhigh, max`.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Theme {
-    /// Identificador estável: `dish-dark`, `dish-light`, `dish-paper`,
-    /// `dish-dim` ou `user:<arquivo>` para temas do usuário.
+    /// Identificador estável de um tema embutido, ou `user:<arquivo>`.
     pub id: String,
     /// Nome exibido na tela de Aparência.
     pub name: String,
@@ -172,18 +194,18 @@ fn base_theme(id: &str, name: &str, dark: bool) -> Theme {
 /// O visual original do Dish: grafite com separação.
 fn dark_theme() -> Theme {
     Theme {
-        bg: c(0x0b0e13ff),
-        surface: c(0x11151cff),
-        surface_2: c(0x191e26ff),
-        inset: c(0x07080bff),
-        hover: c(0x1e242dff),
-        line: c(0x252b35ff),
-        line_soft: c(0x1a1f27ff),
-        line_strong: c(0x333b47ff),
-        text: c(0xeceef2ff),
-        dim: c(0xa6aeb8ff),
-        faint: c(0x858d97ff),
-        on_accent: c(0x0b0e13ff),
+        bg: c(0x22272fff),
+        surface: c(0x171b21ff),
+        surface_2: c(0x2b323cff),
+        inset: c(0x101318ff),
+        hover: c(0x323a46ff),
+        line: c(0x39424fff),
+        line_soft: c(0x2a313cff),
+        line_strong: c(0x556070ff),
+        text: c(0xedf0f4ff),
+        dim: c(0xaab3bfff),
+        faint: c(0x9ca8b8ff),
+        on_accent: c(0x171b21ff),
         running: c(0x4fb3a5ff),
         failure: c(0xcf5f92ff),
         warn: c(0xd8a24aff),
@@ -210,8 +232,8 @@ fn dark_theme() -> Theme {
 /// sobre o branco — é a derivação documentada de `effort` para o tema claro.
 fn light_theme() -> Theme {
     Theme {
-        bg: c(0xeef1f5ff),
-        surface: c(0xf8f9fbff),
+        bg: c(0xf7f9fcff),
+        surface: c(0xe9edf3ff),
         surface_2: c(0xffffffff),
         inset: c(0xe3e8eeff),
         hover: c(0xe8edf3ff),
@@ -220,7 +242,7 @@ fn light_theme() -> Theme {
         line_strong: c(0xc3cbd5ff),
         text: c(0x1a1f26ff),
         dim: c(0x3f4753ff),
-        faint: c(0x606874ff),
+        faint: c(0x545c68ff),
         on_accent: c(0xffffffff),
         running: c(0x1f7a6dff),
         failure: c(0xa93a67ff),
@@ -259,7 +281,7 @@ fn paper_theme() -> Theme {
         line_strong: c(0xccc3aeff),
         text: c(0x27231aff),
         dim: c(0x47402fff),
-        faint: c(0x625a47ff),
+        faint: c(0x5a523fff),
         ok: c(0x47402fff),
         ..base_theme("dish-paper", "Papel quente", false)
     }
@@ -288,6 +310,86 @@ fn dim_theme() -> Theme {
     .inherit(&dark)
 }
 
+/// Azul profundo, com navegação recuada e superfícies de aço azulado.
+fn midnight_theme() -> Theme {
+    Theme {
+        bg: c(0x172435ff),
+        surface: c(0x111b29ff),
+        surface_2: c(0x203249ff),
+        inset: c(0x0c1420ff),
+        hover: c(0x293f59ff),
+        line: c(0x31465fff),
+        line_soft: c(0x23344aff),
+        line_strong: c(0x496380ff),
+        text: c(0xe6effaff),
+        dim: c(0xa8b9ceff),
+        faint: c(0xa2b2c8ff),
+        ok: c(0xa8b9ceff),
+        ..base_theme("dish-midnight", "Noite azul", true)
+    }
+    .inherit(&dark_theme())
+}
+
+/// Ameixa escura: distingue as superfícies pelo matiz, sem brilho decorativo.
+fn plum_theme() -> Theme {
+    Theme {
+        bg: c(0x28212dff),
+        surface: c(0x1c1820ff),
+        surface_2: c(0x342b3bff),
+        inset: c(0x141117ff),
+        hover: c(0x403548ff),
+        line: c(0x4b3f54ff),
+        line_soft: c(0x382f40ff),
+        line_strong: c(0x6b5978ff),
+        text: c(0xf1eaf4ff),
+        dim: c(0xc0b0c9ff),
+        faint: c(0xb3a2beff),
+        ok: c(0xb8aabeff),
+        ..base_theme("dish-plum", "Ameixa", true)
+    }
+    .inherit(&dark_theme())
+}
+
+/// Claro violeta frio, sem o calor do preset Papel quente.
+fn lavender_theme() -> Theme {
+    Theme {
+        bg: c(0xf5f3faff),
+        surface: c(0xebe7f2ff),
+        surface_2: c(0xfdfbffff),
+        inset: c(0xe5e0eeff),
+        hover: c(0xe9e3f1ff),
+        line: c(0xd4caddff),
+        line_soft: c(0xe6dfedff),
+        line_strong: c(0xbeb0ceff),
+        text: c(0x2c2538ff),
+        dim: c(0x51475eff),
+        faint: c(0x685d75ff),
+        ok: c(0x51475eff),
+        ..base_theme("dish-lavender", "Lavanda", false)
+    }
+    .inherit(&light_theme())
+}
+
+/// Claro verde mineral; a rampa de esforço e os estados continuam independentes.
+fn sage_theme() -> Theme {
+    Theme {
+        bg: c(0xf1f6f2ff),
+        surface: c(0xe6eee8ff),
+        surface_2: c(0xfafdfbff),
+        inset: c(0xdde7e0ff),
+        hover: c(0xe1ebe4ff),
+        line: c(0xc8d6ccff),
+        line_soft: c(0xdee7e0ff),
+        line_strong: c(0xacbfb2ff),
+        text: c(0x25362dff),
+        dim: c(0x455c4eff),
+        faint: c(0x52665aff),
+        ok: c(0x455c4eff),
+        ..base_theme("dish-sage", "Sálvia", false)
+    }
+    .inherit(&light_theme())
+}
+
 impl Theme {
     /// Completa com os semânticos, a rampa e o `on-accent` do tema base.
     fn inherit(mut self, base: &Theme) -> Theme {
@@ -305,7 +407,10 @@ impl Theme {
 
 /// Os temas embutidos, na ordem em que a tela de Aparência os mostra.
 pub fn built_in_themes() -> Vec<Theme> {
-    vec![dark_theme(), light_theme(), paper_theme(), dim_theme()]
+    vec![
+        dark_theme(), dim_theme(), midnight_theme(), plum_theme(),
+        light_theme(), paper_theme(), lavender_theme(), sage_theme(),
+    ]
 }
 
 // ------------------------------------------------------------------- catálogo
@@ -631,10 +736,6 @@ pub fn faint() -> Hsla {
 pub fn on_accent() -> Hsla {
     active().on_accent
 }
-/// Text over a light control (the send button).
-pub fn on_light() -> Hsla {
-    active().on_accent
-}
 
 // --------------------------------------------------------------- semântica
 //
@@ -760,18 +861,69 @@ pub fn set_effort(level: Option<&str>, _available: &[String]) {
 }
 
 /// Anel de foco do teclado. Fica fora da caixa, para não competir com as
-/// bordas e cores de estado das linhas.
+/// bordas e cores de estado das linhas. Usa o acento do esforço: o foco é o
+/// lugar onde a cor significa "é aqui que você está".
 pub fn focus_ring() -> Vec<BoxShadow> {
     vec![BoxShadow {
-        color: wash(faint(), 0.9),
+        color: wash(accent(), 0.9),
         offset: point(px(0.), px(0.)),
         blur_radius: px(0.),
-        spread_radius: px(1.),
+        spread_radius: px(2.),
         inset: false,
     }]
 }
 
-/// The only shadow in the app: things that float above it.
+/// Brilho suave na cor do esforço, para a superfície de escrita. `strength`
+/// vai de 0 (apagado) a 1 (pico do pulso durante o trabalho do agente).
+pub fn accent_glow(strength: f32) -> Vec<BoxShadow> {
+    let strength = strength.clamp(0.0, 1.0);
+    vec![
+        BoxShadow {
+            color: wash(accent(), (if is_dark() { 0.10 } else { 0.07 }) + 0.22 * strength),
+            offset: point(px(0.), px(0.)),
+            blur_radius: px(10. + 18. * strength),
+            spread_radius: px(0.),
+            inset: false,
+        },
+        BoxShadow {
+            color: wash(inset(), if is_dark() { 0.32 } else { 0.16 }),
+            offset: point(px(0.), px(6.)),
+            blur_radius: px(20.),
+            spread_radius: px(-4.),
+            inset: false,
+        },
+    ]
+}
+
+/// Halo vertical do estado vazio: o acento esmaece até a superfície.
+pub fn accent_wash() -> gpui::Background {
+    gpui::linear_gradient(
+        180.,
+        gpui::linear_color_stop(wash(accent(), if is_dark() { 0.10 } else { 0.08 }), 0.0),
+        gpui::linear_color_stop(wash(accent(), 0.0), 1.0),
+    )
+}
+
+/// Cobertura translúcida atrás de diálogos; combinada com `backdrop_blur`.
+pub fn scrim() -> Hsla {
+    wash(bg(), if is_dark() { 0.62 } else { 0.55 })
+}
+
+/// Raio do desfoque do fundo atrás de diálogos e sobreposições.
+pub const SCRIM_BLUR: f32 = 10.0;
+
+/// A shallow lift for the writing surface, never for transcript rows.
+pub fn shadow_composer() -> Vec<BoxShadow> {
+    vec![BoxShadow {
+        color: wash(inset(), if is_dark() { 0.32 } else { 0.18 }),
+        offset: point(px(0.), px(6.)),
+        blur_radius: px(20.),
+        spread_radius: px(-4.),
+        inset: false,
+    }]
+}
+
+/// Shadows for things that float above the workspace.
 pub fn shadow_overlay() -> Vec<BoxShadow> {
     vec![
         BoxShadow {
@@ -1136,7 +1288,16 @@ mod tests {
     fn built_in_catalog_is_unique_and_ordered() {
         let themes = built_in_themes();
         let ids: Vec<&str> = themes.iter().map(|theme| theme.id.as_str()).collect();
-        assert_eq!(ids, vec!["dish-dark", "dish-light", "dish-paper", "dish-dim"]);
+        assert_eq!(ids, vec![
+            "dish-dark", "dish-dim", "dish-midnight", "dish-plum",
+            "dish-light", "dish-paper", "dish-lavender", "dish-sage",
+        ]);
+        // Escuros primeiro, claros depois: a lista se agrupa sem reordenar.
+        let first_light = themes.iter().position(|theme| !theme.dark).unwrap();
+        assert!(themes[..first_light].iter().all(|theme| theme.dark));
+        assert!(themes[first_light..].iter().all(|theme| !theme.dark));
+        assert_eq!(first_light, 4);
+        assert_eq!(themes.len() - first_light, 4);
         for (index, theme) in themes.iter().enumerate() {
             assert!(!theme.user);
             assert!(!theme.name.trim().is_empty());
@@ -1144,6 +1305,11 @@ mod tests {
                 !themes[..index].iter().any(|other| other.id == theme.id),
                 "id repetida: {}",
                 theme.id
+            );
+            assert!(
+                !themes[..index].iter().any(|other| other.name == theme.name),
+                "nome repetido: {}",
+                theme.name
             );
         }
     }

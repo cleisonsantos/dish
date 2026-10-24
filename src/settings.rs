@@ -726,33 +726,28 @@ fn group_state(keys: &[String], hidden: &BTreeSet<String>) -> SwitchState {
 /// (acento quando ligada, linha quando desligada, botão centrado quando misto).
 fn switch(id: impl Into<ElementId>, state: SwitchState, click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Stateful<Div> {
     let on = state == SwitchState::On;
+    let id: ElementId = id.into();
+    let knob_color = match state {
+        SwitchState::On => theme::on_accent(),
+        SwitchState::Mixed => theme::dim(),
+        SwitchState::Off => theme::faint(),
+    };
     div()
-        .id(id)
+        .id(id.clone())
+        .relative()
         .flex_none()
-        .flex()
-        .flex_row()
-        .items_center()
         .w(px(34.))
         .h(px(18.))
-        .px(px(2.))
         .rounded(px(9.))
         .cursor_pointer()
         .bg(if on { theme::accent() } else { theme::inset() })
         .border_1()
         .border_color(if on { theme::accent() } else { theme::line_strong() })
-        .when(state == SwitchState::On, |el| el.justify_end())
-        .when(state == SwitchState::Mixed, |el| el.justify_center())
-        .child(
-            div()
-                .flex_none()
-                .size(px(12.))
-                .rounded(px(6.))
-                .bg(match state {
-                    SwitchState::On => theme::bg(),
-                    SwitchState::Mixed => theme::dim(),
-                    SwitchState::Off => theme::faint(),
-                }),
-        )
+        .child(match state {
+            SwitchState::Mixed => crate::ui::switch_knob_mixed(knob_color).into_any_element(),
+            _ => crate::ui::switch_knob((id, if on { "knob-on" } else { "knob-off" }), on, knob_color)
+                .into_any_element(),
+        })
         // O interruptor é o alvo próprio; em linhas toda-clicáveis ele não
         // pode repetir o mesmo giro duas vezes.
         .on_click(move |event: &ClickEvent, window: &mut Window, cx: &mut App| {
@@ -894,8 +889,8 @@ fn model_count(models: usize) -> String {
 /// do menu à esquerda.
 fn page_title(label: &str) -> Div {
     div()
-        .text_size(px(14.))
-        .font_weight(FontWeight::MEDIUM)
+        .text_size(px(theme::TITLE))
+        .font_weight(FontWeight::SEMIBOLD)
         .text_color(theme::text())
         .child(SharedString::from(label.to_owned()))
 }
@@ -904,8 +899,10 @@ impl Render for Settings {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.open { return div().into_any_element(); }
         let height = (f32::from(window.bounds().size.height) - 48.).max(300.);
-        let width = (f32::from(window.bounds().size.width) - 48.).min(840.);
-        let mut menu = column().w(px(184.)).flex_none();
+        let width = (f32::from(window.bounds().size.width) - 48.).min(920.);
+        let compact = width < 680.;
+        let mut menu = column().w(px(184.)).flex_none()
+            .when(compact, |el| el.w_full().flex_row().flex_wrap().gap(px(theme::S1)));
         for (section, label, id) in [
             (Section::App, "Aplicativo", "settings-app"),
             (Section::Appearance, "Aparência", "settings-appearance"),
@@ -1012,16 +1009,55 @@ impl Render for Settings {
                         .child(div().flex_1().min_w(px(0.)).text_size(px(theme::TEXT_SM)).text_color(theme::dim()).child("Tema padrão"))
                         .child(segments),
                 );
-                let mut themes = div().flex().flex_col().gap(px(6.))
-                    .child(div().text_size(px(theme::TEXT_SM)).text_color(theme::dim()).child("Temas"));
-                for item in theme::themes() {
-                    // Sem tema fixado, o marcado é o que está em uso agora —
-                    // inclusive quando `Sistema` escolheu pelo desktop.
-                    let selected = self
-                        .theme
-                        .as_deref()
-                        .map_or(theme::active().id == item.id, |id| id == item.id);
-                    themes = themes.child(theme_row(item, selected, cx));
+                let reduced = cx.reduce_motion();
+                page = page.child(
+                    div().id("reduce-motion").flex().items_center().gap(px(theme::S4))
+                        .py(px(theme::S3)).border_b_1().border_color(theme::line_soft())
+                        .cursor_pointer().focusable().tab_index(0)
+                        .hover(|style| style.bg(theme::hover()))
+                        .focus(|style| style.shadow(theme::focus_ring()))
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            cx.set_reduce_motion(!reduced);
+                            cx.emit(SettingsEvent::Preference("reduce_motion", !reduced));
+                            cx.notify();
+                        }))
+                        .on_key_down(cx.listener(move |_, event: &KeyDownEvent, window, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                cx.set_reduce_motion(!reduced);
+                                cx.emit(SettingsEvent::Preference("reduce_motion", !reduced));
+                                cx.notify();
+                                cx.stop_propagation();
+                            } else if event.keystroke.key == "tab" {
+                                if event.keystroke.modifiers.shift { window.focus_prev(cx); } else { window.focus_next(cx); }
+                                cx.stop_propagation();
+                            }
+                        }))
+                        .child(div().flex_1().min_w(px(0.)).flex().flex_col().gap(px(theme::S1))
+                            .child(div().text_color(theme::text()).child("Reduzir movimento"))
+                            .child(note("Desativa transições e mantém indicadores de atividade estáticos.")))
+                        .child(switch("reduce-motion-switch",
+                            if reduced { SwitchState::On } else { SwitchState::Off },
+                            cx.listener(move |_, _, _, cx| {
+                                cx.set_reduce_motion(!reduced);
+                                cx.emit(SettingsEvent::Preference("reduce_motion", !reduced));
+                                cx.notify();
+                            }))),
+                );
+                let mut themes = div().flex().flex_col().gap(px(6.));
+                for (label, dark) in [("Escuros", true), ("Claros", false)] {
+                    let mut group = div().flex().flex_col().gap(px(6.))
+                        .child(div().text_size(px(theme::TEXT_SM)).text_color(theme::dim())
+                            .child(label));
+                    for item in theme::themes().iter().filter(|item| item.dark == dark) {
+                        // Sem tema fixado, o marcado é o que está em uso agora —
+                        // inclusive quando `Sistema` escolheu pelo desktop.
+                        let selected = self
+                            .theme
+                            .as_deref()
+                            .map_or(theme::active().id == item.id, |id| id == item.id);
+                        group = group.child(theme_row(item, selected, cx));
+                    }
+                    themes = themes.child(group);
                 }
                 page = page.child(themes).child(
                     div().flex().flex_row().items_center().gap(px(12.)).flex_wrap()
@@ -1179,19 +1215,27 @@ impl Render for Settings {
                 )))
                 .child(control("settings-docs", "Documentação oficial do Pi", |_, _, cx| cx.open_url("https://github.com/earendil-works/pi"))).into_any_element(),
         };
-        let card = column().id("settings-card").w(px(width)).h(px(height.min(620.)))
-            .p(px(20.)).rounded(theme::r_surface()).border_1().border_color(theme::line_strong())
+        let card = column().id("settings-card").w(px(width)).h(px(height.min(700.)))
+            .p(px(theme::S5)).rounded(theme::r_surface()).border_1().border_color(theme::line_strong())
             .bg(theme::surface()).shadow(theme::shadow_overlay())
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(div().flex().justify_between().items_center()
-                .child(div().text_color(theme::text()).child("Configurações"))
+                .child(div().text_size(px(theme::TITLE)).font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme::text()).child("Configurações"))
                 .child(control("settings-close", "Fechar · Esc", cx.listener(|this, _, window, cx| this.close(window, cx)))))
             .child(crate::ui::rule())
-            .child(div().flex().flex_1().gap(px(20.)).min_h(px(0.)).child(menu)
-                .child(div().id("settings-content").flex_1().min_w(px(0.)).min_h(px(0.)).overflow_y_scroll().child(content)));
-        div().id("settings-scrim").absolute().inset(px(0.)).flex().items_center().justify_center()
+            .child(div().flex().flex_1().gap(px(theme::S5)).min_h(px(0.))
+                .when(compact, |el| el.flex_col())
+                .child(menu)
+                .child(div().id("settings-content").flex_1().min_w(px(0.)).min_h(px(0.)).overflow_y_scroll()
+                    .child(crate::ui::motion::reveal(div().child(content),
+                        ElementId::NamedInteger("settings-page-enter".into(), self.section as u64)))));
+        div().id("settings-scrim").occlude()
+            // Overlays are input boundaries: the page behind must not scroll.
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            .absolute().inset(px(0.)).flex().items_center().justify_center()
             .track_focus(&self.focus).key_context("DishSettings")
-            .bg(theme::wash(theme::bg(), 0.78))
+            .bg(theme::scrim()).backdrop_blur(px(theme::SCRIM_BLUR))
             .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| { cx.stop_propagation(); this.close(window, cx); }))
             .on_action(cx.listener(|this, _: &crate::ui::Dismiss, window, cx| { cx.stop_propagation(); this.close(window, cx); }))
             .on_action(cx.listener(|this, _: &editor::Paste, window, cx| {
@@ -1228,7 +1272,7 @@ impl Render for Settings {
                     cx.stop_propagation();
                 }
             })
-            .child(card).into_any_element()
+            .child(crate::ui::motion::reveal(card, "settings-enter")).into_any_element()
     }
 }
 

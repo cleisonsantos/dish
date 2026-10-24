@@ -12,9 +12,18 @@ use crate::state::AppState;
 use crate::theme;
 use crate::session_activity::{SessionFilter, SessionSignals, epoch_millis, from_epoch_millis, relative_time};
 
+mod navigation;
+use self::navigation::nav_icon_button;
 mod search;
 
 actions!(dish_workspace, [FindCurrent, FindProject, ExitSearch, NextMatch, PreviousMatch, AcceptMatch, ToggleSessions, NextConversation, PreviousConversation, CloseConversation, SearchSessions, FocusPrompt, NavUp, NavDown, NavAccept, NavCollapse, NavExpand, CycleSessionFilter]);
+
+#[derive(Clone)]
+struct OpeningSession {
+    cwd: PathBuf,
+    path: Option<PathBuf>,
+    title: Option<String>,
+}
 
 struct Conversation {
     state: Entity<AppState>,
@@ -24,11 +33,71 @@ struct Conversation {
     unread_completion: bool,
 }
 
+/// Keep a closed view's process fenced until its exact exit is acknowledged.
+struct ClosingConversation {
+    path: Option<PathBuf>,
+    _client: PiClient,
+}
+
 /// A session sitting in the trash while the undo window is open.
 struct DeletedSession {
     info: SessionInfo,
     trashed: PathBuf,
     id: u64,
+    pinned: bool,
+}
+
+/// Identity must survive removal/reordering of other live conversations.
+#[derive(Clone, PartialEq, Eq)]
+enum SessionTarget {
+    Live(EntityId),
+    Saved(PathBuf),
+}
+
+impl SessionTarget {
+    fn key(&self) -> String {
+        match self {
+            Self::Live(id) => format!("live-{id:?}"),
+            Self::Saved(path) => format!("saved-{}", path.display()),
+        }
+    }
+}
+
+struct SessionMenu {
+    target: SessionTarget,
+    anchor: Point<Pixels>,
+    trigger_bounds: Bounds<Pixels>,
+    selected: usize,
+    return_focus: FocusHandle,
+}
+
+struct PendingDelete {
+    target: SessionTarget,
+    info: SessionInfo,
+    return_focus: FocusHandle,
+    confirm_selected: bool,
+}
+
+fn resolve_session_target<'a>(target: &SessionTarget,
+    mut conversations: impl Iterator<Item = (EntityId, Option<&'a std::path::Path>)>) -> Option<usize> {
+    conversations.position(|(id, path)| match target {
+        SessionTarget::Live(target) => id == *target,
+        SessionTarget::Saved(target) => path == Some(target.as_path()),
+    })
+}
+
+fn catalog_snapshot(catalog: Vec<SessionInfo>, started: u64, current: u64,
+    deleting: &BTreeSet<PathBuf>) -> Option<Vec<SessionInfo>> {
+    (started == current).then(|| catalog.into_iter()
+        .filter(|info| !deleting.contains(&info.path)).collect())
+}
+
+fn lifecycle_label(live: bool, active: bool) -> &'static str {
+    match (live, active) {
+        (true, true) => "Atual",
+        (true, false) => "Aberta",
+        (false, _) => "Salva",
+    }
 }
 
 /// O que está sob o mouse na faixa recolhida.
@@ -146,10 +215,22 @@ pub struct Workspace {
     nav_last_project: Option<PathBuf>,
     nav_scroll: ScrollHandle,
     refreshing: bool,
-    opening: Option<PathBuf>,
+    /// Reject discovery snapshots started before a trash/restore transaction.
+    catalog_generation: u64,
+    opening: Option<OpeningSession>,
     error: Option<String>,
-    /// Sessão salva aguardando confirmação de exclusão.
-    pending_delete: Option<PathBuf>,
+    /// Nothing touches Pi or its file until this confirmation is accepted.
+    pending_delete: Option<PendingDelete>,
+    session_menu: Option<SessionMenu>,
+    session_menu_focus: FocusHandle,
+    session_action_focus: BTreeMap<String, FocusHandle>,
+    /// Measured once per target, not per render. GPUI may reuse a painted
+    /// trigger without rerunning a freshly-created canvas callback; losing the
+    /// measurement would place the next popup offscreen.
+    session_action_bounds: BTreeMap<String, std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>>,
+    closing: BTreeMap<EntityId, ClosingConversation>,
+    undo_focus: FocusHandle,
+    delete_focus_pending: Option<FocusHandle>,
     /// Exclusões em andamento, para não mover o mesmo arquivo duas vezes.
     deleting: BTreeSet<PathBuf>,
     /// Última sessão excluída, enquanto o "Desfazer" está disponível.
@@ -158,8 +239,8 @@ pub struct Workspace {
     restoring: Option<u64>,
     undo_seq: u64,
     confirm_close: bool,
-    close_target: Option<usize>,
-    pending: Option<(PathBuf, Option<PathBuf>, PiClient)>,
+    close_target: Option<EntityId>,
+    pending: Option<(OpeningSession, PiClient)>,
     confirm_focus: FocusHandle,
     /// Campo de busca da navegação.
     query: Entity<Editor>,
@@ -189,6 +270,9 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Self {
         let preferences = crate::preferences::load();
+        if let Some(reduce_motion) = preferences.reduce_motion {
+            cx.set_reduce_motion(reduce_motion);
+        }
         if let Some(open) = preferences.details_open {
             state.update(cx, |state, _| {
                 state.sidebar = open;
@@ -226,6 +310,9 @@ impl Workspace {
             });
         if let Some(parent) = initial_path.as_ref().and_then(|path| path.parent()) {
             roots.push(parent.to_owned());
+        }
+        if initial_path.is_some() {
+            state.update(cx, |state, _| state.restoring_session = true);
         }
         let mut launch_flags = sessions::launch_flags(&flags);
         let path_flags = [
@@ -267,7 +354,7 @@ impl Workspace {
             flags: launch_flags,
             collapsed: preferences.collapsed_projects.clone(),
             visible: preferences.navigation_open.unwrap_or(true),
-            nav_width: preferences.navigation_width.unwrap_or(264.).clamp(200., 420.),
+            nav_width: preferences.navigation_width.unwrap_or(theme::NAV_WIDTH).clamp(200., 420.),
             resizing_nav: None,
             nav_entries: Vec::new(),
             nav_index: 0,
@@ -276,9 +363,17 @@ impl Workspace {
             nav_last_project: None,
             nav_scroll: ScrollHandle::new(),
             refreshing: false,
+            catalog_generation: 0,
             opening: None,
             error: None,
             pending_delete: None,
+            session_menu: None,
+            session_menu_focus: cx.focus_handle(),
+            session_action_focus: BTreeMap::new(),
+            session_action_bounds: BTreeMap::new(),
+            closing: BTreeMap::new(),
+            undo_focus: cx.focus_handle().tab_stop(true),
+            delete_focus_pending: None,
             deleting: BTreeSet::new(),
             undo_delete: None,
             restoring: None,
@@ -306,6 +401,8 @@ impl Workspace {
         let weak = cx.entity().downgrade();
         window.on_window_should_close(cx, move |_window, cx| {
             weak.update(cx, |workspace, cx| {
+                if workspace.pending_delete.is_some() { return false; }
+                workspace.session_menu = None;
                 if workspace
                     .conversations
                     .iter()
@@ -337,7 +434,8 @@ impl Workspace {
     }
 
     fn open_settings(&mut self, section: crate::settings::Section, window: &mut Window, cx: &mut Context<Self>) {
-        if self.confirm_close || self.conversations[self.active].state.read(cx).modal.is_some() { return; }
+        if self.blocking_confirmation() || self.conversations[self.active].state.read(cx).modal.is_some() { return; }
+        self.session_menu = None;
         if self.settings.is_none() {
             let settings = cx.new(|cx| crate::settings::Settings::new(window, cx));
             cx.observe(&settings, |_, _, cx| cx.notify()).detach();
@@ -346,6 +444,11 @@ impl Workspace {
                 match event {
                     SettingsEvent::Preference(name, value) => {
                         if *name == "navigation" { this.visible = *value; this.nav_user_choice = true; }
+                        if *name == "reduce_motion" {
+                            this.preferences.reduce_motion = Some(*value);
+                            cx.set_reduce_motion(*value);
+                            crate::preferences::save(this.preferences.clone());
+                        }
                         for conversation in &this.conversations {
                             conversation.state.update(cx, |state, cx| {
                                 match *name {
@@ -515,14 +618,19 @@ impl Workspace {
         self.refreshing = true;
         let roots = self.roots.clone();
         let previous = self.catalog.clone();
+        let generation = self.catalog_generation;
         cx.spawn(async move |this, cx| {
             let catalog = cx
                 .background_executor()
                 .spawn(async move { sessions::discover_cached(&roots, &previous) })
                 .await;
             let _ = this.update(cx, |workspace, cx| {
-                workspace.catalog = catalog;
                 workspace.refreshing = false;
+                let Some(catalog) = catalog_snapshot(catalog, generation, workspace.catalog_generation, &workspace.deleting) else {
+                    workspace.refresh(cx);
+                    return;
+                };
+                workspace.catalog = catalog;
                 // Refresh navigation only. The open content search keeps its
                 // query snapshot until edited, reopened or moved to a new scope.
                 cx.notify();
@@ -532,6 +640,7 @@ impl Workspace {
     }
 
     fn select(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.session_menu = None;
         let Some(conversation) = select_item(&mut self.conversations, &mut self.active, index) else {
             return;
         };
@@ -603,7 +712,10 @@ impl Workspace {
     fn open(&mut self, info: SessionInfo, window: &mut Window, cx: &mut Context<Self>) {
         // A exclusão em background ainda não removeu o arquivo do catálogo.
         // Não inicie o Pi com uma sessão que está sendo movida para a lixeira.
-        if self.deleting.contains(&info.path) {
+        if self.deleting.contains(&info.path) { return; }
+        if self.path_is_closing(&info.path) {
+            self.error = Some("Pi ainda está encerrando. Aguarde antes de reabrir ou excluir o arquivo.".into());
+            cx.notify();
             return;
         }
         if let Some(index) = self
@@ -631,7 +743,7 @@ impl Workspace {
             cx.notify();
             return;
         }
-        self.spawn_conversation(info.cwd, Some(info.path), cx);
+        self.spawn_conversation(info.cwd, Some(info.path), Some(info.title), cx);
     }
 
     /// Move o destaque na lista de sessões (abertas e salvas).
@@ -730,7 +842,7 @@ impl Workspace {
         }
         self.notice = None;
         let cwd = path.canonicalize().unwrap_or(path);
-        self.spawn_conversation(cwd, None, cx);
+        self.spawn_conversation(cwd, None, None, cx);
     }
 
     fn project_error(&mut self, path: &std::path::Path, reason: &str, cx: &mut Context<Self>) {
@@ -762,17 +874,29 @@ impl Workspace {
         });
     }
 
-    fn spawn_conversation(&mut self, cwd: PathBuf, path: Option<PathBuf>, cx: &mut Context<Self>) {
+    fn spawn_conversation(
+        &mut self,
+        cwd: PathBuf,
+        path: Option<PathBuf>,
+        title: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         if self.opening.is_some() || self.pending.is_some() {
             return;
         }
-        self.opening = Some(path.clone().unwrap_or_else(|| cwd.clone()));
+        let opening = OpeningSession {
+            cwd: cwd.clone(),
+            path: path.clone(),
+            title,
+        };
+        self.opening = Some(opening.clone());
         self.error = None;
+        cx.notify();
         let mut flags = self.flags.clone();
         if let Some(path) = &path {
             flags.extend(["--session".into(), path.to_string_lossy().into_owned()]);
         }
-        let config = PiConfig::new(cwd.clone()).with_args(flags);
+        let config = PiConfig::new(cwd).with_args(flags);
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -783,7 +907,7 @@ impl Workspace {
                 match result {
                     Ok(client) => {
                         // Entity construction needs the window and is deferred to render.
-                        workspace.pending = Some((cwd, path, client));
+                        workspace.pending = Some((opening, client));
                     }
                     Err(error) => workspace.error = Some(format!("Não foi possível abrir a sessão: {error}")),
                 }
@@ -793,7 +917,395 @@ impl Workspace {
         .detach();
     }
 
+    fn blocking_confirmation(&self) -> bool {
+        self.confirm_close || self.pending_delete.is_some()
+    }
+
+    fn target_index(&self, target: &SessionTarget) -> Option<usize> {
+        resolve_session_target(target, self.conversations.iter()
+            .map(|conversation| (conversation.state.entity_id(), conversation.path.as_deref())))
+    }
+
+    fn target_path(&self, target: &SessionTarget) -> Option<PathBuf> {
+        match target {
+            SessionTarget::Live(_) => self.target_index(target)
+                .and_then(|index| self.conversations[index].path.clone()),
+            SessionTarget::Saved(path) => Some(path.clone()),
+        }
+    }
+
+    fn target_info(&self, target: &SessionTarget, cx: &App) -> Option<SessionInfo> {
+        let path = self.target_path(target)?;
+        self.catalog.iter().find(|info| info.path == path).cloned().or_else(|| {
+            // Pi may have reported a file before the next catalog refresh.
+            let index = self.target_index(target)?;
+            let state = self.conversations[index].state.read(cx);
+            Some(SessionInfo {
+                path, cwd: state.cwd.clone(), title: self.conversation_title(index, cx),
+                named: state.session.name.is_some(), modified: std::time::UNIX_EPOCH,
+                scan: Default::default(),
+            })
+        })
+    }
+
+    fn path_is_closing(&self, path: &std::path::Path) -> bool {
+        // A just-created session can close before Pi reports its file. Fence
+        // saved-file actions briefly rather than guess which file it owns.
+        self.closing.values().any(|closing| closing.path.as_deref().is_none_or(|p| p == path))
+    }
+
+    fn session_action_enabled(&self, target: &SessionTarget, action: usize) -> bool {
+        let path = self.target_path(target);
+        if path.as_ref().is_some_and(|path| self.deleting.contains(path) || self.path_is_closing(path)) { return false; }
+        let live = self.target_index(target);
+        if matches!(target, SessionTarget::Live(_)) && live.is_none() { return false; }
+        match action {
+            0 => true, // Pathless pin explains when Pi will save it.
+            1 => live.is_some() && self.conversations.len() > 1,
+            2 => path.as_ref().is_some_and(|path| {
+                !(live.is_some() && self.conversations.len() == 1)
+                    && !self.opening.as_ref().is_some_and(|o| o.path.as_ref() == Some(path))
+                    && !self.pending.as_ref().is_some_and(|(o, _)| o.path.as_ref() == Some(path))
+            }),
+            _ => false,
+        }
+    }
+
+    fn dismiss_session_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(menu) = self.session_menu.take() {
+            menu.return_focus.focus(window, cx);
+            cx.notify();
+        }
+    }
+
+    fn show_session_menu(&mut self, target: SessionTarget, bounds: Bounds<Pixels>, focus: FocusHandle,
+        window: &mut Window, cx: &mut Context<Self>) {
+        if self.blocking_confirmation() { return; }
+        if self.session_menu.as_ref().is_some_and(|menu| menu.target == target) {
+            self.dismiss_session_menu(window, cx);
+            return;
+        }
+        self.session_menu = Some(SessionMenu { target, anchor: bounds.bottom_right(), trigger_bounds: bounds,
+            selected: 0, return_focus: focus });
+        self.session_menu_focus.focus(window, cx);
+        cx.notify();
+    }
+
+    fn session_actions_button(&mut self, target: SessionTarget, cx: &mut Context<Self>) -> AnyElement {
+        let key = target.key();
+        let focus = self.session_action_focus.entry(key.clone())
+            .or_insert_with(|| cx.focus_handle().tab_stop(true)).clone();
+        let bounds = self.session_action_bounds.entry(key.clone()).or_default().clone();
+        let measured = bounds.clone();
+        let keyboard_bounds = bounds.clone();
+        let key_target = target.clone();
+        let click_focus = focus.clone();
+        let key_focus = focus.clone();
+        div().id(SharedString::from(format!("session-actions-{key}")))
+            .relative().flex_none().size(px(theme::S6)).rounded(theme::r_control())
+            .track_focus(&focus).flex().items_center().justify_center()
+            .cursor_pointer().hover(|style| style.bg(theme::hover()).text_color(theme::text()))
+            .focus(|style| style.shadow(theme::focus_ring()))
+            .tooltip(|_, cx| cx.new(|_| crate::ui::copy_button::TextTooltip("Ações da sessão".into())).into())
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(move |workspace, event: &ClickEvent, window, cx| {
+                cx.stop_propagation();
+                // Pointer menus follow the click, never a cached layout rect.
+                // Lists scroll and reorder while a run streams, so a stale
+                // measurement can anchor the popup outside the viewport.
+                let anchor = match event {
+                    ClickEvent::Mouse(event) => Bounds {
+                        origin: event.up.position,
+                        size: size(px(0.), px(0.)),
+                    },
+                    ClickEvent::Touch(event) => Bounds {
+                        origin: event.position,
+                        size: size(px(0.), px(0.)),
+                    },
+                    ClickEvent::Keyboard(event) => {
+                        let measured = bounds.get();
+                        if measured.size.width > px(0.) { measured } else { event.bounds }
+                    }
+                };
+                workspace.show_session_menu(target.clone(), anchor, click_focus.clone(), window, cx);
+            }))
+            .on_key_down(cx.listener(move |workspace, event: &KeyDownEvent, window, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space" | "down") {
+                    workspace.show_session_menu(key_target.clone(), keyboard_bounds.get(), key_focus.clone(), window, cx);
+                    cx.stop_propagation();
+                } else if event.keystroke.key == "tab" {
+                    if event.keystroke.modifiers.shift { window.focus_prev(cx); } else { window.focus_next(cx); }
+                    cx.stop_propagation();
+                }
+            }))
+            .child(canvas(move |bounds, _, _| { measured.set(bounds); }, |_, _, _, _| {})
+                .absolute().size_full())
+            .child(crate::ui::icons::icon(crate::ui::icons::Icon::Dots, 16., theme::dim()))
+            .into_any_element()
+    }
+
+    fn move_session_menu(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let Some(menu) = self.session_menu.as_ref() else { return; };
+        let target = menu.target.clone();
+        let mut next = menu.selected;
+        for _ in 0..3 {
+            next = (next as isize + delta).rem_euclid(3) as usize;
+            if self.session_action_enabled(&target, next) { break; }
+        }
+        if let Some(menu) = self.session_menu.as_mut() { menu.selected = next; }
+        cx.notify();
+    }
+
+    fn request_session_close(&mut self, target: &SessionTarget, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(index) = self.target_index(target) else { return; };
+        if self.conversations.len() == 1 {
+            self.error = Some("Mantenha uma sessão aberta. Crie outra antes de fechar esta.".into());
+            cx.notify();
+            return;
+        }
+        if self.conversations[index].state.read(cx).is_busy() {
+            self.confirm_close = true;
+            self.close_target = Some(self.conversations[index].state.entity_id());
+            cx.notify();
+        } else { self.close_conversation(index, window, cx); }
+    }
+
+    fn execute_session_action(&mut self, action: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(menu) = self.session_menu.as_ref() else { return; };
+        if !self.session_action_enabled(&menu.target, action) { return; }
+        let Some(menu) = self.session_menu.take() else { return; };
+        menu.return_focus.focus(window, cx);
+        match action {
+            0 => if let Some(path) = self.target_path(&menu.target) { self.toggle_pin(path, cx); }
+                else { self.explain_unpinned_session(cx); },
+            1 => self.request_session_close(&menu.target, window, cx),
+            2 => if let Some(info) = self.target_info(&menu.target, cx) {
+                self.pending_delete = Some(PendingDelete { target: menu.target, info,
+                    return_focus: menu.return_focus, confirm_selected: false });
+                self.confirm_focus.focus(window, cx);
+            } else {
+                self.error = Some("A sessão não está mais no catálogo. Arquivo preservado; tente novamente.".into());
+            },
+            _ => {}
+        }
+        cx.notify();
+    }
+
+    fn cancel_session_delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(pending) = self.pending_delete.take() {
+            pending.return_focus.focus(window, cx);
+            cx.notify();
+        }
+    }
+
+    fn confirm_session_delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pending) = self.pending_delete.take() else { return; };
+        pending.return_focus.focus(window, cx);
+        if !self.session_action_enabled(&pending.target, 2)
+            || self.target_path(&pending.target).as_ref() != Some(&pending.info.path) {
+            self.error = Some("A sessão mudou ou ainda está abrindo. Arquivo preservado; tente novamente.".into());
+            cx.notify();
+            return;
+        }
+        // Retain the exact client before removing the view: Drop alone is not
+        // a process-exit barrier, and retained UI entities may still own clones.
+        let client = self.target_index(&pending.target).map(|index| {
+            let client = self.conversations[index].state.read(cx).client.clone();
+            client.request_shutdown();
+            self.remove_conversation(index, window, cx);
+            client
+        });
+        self.delete_session(pending.info, client, pending.return_focus, cx);
+    }
+
+    fn session_menu_element(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let menu = self.session_menu.as_ref()?;
+        let target = menu.target.clone();
+        let anchor = menu.anchor;
+        let trigger_bounds = menu.trigger_bounds;
+        let selected = menu.selected;
+        let path = self.target_path(&target);
+        let live = self.target_index(&target);
+        let pinned = path.as_ref().is_some_and(|path| self.preferences.pinned_sessions.contains(path));
+        let title = self.target_info(&target, cx).map(|info| info.title)
+            .or_else(|| live.map(|index| self.conversation_title(index, cx)))
+            .unwrap_or_else(|| "Sessão indisponível".into());
+        let mut card = div().id("session-actions-menu").occlude()
+            .track_focus(&self.session_menu_focus)
+            .w(px(theme::NAV_WIDTH)).max_w(window.viewport_size().width - px(theme::S4))
+            .max_h(window.viewport_size().height - px(theme::S4)).overflow_y_scroll()
+            .p(px(theme::S1)).rounded(theme::r_surface()).bg(theme::surface_2())
+            .border_1().border_color(theme::line_strong()).shadow(theme::shadow_overlay())
+            .flex().flex_col().gap(px(theme::S1))
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down_out(cx.listener(move |workspace, event: &MouseDownEvent, window, cx| {
+                if !trigger_bounds.contains(&event.position) { workspace.dismiss_session_menu(window, cx); }
+            }))
+            .on_action(cx.listener(|workspace, _: &crate::ui::Dismiss, window, cx| {
+                workspace.dismiss_session_menu(window, cx); cx.stop_propagation();
+            }))
+            .on_key_down(cx.listener(|workspace, event: &KeyDownEvent, window, cx| {
+                match event.keystroke.key.as_str() {
+                    "up" => workspace.move_session_menu(-1, cx),
+                    "down" => workspace.move_session_menu(1, cx),
+                    "tab" => workspace.move_session_menu(if event.keystroke.modifiers.shift { -1 } else { 1 }, cx),
+                    "enter" | "space" => {
+                        if let Some(action) = workspace.session_menu.as_ref().map(|menu| menu.selected) {
+                            workspace.execute_session_action(action, window, cx);
+                        }
+                    }
+                    "escape" => workspace.dismiss_session_menu(window, cx),
+                    _ => {}
+                }
+                cx.stop_propagation();
+            }))
+            .child(div().flex_none().px(px(theme::S3)).py(px(theme::S2))
+                .flex().flex_col().gap(px(theme::S1))
+                .child(div().truncate().text_size(px(theme::TEXT_SM)).text_color(theme::text()).child(SharedString::from(title)))
+                .child(div().text_size(px(theme::TEXT_XS)).text_color(theme::faint())
+                    .child(lifecycle_label(live.is_some(), live == Some(self.active)))));
+        for (action, icon, label, detail) in [
+            (0, crate::ui::icons::Icon::Pin, if pinned { "Desafixar sessão" } else { "Fixar sessão" }, "Prioridade na lista"),
+            (1, crate::ui::icons::Icon::Close, "Fechar sessão", "Mantém o arquivo salvo"),
+            (2, crate::ui::icons::Icon::Trash, "Excluir arquivo…", "Lixeira · Desfazer por 10 s"),
+        ] {
+            let enabled = self.session_action_enabled(&target, action);
+            let color = if !enabled { theme::faint() } else if action == 2 { theme::danger() } else { theme::text() };
+            card = card.child(div().id(("session-action", action)).flex_none()
+                .px(px(theme::S3)).py(px(theme::S2)).rounded(theme::r_control())
+                .flex().items_center().gap(px(theme::S3))
+                .when(enabled, |el| el.cursor_pointer().hover(|style| style.bg(theme::hover())))
+                .when(enabled && selected == action, |el| el.bg(theme::hover()).shadow(theme::focus_ring()))
+                .on_click(cx.listener(move |workspace, _: &ClickEvent, window, cx| {
+                    cx.stop_propagation(); workspace.execute_session_action(action, window, cx);
+                }))
+                .child(crate::ui::icons::icon(icon, 16., color))
+                .child(div().flex_1().min_w(px(0.)).flex().flex_col().gap(px(1.))
+                    .child(div().text_size(px(theme::TEXT_SM)).text_color(color).child(label))
+                    .child(div().text_size(px(theme::TEXT_XS)).text_color(theme::faint()).child(detail))));
+        }
+        let explanation = if path.as_ref().is_some_and(|path| self.path_is_closing(path)) {
+            "Pi está encerrando. Aguarde antes de reabrir ou excluir o arquivo."
+        } else if path.as_ref().is_some_and(|path| self.deleting.contains(path)) {
+            "Exclusão em andamento. Aguarde."
+        } else if path.is_none() {
+            "Pi salva no primeiro turno. Depois disso, dá para fixar e excluir o arquivo. Para fechar a última conversa, crie outra antes."
+        } else if live.is_some() && self.conversations.len() == 1 {
+            "Mantenha uma sessão aberta. Crie outra antes de fechar ou excluir esta."
+        } else if !self.session_action_enabled(&target, 2) {
+            "Aguarde a sessão terminar de abrir."
+        } else {
+            "↑↓ escolher · Enter confirmar · Esc fechar"
+        };
+        card = card.child(div().flex_none().px(px(theme::S3)).py(px(theme::S2))
+            .border_t_1().border_color(theme::line_soft()).text_size(px(theme::TEXT_XS))
+            .text_color(theme::dim()).child(explanation));
+        Some(deferred(anchored().position(anchor).anchor(Anchor::TopRight)
+            .snap_to_window_with_margin(px(theme::S2)).child(card)).with_priority(2).into_any_element())
+    }
+
+    fn delete_confirmation_element(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let pending = self.pending_delete.as_ref()?;
+        let live = self.target_index(&pending.target);
+        let running = live.is_some_and(|index| self.conversations[index].state.read(cx).is_busy());
+        let selected = pending.confirm_selected;
+        let action = if running { "Interromper e excluir arquivo" } else if live.is_some() {
+            "Fechar e excluir arquivo"
+        } else { "Excluir arquivo" };
+        let body = if live.is_some() {
+            "A conversa será fechada e qualquer execução será interrompida antes de mover o arquivo para a lixeira. Desfazer restaura apenas o arquivo salvo, não a execução."
+        } else {
+            "O arquivo será movido para a lixeira. Desfazer ficará disponível por 10 segundos e restaura apenas o arquivo salvo."
+        };
+        let mut controls = div().flex().justify_end().flex_wrap().gap(px(theme::S2));
+        for (confirm, label) in [(false, "Cancelar"), (true, action)] {
+            controls = controls.child(div().id(if confirm { "confirm-session-delete" } else { "cancel-session-delete" })
+                .px(px(theme::S3)).py(px(theme::S2)).rounded(theme::r_control())
+                .border_1().border_color(theme::line_strong()).text_size(px(theme::TEXT_SM))
+                .text_color(if confirm { theme::danger() } else { theme::text() })
+                .when(selected == confirm, |el| el.shadow(theme::focus_ring()))
+                .cursor_pointer().hover(|style| style.bg(theme::hover()))
+                .on_click(cx.listener(move |workspace, _: &ClickEvent, window, cx| {
+                    cx.stop_propagation();
+                    if confirm { workspace.confirm_session_delete(window, cx); }
+                    else { workspace.cancel_session_delete(window, cx); }
+                })).child(label));
+        }
+        Some(div().id("session-delete-scrim").occlude().absolute().inset(px(0.))
+            .p(px(theme::S4)).flex().items_center().justify_center()
+            .bg(theme::scrim()).backdrop_blur(px(theme::SCRIM_BLUR)).track_focus(&self.confirm_focus)
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Left, cx.listener(|workspace, _, window, cx| {
+                workspace.cancel_session_delete(window, cx); cx.stop_propagation();
+            }))
+            .on_action(cx.listener(|workspace, _: &crate::ui::Dismiss, window, cx| {
+                workspace.cancel_session_delete(window, cx); cx.stop_propagation();
+            }))
+            .on_key_down(cx.listener(|workspace, event: &KeyDownEvent, window, cx| {
+                match event.keystroke.key.as_str() {
+                    "escape" => workspace.cancel_session_delete(window, cx),
+                    "tab" | "left" | "right" => {
+                        if let Some(pending) = workspace.pending_delete.as_mut() { pending.confirm_selected = !pending.confirm_selected; }
+                        cx.notify();
+                    }
+                    "enter" | "space" => {
+                        if workspace.pending_delete.as_ref().is_some_and(|pending| pending.confirm_selected) {
+                            workspace.confirm_session_delete(window, cx);
+                        } else { workspace.cancel_session_delete(window, cx); }
+                    }
+                    _ => {}
+                }
+                cx.stop_propagation();
+            }))
+            .child(div().id("session-delete-card").w(px(theme::NAV_WIDTH * 2.))
+                .max_w(window.viewport_size().width - px(theme::S6))
+                .max_h(window.viewport_size().height - px(theme::S6)).overflow_y_scroll()
+                .p(px(theme::S5)).rounded(theme::r_surface()).bg(theme::surface())
+                .border_1().border_color(theme::line_strong()).shadow(theme::shadow_overlay())
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .flex().flex_col().gap(px(theme::S4))
+                .child(div().text_size(px(theme::TEXT)).font_weight(FontWeight::MEDIUM)
+                    .text_color(theme::text()).child("Excluir arquivo da sessão?"))
+                .child(div().text_size(px(theme::TEXT_SM)).text_color(theme::text())
+                    .child(SharedString::from(pending.info.title.clone())))
+                .child(div().font_family(theme::FONT_MONO).text_size(px(theme::TEXT_XS))
+                    .text_color(theme::dim()).overflow_hidden()
+                    .child(SharedString::from(pending.info.path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default())))
+                .child(div().text_size(px(theme::TEXT_SM)).line_height(px(19.)).text_color(theme::dim()).child(body))
+                .child(controls)).into_any_element())
+    }
+
     fn close_conversation(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.conversations.get(index).is_none() || self.conversations.len() == 1 {
+            self.remove_conversation(index, window, cx);
+            return;
+        }
+        let conversation = &self.conversations[index];
+        let id = conversation.state.entity_id();
+        let state = conversation.state.read(cx);
+        let path = conversation.path.clone().or_else(|| state.session.file.as_ref().map(PathBuf::from));
+        let client = state.client.clone();
+        client.request_shutdown();
+        self.closing.insert(id, ClosingConversation { path, _client: client.clone() });
+        self.remove_conversation(index, window, cx);
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_executor().spawn(async move { client.shutdown_and_wait() }).await;
+            let _ = this.update(cx, |workspace, cx| {
+                match result {
+                    Ok(()) => { workspace.closing.remove(&id); }
+                    Err(_) => {
+                        // Keep the fence and client: an unconfirmed process exit
+                        // must not turn into permission to move its file.
+                        workspace.error = Some("Não foi possível confirmar o encerramento do Pi. Arquivo preservado; reinicie o Dish antes de reabrir ou excluir.".into());
+                    }
+                }
+                cx.notify();
+            });
+        }).detach();
+    }
+
+    fn remove_conversation(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         if self.conversations.get(index).is_none() {
             return;
         }
@@ -817,39 +1329,59 @@ impl Workspace {
     ///
     /// O filesystem pode estar lento ou em outro mount, então a transação
     /// inteira roda no executor de background.  A UI só recebe o resultado.
-    fn delete_session(&mut self, info: SessionInfo, cx: &mut Context<Self>) {
+    fn delete_session(&mut self, info: SessionInfo, client: Option<PiClient>, return_focus: FocusHandle, cx: &mut Context<Self>) {
         let path = info.path.clone();
+        if client.is_none() && (self.path_is_closing(&path)
+            || self.conversations.iter().any(|conversation| conversation.path.as_ref() == Some(&path))) {
+            self.error = Some("Pi ainda usa este arquivo. Aguarde o encerramento antes de excluir.".into());
+            cx.notify();
+            return;
+        }
         if !self.deleting.insert(path.clone()) {
             return;
         }
         self.pending_delete = None;
+        let closed_live = client.is_some();
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn({
                     let info = info.clone();
-                    async move { sessions::trash(&info) }
+                    async move {
+                        if let Some(client) = client { client.shutdown_and_wait()?; }
+                        sessions::trash(&info)
+                    }
                 })
                 .await;
             let _ = this.update(cx, |workspace, cx| {
                 workspace.deleting.remove(&path);
                 match result {
                     Ok(trashed) => {
+                        workspace.catalog_generation += 1;
                         drop_from_catalog(&mut workspace.catalog, &info.path);
+                        workspace.delete_focus_pending = Some(return_focus);
+                        workspace.invalidate_content_search(cx);
+                        let pinned = workspace.preferences.pinned_sessions.remove(&info.path);
+                        crate::preferences::save(workspace.preferences.clone());
                         workspace.undo_seq += 1;
                         let id = workspace.undo_seq;
                         workspace.undo_delete = Some(DeletedSession {
                             info,
                             trashed: trashed.trashed,
                             id,
+                            pinned,
                         });
                         cx.notify();
                         Self::schedule_undo_expiry(id, cx);
                     }
                     Err(error) => {
-                        workspace.error =
-                            Some(format!("Não foi possível excluir a sessão: {error}"));
+                        workspace.error = Some(if closed_live {
+                            format!("Conversa fechada, mas arquivo não excluído: {error}")
+                        } else {
+                            format!("Não foi possível excluir a sessão: {error}")
+                        });
+                        workspace.refresh(cx);
                         cx.notify();
                     }
                 }
@@ -872,6 +1404,7 @@ impl Workspace {
         let trashed = undo.trashed.clone();
         let original = undo.info.path.clone();
         let info = undo.info.clone();
+        let pinned = undo.pinned;
         self.restoring = Some(id);
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -893,7 +1426,13 @@ impl Workspace {
                         {
                             workspace.undo_delete = None;
                         }
+                        workspace.catalog_generation += 1;
+                        if pinned {
+                            workspace.preferences.pinned_sessions.insert(info.path.clone());
+                            crate::preferences::save(workspace.preferences.clone());
+                        }
                         add_to_catalog(&mut workspace.catalog, info);
+                        workspace.invalidate_content_search(cx);
                         workspace.refresh(cx);
                     }
                     Err(error) => {
@@ -975,6 +1514,21 @@ impl Workspace {
             .child(
                 div()
                     .id("undo-session-delete-action")
+                    .track_focus(&self.undo_focus)
+                    .px(px(theme::S1)).py(px(theme::S1))
+                    .rounded(theme::r_control())
+                    .focus(|style| style.shadow(theme::focus_ring()))
+                    .on_key_down(cx.listener(|workspace, event: &KeyDownEvent, window, cx| {
+                        match event.keystroke.key.as_str() {
+                            "enter" | "space" => { workspace.undo_delete(cx); cx.stop_propagation(); }
+                            "tab" => {
+                                if event.keystroke.modifiers.shift { window.focus_prev(cx); }
+                                else { window.focus_next(cx); }
+                                cx.stop_propagation();
+                            }
+                            _ => {}
+                        }
+                    }))
                     .cursor_pointer()
                     .text_size(px(theme::TEXT_XS))
                     .text_color(theme::running())
@@ -1025,1023 +1579,20 @@ impl Workspace {
             .unwrap_or_else(|| "Nova conversa".into())
     }
 
-    /// Navegação: cabeçalho integrado, busca, filtros e a lista de projetos.
-    /// A identidade, a busca e "nova sessão" ficam no mesmo lugar — não há mais
-    /// uma barra "Sessions" separada gastando uma linha inteira.
-    fn navigation(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Stateful<Div> {
-        let query = self.query.read(cx).text(cx).to_lowercase();
-        let filter = self.filter;
-
-        let mut groups: BTreeMap<PathBuf, Vec<SessionRow>> = BTreeMap::new();
-        for (index, conversation) in self.conversations.iter().enumerate() {
-            let state = conversation.state.read(cx);
-            let title = self.conversation_title(index, cx);
-            // Recência observada nos limites de atividade, nunca nos deltas.
-            // Sem atividade ao vivo: prompt, mtime salvo ou criação da conversa.
-            let last_run = state
-                .last_activity.or(state.last_run)
-                .or_else(|| {
-                    conversation.path.as_ref().and_then(|path| {
-                        self.catalog
-                            .iter()
-                            .find(|info| &info.path == path)
-                            .map(|info| info.modified)
-                    })
-                })
-                .unwrap_or(state.created_at);
-            groups.entry(state.cwd.clone()).or_default().push((
-                title,
-                None,
-                Some(index),
-                last_run,
-            ));
-        }
-        for info in &self.catalog {
-            if self
-                .conversations
-                .iter()
-                .any(|c| c.path.as_ref() == Some(&info.path))
-            {
-                continue;
-            }
-            groups.entry(info.cwd.clone()).or_default().push((
-                info.title.clone(),
-                Some(info.clone()),
-                None,
-                self.preferences.unread_sessions.get(&info.path).copied().map(from_epoch_millis).unwrap_or(info.modified),
-            ));
-        }
-
-        // Filtros independentes de atenção, leitura e atividade.
-        if !query.is_empty() || filter != SessionFilter::All {
-            groups.retain(|cwd, items| {
-                let project_matches = cwd
-                    .file_name()
-                    .map(|name| name.to_string_lossy().to_lowercase().contains(&query))
-                    .unwrap_or(false);
-                items.retain(|(title, info, live, _)| {
-                    let signals = live.map(|index| {
-                        let conversation = &self.conversations[index];
-                        SessionSignals::from_state(conversation.state.read(cx), conversation.unread_completion)
-                    }).unwrap_or(SessionSignals {
-                        saved: true,
-                        unread: info.as_ref().is_some_and(|info| self.preferences.unread_sessions.contains_key(&info.path)),
-                        ..Default::default()
-                    });
-                    if !signals.matches(filter) {
-                        return false;
-                    }
-                    if project_matches || query.is_empty() {
-                        return true;
-                    }
-                    title.to_lowercase().contains(&query)
-                });
-                !items.is_empty()
-            });
-        }
-
-        // Novos resultados de busca/filtro são revelados; recolher manualmente
-        // continua funcionando e a seta direita pode reabrir o último projeto.
-        if self.nav_query != query || self.nav_filter != filter {
-            for cwd in groups.keys() { self.collapsed.remove(cwd); }
-            self.nav_filter = filter;
-        }
-        // A mesma ordem estável alimenta o desenho e a navegação por teclado.
-        for items in groups.values_mut() {
-            sort_session_rows(items, &self.row_order,
-                self.nav_hovered || self.query.read(cx).focus_handle.is_focused(window));
-            // Fixadas primeiro dentro do grupo, preservando a ordem por
-            // atividade entre elas. `sort_by_key` é estável.
-            let pinned = &self.preferences.pinned_sessions;
-            items.sort_by_key(|row| {
-                let path = match row.2 {
-                    Some(index) => self.conversations[index].path.clone(),
-                    None => row.1.as_ref().map(|info| info.path.clone()),
-                };
-                !path.is_some_and(|path| pinned.contains(&path))
-            });
-        }
-        let mut entries: Vec<NavEntry> = Vec::new();
-        for (cwd, items) in &groups {
-            if !self.collapsed.contains(cwd) {
-                for (_, info, live, _) in items {
-                    if let Some(index) = live {
-                        entries.push(NavEntry::Open(*index));
-                    } else if let Some(info) = info {
-                        entries.push(NavEntry::Saved(info.path.clone()));
-                    } else {
-                        continue;
-                    }
-                }
-            }
-        }
-        let previous = self.nav_entries.get(self.nav_index);
-        if self.nav_query != query {
-            self.nav_query = query.clone();
-            self.nav_index = 0;
-        } else if let Some(index) = previous.and_then(|previous| entries.iter().position(|entry| entry == previous)) {
-            self.nav_index = index;
-        }
-        self.nav_entries = entries;
-        self.nav_index = self.nav_index.min(self.nav_entries.len().saturating_sub(1));
-        let highlighted = self.nav_entries.get(self.nav_index).cloned();
-
-        let open_count = self.conversations.len();
-        let running_count = self
-            .conversations
-            .iter()
-            .filter(|c| c.state.read(cx).is_executing())
-            .count();
-        let counts = self.session_counts(cx);
-        let focus = self.query.read(cx).focus_handle.clone();
-        let query_editor = self.query.clone();
-        let focus_for_click = focus.clone();
-
-        let mut rail = div()
-            .id("sessions-navigation")
-            .on_hover(cx.listener(|workspace, hovered: &bool, _, cx| { workspace.nav_hovered = *hovered; cx.notify(); }))
-            .w(px(self.nav_width))
-            .h_full()
-            .flex_none()
-            .flex()
-            .flex_col()
-            .bg(theme::surface())
-            .border_r_1()
-            .border_color(theme::line_soft())
-            // cabeçalho integrado
-            .child(
-                div()
-                    .flex_none()
-                    .h(px(52.))
-                    .pl(px(theme::S4))
-                    .pr(px(theme::S2))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .id("nav-collapse")
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(theme::S2))
-                            .px(px(theme::S2))
-                            .py(px(theme::S1))
-                            .rounded(theme::r_control())
-                            .cursor_pointer()
-                            .hover(|style| style.bg(theme::hover()))
-                            .on_click(cx.listener(|workspace, _: &ClickEvent, _, cx| {
-                                workspace.visible = false;
-                                workspace.nav_user_choice = true;
-                                cx.notify();
-                            }))
-                            .child(img("dish-icon.png").flex_none().w(px(22.)).h(px(22.)))
-                            .child(
-                                div()
-                                    .text_size(px(theme::TEXT))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child("Dish"),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(theme::S1))
-                            .child(nav_icon_button(
-                                "nav-open-project",
-                                crate::ui::icons::Icon::Folder,
-                                cx,
-                                |workspace, _window, cx| workspace.choose_project(cx),
-                            ))
-                            .child(nav_icon_button(
-                                "nav-new-session",
-                                crate::ui::icons::Icon::Plus,
-                                cx,
-                                |workspace, window, cx| {
-                                    let cwd = workspace.conversations[workspace.active]
-                                        .state
-                                        .read(cx)
-                                        .cwd
-                                        .clone();
-                                    workspace.spawn_conversation(cwd, None, cx);
-                                    let _ = window;
-                                },
-                            ))
-                            .child(nav_icon_button(
-                                "nav-help",
-                                crate::ui::icons::Icon::Dots,
-                                cx,
-                                |workspace, window, cx| {
-                                    workspace.open_settings(crate::settings::Section::App, window, cx);
-                                },
-                            )),
-                    ),
-            )
-            // busca + filtros
-            .child(
-                div()
-                    .flex_none()
-                    .px(px(theme::S3))
-                    .pb(px(theme::S3))
-                    .flex()
-                    .flex_col()
-                    .gap(px(theme::S2))
-                    .child(
-                        div()
-                            .id("nav-search")
-                            .key_context("DishNavSearch")
-                            .track_focus(&focus)
-                            .cursor_text()
-                            .on_mouse_down(MouseButton::Left, move |_event, window, cx| {
-                                focus_for_click.focus(window, cx);
-                            })
-                            .map(crate::editor::standard_actions(query_editor.clone()))
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(theme::S2))
-                            .px(px(theme::S2 + theme::S1))
-                            .py(px(theme::S1 + 2.))
-                            .rounded(theme::r_control())
-                            .bg(theme::inset())
-                            .border_1()
-                            .border_color(theme::line_soft())
-                            .child(crate::ui::icons::icon(
-                                crate::ui::icons::Icon::Search,
-                                14.,
-                                theme::faint(),
-                            ))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .text_size(px(theme::TEXT_SM))
-                                    .child(query_editor.clone()),
-                            ),
-                    )
-                    .child(
-                        div()
-                            // Controle segmentado: um só poço com um cursor
-                            // claro. Rótulos compactos de propósito: a métrica
-                            // da fonte de fallback varia entre sistemas, e
-                            // nenhum modo pode truncar; o nome completo fica
-                            // no tooltip e as contagens ficam no rodapé.
-                            .flex()
-                            .flex_row()
-                            .items_stretch()
-                            .p(px(2.))
-                            .gap(px(1.))
-                            .rounded(theme::r_control())
-                            .bg(theme::inset())
-                            .border_1()
-                            .border_color(theme::line_soft())
-                            .child(nav_segment(
-                                "nav-filter-all",
-                                "Todas",
-                                "todas as sessões abertas e salvas",
-                                self.filter == SessionFilter::All,
-                                cx,
-                                |workspace, cx| {
-                                    workspace.filter = SessionFilter::All;
-                                    cx.notify();
-                                },
-                            ))
-                            .child(nav_segment("nav-filter-input", "Pend.", "sessões que precisam de você", self.filter == SessionFilter::NeedsInput, cx, |workspace, cx| {
-                                workspace.filter = SessionFilter::NeedsInput; cx.notify();
-                            }))
-                            .child(nav_segment("nav-filter-unread", "Novas", "respostas ainda não lidas", self.filter == SessionFilter::Unread, cx, |workspace, cx| {
-                                workspace.filter = SessionFilter::Unread; cx.notify();
-                            }))
-                            .child(nav_segment(
-                                "nav-filter-running",
-                                "Exec.",
-                                "tarefas em execução agora",
-                                self.filter == SessionFilter::Running,
-                                cx,
-                                |workspace, cx| {
-                                    workspace.filter = SessionFilter::Running;
-                                    cx.notify();
-                                },
-                            )),
-                    ),
-            );
-
-        if let Some(error) = self.error.clone() {
-            let _ = window;
-            rail = rail.child(
-                div()
-                    .px(px(theme::S3))
-                    .pb(px(theme::S2))
-                    .text_size(px(theme::TEXT_XS))
-                    .text_color(theme::failure())
-                    .child(SharedString::from(error)),
-            );
-        }
-        if let Some(notice) = self.notice.clone() {
-            rail = rail.child(
-                div()
-                    .px(px(theme::S3))
-                    .pb(px(theme::S2))
-                    .text_size(px(theme::TEXT_XS))
-                    .text_color(theme::warn())
-                    .child(SharedString::from(notice)),
-            );
-        }
-
-        let mut list = div()
-            .id("nav-list")
-            .flex_1()
-            .min_h(px(0.))
-            .overflow_y_scroll()
-            .track_scroll(&self.nav_scroll)
-            .px(px(theme::S2))
-            .pb(px(theme::S4))
-            .flex()
-            .flex_col()
-            .gap(px(theme::S1));
-
-        if groups.is_empty() {
-            let label = if !query.is_empty() {
-                format!("Nada corresponde a “{query}”")
-            } else {
-                match filter {
-                    SessionFilter::All => "Nenhuma sessão ainda".to_string(),
-                    SessionFilter::NeedsInput => "Nenhuma sessão precisa de você".to_string(),
-                    SessionFilter::Unread => "Nenhuma resposta nova".to_string(),
-                    SessionFilter::Running => "Nenhuma sessão em execução".to_string(),
-                }
-            };
-            list = list.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(theme::S2))
-                    .px(px(theme::S2))
-                    .py(px(theme::S4))
-                    .child(
-                        div()
-                            .text_size(px(theme::TEXT_SM))
-                            .text_color(theme::dim())
-                            .child(SharedString::from(label)),
-                    )
-                    .child(
-                        div()
-                            .id("nav-clear-filter")
-                            .text_size(px(theme::TEXT_SM))
-                            .text_color(theme::running())
-                            .cursor_pointer()
-                            .hover(|style| style.text_color(theme::text()))
-                            .on_click(cx.listener(|workspace, _: &ClickEvent, _, cx| {
-                                workspace.filter = SessionFilter::All;
-                                workspace.query.update(cx, |editor, cx| editor.clear(cx));
-                                cx.notify();
-                            }))
-                            .child("Limpar filtro"),
-                    ),
-            );
-        }
-
-        let grouped_folders: Vec<PathBuf> = groups.keys().cloned().collect();
-        for (cwd, items) in groups {
-            let collapsed = self.collapsed.contains(&cwd);
-            let click_cwd = cwd.clone();
-            let running = items
-                .iter()
-                .filter(|(_, _, live, _)| match live {
-                    Some(index) => self.conversations[*index].state.read(cx).is_executing(),
-                    None => false,
-                })
-                .count();
-            let needs_input = items.iter().filter(|(_, _, live, _)| live.is_some_and(|i| self.conversations[i].state.read(cx).modal.is_some())).count();
-            let unread_count = items.iter().filter(|(_, info, live, _)| live.map(|i| self.conversations[i].unread_completion).unwrap_or_else(|| info.as_ref().is_some_and(|info| self.preferences.unread_sessions.contains_key(&info.path)))).count();
-            let project_tooltip = {
-                let path = cwd.display().to_string();
-                let attention = attention_summary(needs_input, unread_count);
-                if attention.is_empty() { path } else { format!("{path}\n{attention}") }
-            };
-            if !collapsed {
-                for item in &items {
-                    self.nav_anchors.entry(row_key(item)).or_insert_with(|| ScrollAnchor::for_handle(self.nav_scroll.clone()));
-                }
-            }
-
-            list = list.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(theme::S1))
-                    .mb(px(theme::S2))
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("project-{cwd:?}")))
-                            .tooltip(move |_, cx| {
-                                cx.new(|_| crate::ui::copy_button::TextTooltip(project_tooltip.clone())).into()
-                            })
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(theme::S2))
-                            .px(px(theme::S2))
-                            .py(px(theme::S1 + 2.))
-                            .rounded(theme::r_control())
-                            .cursor_pointer()
-                            .hover(|style| style.bg(theme::hover()))
-                            .on_click(cx.listener(move |workspace, _: &ClickEvent, _, cx| {
-                                if !workspace.collapsed.remove(&click_cwd) {
-                                    workspace.collapsed.insert(click_cwd.clone());
-                                }
-                                cx.notify();
-                            }))
-                            .child(crate::ui::icons::icon(
-                                if collapsed {
-                                    crate::ui::icons::Icon::ChevronRight
-                                } else {
-                                    crate::ui::icons::Icon::ChevronDown
-                                },
-                                13.,
-                                theme::faint(),
-                            ))
-                            .child(crate::ui::icons::icon(
-                                crate::ui::icons::Icon::Folder,
-                                14.,
-                                theme::faint(),
-                            ))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .truncate()
-                                    .text_size(px(theme::TEXT_SM))
-                                    .text_color(theme::dim())
-                                    .child(SharedString::from(folder_of(&cwd))),
-                            )
-                            .when(needs_input > 0, |el| {
-                                el.child(div().text_size(px(theme::TEXT_XS)).text_color(theme::warn())
-                                    .child(SharedString::from(format!("{needs_input} pend."))))
-                            })
-                            .when(unread_count > 0, |el| {
-                                el.child(div().text_size(px(theme::TEXT_XS)).text_color(theme::attention())
-                                    .child(SharedString::from(format!("{unread_count} {}", if unread_count == 1 { "nova" } else { "novas" }))))
-                            })
-                            .when(running > 0, |el| {
-                                el.child(crate::ui::icons::icon(
-                                    crate::ui::icons::Icon::Activity,
-                                    12.,
-                                    theme::running(),
-                                ))
-                                .child(
-                                    div()
-                                        .text_size(px(theme::TEXT_XS))
-                                        .text_color(theme::running())
-                                        .child(SharedString::from(running.to_string())),
-                                )
-                            })
-                            .child(
-                                div()
-                                    .text_size(px(theme::TEXT_XS))
-                                    .text_color(theme::faint())
-                                    .child(SharedString::from(items.len().to_string())),
-                            ),
-                    )
-                    .when(!collapsed, |el| {
-                        el.children(items.into_iter().map(
-                            |(title, info, live, activity_time)| {
-                                let key = row_key(&(title.clone(), info.clone(), live, activity_time));
-                                let highlighted_here = match &highlighted {
-                                    Some(NavEntry::Open(index)) => live == Some(*index),
-                                    Some(NavEntry::Saved(path)) => info.as_ref().is_some_and(|info| &info.path == path),
-                                    None => false,
-                                };
-                                let keyboard_selected = highlighted_here && self.query.read(cx).focus_handle.is_focused(window);
-                                let signals = live.map(|i| {
-                                    let conversation = &self.conversations[i];
-                                    SessionSignals::from_state(conversation.state.read(cx), conversation.unread_completion)
-                                }).unwrap_or(SessionSignals { saved: true,
-                                    unread: info.as_ref().is_some_and(|info| self.preferences.unread_sessions.contains_key(&info.path)),
-                                    ..Default::default() });
-                                let running = signals.running;
-                                let active = live == Some(self.active);
-                                let unread = signals.unread;
-                                let needs_input = signals.needs_input;
-                                let weak = cx.entity().downgrade();
-                                let info = info.clone();
-                                let delete_info = info.clone();
-                                let live_index = live;
-                                let pending = delete_info
-                                    .as_ref()
-                                    .is_some_and(|info| self.pending_delete.as_ref() == Some(&info.path));
-                                let anchor = self.nav_anchors.get(&key).cloned();
-                                let tooltip = format!(
-                                    "{}\n{} · {}",
-                                    title,
-                                    signals.labels(),
-                                    relative_time(activity_time, std::time::SystemTime::now())
-                                );
-                                let pulse_id = format!("nav-pulse-{key}");
-                                let session_path = match live {
-                                    Some(index) => self.conversations[index].path.clone(),
-                                    None => info.as_ref().map(|info| info.path.clone()),
-                                };
-                                let pinned = session_path.as_ref().is_some_and(|path| {
-                                    self.preferences.pinned_sessions.contains(path)
-                                });
-                                // O pino fica antes de fechar/apagar. Sem arquivo de
-                                // sessão ainda não há identidade estável: o botão
-                                // explica quando ele fica disponível.
-                                let pin = {
-                                    let id = SharedString::from(format!("pin-{key}"));
-                                    let pin_weak = weak.clone();
-                                    match session_path {
-                                        Some(path) => {
-                                            let pinned_now = pinned;
-                                            let weak = pin_weak;
-                                            Some(div()
-                                                .id(id)
-                                                .size(px(22.))
-                                                .rounded(theme::r_control())
-                                                .flex()
-                                                .items_center()
-                                                .justify_center()
-                                                .when(!pinned_now, |el| el.opacity(0.0).hover(|s| s.opacity(1.0)))
-                                                .when(pinned_now, |el| el.opacity(1.0))
-                                                .cursor_pointer()
-                                                .tooltip(move |_, cx| {
-                                                    let label = if pinned_now { "Desafixar sessão" } else { "Fixar sessão" };
-                                                    cx.new(|_| crate::ui::copy_button::TextTooltip(label.into())).into()
-                                                })
-                                                .on_click(move |_event: &ClickEvent, _, cx: &mut App| {
-                                                    cx.stop_propagation();
-                                                    weak.update(cx, |workspace, cx| {
-                                                        workspace.toggle_pin(path.clone(), cx)
-                                                    })
-                                                    .ok();
-                                                })
-                                                .child(crate::ui::icons::icon(
-                                                    crate::ui::icons::Icon::Pin,
-                                                    12.,
-                                                    if pinned_now { theme::accent() } else { theme::faint() },
-                                                ))
-                                                .into_any_element())
-                                        }
-                                        None => {
-                                            let weak = pin_weak;
-                                            Some(div()
-                                                .id(id)
-                                                .size(px(22.))
-                                                .rounded(theme::r_control())
-                                                .flex()
-                                                .items_center()
-                                                .justify_center()
-                                                .opacity(0.0)
-                                                .hover(|s| s.opacity(1.0))
-                                                .cursor_pointer()
-                                                .tooltip(move |_, cx| {
-                                                    cx.new(|_| crate::ui::copy_button::TextTooltip(
-                                                        "A sessão é salva pelo Pi no primeiro turno".into(),
-                                                    )).into()
-                                                })
-                                                .on_click(move |_event: &ClickEvent, _, cx: &mut App| {
-                                                    cx.stop_propagation();
-                                                    weak.update(cx, |workspace, cx| {
-                                                        workspace.explain_unpinned_session(cx)
-                                                    })
-                                                    .ok();
-                                                })
-                                                .child(crate::ui::icons::icon(
-                                                    crate::ui::icons::Icon::Pin,
-                                                    12.,
-                                                    theme::faint(),
-                                                ))
-                                                .into_any_element())
-                                        }
-                                    }
-                                };
-                                div()
-                                    .id(SharedString::from(key))
-                                    .anchor_scroll(anchor)
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .gap(px(theme::S2))
-                                    .pl(px(theme::S3))
-                                    .pr(px(theme::S2))
-                                    .py(px(theme::S1 + 2.))
-                                    .rounded(theme::r_control())
-                                    // Foco de teclado é um anel por fora, para não
-                                    // competir com as cores de estado da linha. O
-                                    // fundo opaco evita que a sombra vire um bloco.
-                                    .when(keyboard_selected, |el| {
-                                        el.bg(theme::hover()).shadow(theme::focus_ring())
-                                    })
-                                    .when(active, |el| {
-                                        el.bg(theme::surface_2())
-                                            .border_l_2()
-                                            .border_color(theme::accent())
-                                    })
-                                    .when(!active && unread, |el| {
-                                        el.bg(theme::wash(theme::attention(), 0.12))
-                                            .border_l_2()
-                                            .border_color(theme::attention())
-                                    })
-                                    // Bloqueada esperando você é mais urgente que
-                                    // conteúdo novo: o âmbar vence o verde. Sem
-                                    // wash: sob o modal, o título precisa ficar
-                                    // legível.
-                                    .when(!active && needs_input, |el| {
-                                        el.border_l_2().border_color(theme::warn())
-                                    })
-                                    .when(!active && !keyboard_selected, |el| el.hover(|s| s.bg(theme::hover())))
-                                    .cursor_pointer()
-                                    .tooltip(move |_, cx| {
-                                        cx.new(|_| crate::ui::copy_button::TextTooltip(tooltip.clone())).into()
-                                    })
-                                    .on_click(move |_event: &ClickEvent, window, cx: &mut App| {
-                                        weak.update(cx, |workspace, cx| {
-                                            workspace.focus_nav(live_index, info.as_ref().map(|info| info.path.clone()));
-                                            match live_index {
-                                                Some(index) => {
-                                                    workspace.select(index, window, cx)
-                                                }
-                                                None => {
-                                                    if let Some(info) = info.clone() {
-                                                        workspace.open(info, window, cx)
-                                                    }
-                                                }
-                                            }
-                                        })
-                                        .ok();
-                                    })
-                                    // O marcador repete o estado: forma e cor,
-                                    // nunca só cor.
-                                    .child(if needs_input {
-                                        crate::ui::icons::icon(crate::ui::icons::Icon::Alert, 12., theme::warn()).into_any_element()
-                                    } else if signals.error {
-                                        crate::ui::icons::icon(crate::ui::icons::Icon::Alert, 12., theme::failure()).into_any_element()
-                                    } else if running {
-                                        crate::ui::pulse(pulse_id, 7., theme::running()).into_any_element()
-                                    } else if unread {
-                                        crate::ui::icons::icon(crate::ui::icons::Icon::File, 12., theme::attention()).into_any_element()
-                                    } else if live.is_some() {
-                                        crate::ui::dot(if active { theme::text() } else { theme::dim() }, 6.).into_any_element()
-                                    } else {
-                                        crate::ui::ring(theme::faint(), 6.).into_any_element()
-                                    })
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w(px(0.))
-                                            .flex()
-                                            .flex_col()
-                                            .gap(px(1.))
-                                            .child(
-                                                div()
-                                                    .truncate()
-                                                    .text_size(px(theme::TEXT_SM))
-                                                    .text_color(if active || unread {
-                                                        theme::text()
-                                                    } else {
-                                                        theme::dim()
-                                                    })
-                                                    .when(unread && !active, |el| {
-                                                        el.font_weight(FontWeight::MEDIUM)
-                                                    })
-                                                    .child(SharedString::from(title)),
-                                            )
-                                            .child(
-                                                div()
-                                                    .flex()
-                                                    .flex_row()
-                                                    .flex_wrap()
-                                                    .items_center()
-                                                    .gap(px(theme::S1 + 1.))
-                                                    .when(running, |el| {
-                                                        el.child(crate::ui::icons::icon(
-                                                            crate::ui::icons::Icon::Activity,
-                                                            11.,
-                                                            theme::running(),
-                                                        ))
-                                                        .child(
-                                                            div()
-                                                                .text_size(px(theme::TEXT_XS))
-                                                                .text_color(theme::running())
-                                                                .child("executando"),
-                                                        )
-                                                    })
-                                                    .when(unread, |el| {
-                                                        el.child(crate::ui::icons::icon(
-                                                            crate::ui::icons::Icon::File, 11., theme::attention(),
-                                                        )).child(div().text_size(px(theme::TEXT_XS))
-                                                            .text_color(theme::attention()).child("resposta nova"))
-                                                    })
-                                                    .when(signals.needs_input, |el| {
-                                                        el.child(crate::ui::icons::icon(crate::ui::icons::Icon::Alert, 11., theme::warn())).child(div().text_size(px(theme::TEXT_XS))
-                                                            .text_color(theme::warn()).child("precisa de você"))
-                                                    })
-                                                    .when(signals.queued > 0, |el| {
-                                                        el.child(div().text_size(px(theme::TEXT_XS))
-                                                            .text_color(theme::dim()).child(SharedString::from(format!("{} em fila", signals.queued))))
-                                                    })
-                                                    .when(signals.error, |el| {
-                                                        el.child(crate::ui::icons::icon(crate::ui::icons::Icon::Alert, 11., theme::failure())).child(div().text_size(px(theme::TEXT_XS))
-                                                            .text_color(theme::failure()).child("erro"))
-                                                    })
-                                                    .when(signals.interrupted, |el| {
-                                                        el.child(crate::ui::icons::icon(crate::ui::icons::Icon::Stop, 11., theme::dim())).child(div().text_size(px(theme::TEXT_XS)).text_color(theme::dim()).child("interrompida"))
-                                                    })
-                                                    .when(!running && !needs_input && !signals.error && !signals.interrupted && !unread, |el| {
-                                                        if signals.completed {
-                                                            el.child(crate::ui::icons::icon(crate::ui::icons::Icon::Check, 11., theme::ok()))
-                                                                .child(div().text_size(px(theme::TEXT_XS)).text_color(theme::ok()).child("concluída"))
-                                                        } else {
-                                                            el.child(div().text_size(px(theme::TEXT_XS))
-                                                                .text_color(theme::faint()).child(if live.is_some() { "inativa" } else { "salva" }))
-                                                        }
-                                                    })
-                                                    .child(div().text_size(px(theme::TEXT_XS)).text_color(theme::faint())
-                                                        .child(SharedString::from(relative_time(activity_time, std::time::SystemTime::now())))),
-                                            )
-                                            .when(running, |el| {
-                                                el.child(div().truncate().text_size(px(theme::TEXT_XS)).text_color(theme::dim())
-                                                    .child(SharedString::from(live.and_then(|i| self.conversations[i].state.read(cx).activity.clone()).unwrap_or_default())))
-                                            })
-                                    )
-                                    .when_some(pin, |el, pin| el.child(pin))
-                                    .when_some(live_index, |el, index| {
-                                        let weak = cx.entity().downgrade();
-                                        el.child(
-                                            div()
-                                                .id(SharedString::from(format!("close-{index}")))
-                                                .size(px(22.))
-                                                .rounded(theme::r_control())
-                                                .flex()
-                                                .items_center()
-                                                .justify_center()
-                                                .opacity(0.0)
-                                                .hover(|s| s.opacity(1.0))
-                                                .cursor_pointer()
-                                                .on_click(move |_event: &ClickEvent, window, cx: &mut App| {
-                                                    // Removing this row invalidates the index captured
-                                                    // by its parent selection handler.
-                                                    cx.stop_propagation();
-                                                    weak.update(cx, |workspace, cx| {
-                                                        workspace.close_conversation(index, window, cx)
-                                                    })
-                                                    .ok();
-                                                })
-                                                .child(crate::ui::icons::icon(
-                                                    crate::ui::icons::Icon::Close,
-                                                    12.,
-                                                    theme::faint(),
-                                                )),
-                                        )
-                                    })
-                                    .when(live_index.is_none(), |el| match delete_info.clone() {
-                                        Some(target) if pending => {
-                                            el.child(delete_confirm_controls(target, cx))
-                                        }
-                                        Some(target) => el.child(delete_session_button(target, cx)),
-                                        None => el,
-                                    })
-                            },
-                        ))
-                    }),
-            );
-        }
-
-        // Projetos recentes que ainda não aparecem na lista de sessões: uma
-        // conversa nova começa aqui sem reiniciar o Dish. A pasta em uso entra
-        // na frente quando a conversa ativa muda.
-        if query.is_empty() {
-            let recents: Vec<PathBuf> = self
-                .preferences
-                .recent_projects
-                .iter()
-                .filter(|path| path.is_dir() && !grouped_folders.contains(path))
-                .take(5)
-                .cloned()
-                .collect();
-            if !recents.is_empty() {
-                let mut section = div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(theme::S1))
-                    .pt(px(theme::S2))
-                    .child(
-                        div()
-                            .px(px(theme::S2))
-                            .py(px(theme::S1))
-                            .text_size(px(theme::TEXT_XS))
-                            .text_color(theme::faint())
-                            .child("Projetos recentes"),
-                    );
-                for path in recents {
-                    let label = folder_of(&path);
-                    let tooltip = path.display().to_string();
-                    let target = path.clone();
-                    section = section.child(
-                        div()
-                            .id(SharedString::from(format!("recent-{}", path.display())))
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(theme::S2))
-                            .px(px(theme::S2))
-                            .py(px(theme::S1 + 2.))
-                            .rounded(theme::r_control())
-                            .cursor_pointer()
-                            .hover(|style| style.bg(theme::hover()))
-                            .tooltip(move |_, cx| {
-                                cx.new(|_| crate::ui::copy_button::TextTooltip(tooltip.clone())).into()
-                            })
-                            .on_click(cx.listener(move |workspace, _: &ClickEvent, _, cx| {
-                                workspace.open_project(target.clone(), cx);
-                            }))
-                            .child(crate::ui::icons::icon(
-                                crate::ui::icons::Icon::Folder,
-                                13.,
-                                theme::faint(),
-                            ))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .truncate()
-                                    .text_size(px(theme::TEXT_SM))
-                                    .text_color(theme::dim())
-                                    .child(SharedString::from(label)),
-                            ),
-                    );
-                }
-                list = list.child(section);
-            }
-        }
-
-        self.row_order = self.nav_entries.iter().map(entry_key).collect();
-        self.nav_anchors.retain(|key, _| self.row_order.contains(key));
-        rail = rail.child(list);
-        if self.undo_delete.is_some() {
-            rail = rail.child(self.undo_bar(cx));
-        }
-        rail.child(
-            div()
-                .flex_none()
-                .px(px(theme::S3))
-                .py(px(theme::S2))
-                .border_t_1()
-                .border_color(theme::line_soft())
-                .flex()
-                .flex_row()
-                .flex_wrap()
-                .items_center()
-                .gap(px(theme::S2))
-                .child(
-                    div()
-                        .text_size(px(theme::TEXT_XS))
-                        .text_color(theme::faint())
-                        .child(SharedString::from(format!("{open_count} abertas"))),
-                )
-                .when(running_count > 0, |el| {
-                    el.child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(theme::S1))
-                            .child(crate::ui::icons::icon(
-                                crate::ui::icons::Icon::Activity,
-                                12.,
-                                theme::running(),
-                            ))
-                            .child(
-                                div()
-                                    .text_size(px(theme::TEXT_XS))
-                                    .text_color(theme::running())
-                                    .child(SharedString::from(format!("{running_count} executando"))),
-                            ),
-                    )
-                })
-                .when(counts[2] > 0, |el| {
-                    el.child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(theme::S1))
-                            .child(crate::ui::icons::icon(
-                                crate::ui::icons::Icon::File,
-                                12.,
-                                theme::attention(),
-                            ))
-                            .child(
-                                div()
-                                    .text_size(px(theme::TEXT_XS))
-                                    .text_color(theme::attention())
-                                    .child(SharedString::from(format!(
-                                        "{} {}",
-                                        counts[2],
-                                        if counts[2] == 1 { "nova" } else { "novas" }
-                                    ))),
-                            ),
-                    )
-                })
-                .when(counts[1] > 0, |el| {
-                    el.child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(theme::S1))
-                            .child(crate::ui::icons::icon(
-                                crate::ui::icons::Icon::Alert,
-                                12.,
-                                theme::warn(),
-                            ))
-                            .child(
-                                div()
-                                    .text_size(px(theme::TEXT_XS))
-                                    .text_color(theme::warn())
-                                    .child(SharedString::from(format!(
-                                        "{} {}",
-                                        counts[1],
-                                        if counts[1] == 1 { "pendente" } else { "pendentes" }
-                                    ))),
-                            ),
-                    )
-                }),
-        )
-    }
-}
-
-/// Botão de ícone do cabeçalho da navegação.
-fn nav_icon_button(
-    id: &'static str,
-    glyph: crate::ui::icons::Icon,
-    cx: &mut Context<Workspace>,
-    run: impl Fn(&mut Workspace, &mut Window, &mut Context<Workspace>) + 'static,
-) -> AnyElement {
-    div()
-        .id(id)
-        .size(px(28.))
-        .rounded(theme::r_control())
-        .flex()
-        .items_center()
-        .justify_center()
-        .cursor_pointer()
-        .hover(|style| style.bg(theme::hover()))
-        .on_click(cx.listener(move |workspace, _: &ClickEvent, window, cx| {
-            run(workspace, window, cx);
-        }))
-        .child(crate::ui::icons::icon(glyph, 15., theme::faint()))
-        .into_any_element()
-}
-
-/// Um segmento do filtro de sessões: modo de leitura, ocupando a faixa toda.
-/// O nome completo vive no tooltip; o número da contagem vive no rodapé.
-fn nav_segment(
-    id: &'static str,
-    label: &'static str,
-    hint: &'static str,
-    active: bool,
-    cx: &mut Context<Workspace>,
-    run: impl Fn(&mut Workspace, &mut Context<Workspace>) + 'static,
-) -> AnyElement {
-    div()
-        .id(id)
-        .min_w(px(0.))
-        .px(px(theme::S1 + 1.))
-        .py(px(3.))
-        .rounded(theme::r_small())
-        .when(active, |el| {
-            el.bg(theme::surface_2())
-                .border_1()
-                .border_color(theme::line())
-        })
-        .when(!active, |el| {
-            el.cursor_pointer()
-                .border_1()
-                .border_color(gpui::transparent_black())
-                .hover(|s| s.bg(theme::hover()))
-        })
-        .tooltip(move |_, cx| {
-            cx.new(|_| crate::ui::copy_button::TextTooltip(hint.into())).into()
-        })
-        .text_size(px(theme::TEXT_XS))
-        .text_color(if active { theme::text() } else { theme::faint() })
-        .when(active, |el| el.font_weight(FontWeight::MEDIUM))
-        .truncate()
-        .on_click(cx.listener(move |workspace, _: &ClickEvent, _window, cx| {
-            run(workspace, cx);
-        }))
-        .child(SharedString::from(label.to_owned()))
-        .into_any_element()
 }
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.conversations[self.active].state.clone();
+        if self.delete_focus_pending.take().is_some_and(|previous| previous.is_focused(window)) {
+            self.undo_focus.focus(window, cx);
+        }
+        // Undo can disappear after restoration or expiry. Never strand focus
+        // on an element that just left the dispatch tree or steal newer focus.
+        if self.undo_delete.is_none() && self.undo_focus.is_focused(window) {
+            let focus = state.read(cx).editor.read(cx).focus_handle.clone();
+            focus.focus(window, cx);
+        }
         if state.read(cx).help_open {
             state.update(cx, |state, _| {
                 state.help_open = false;
@@ -2049,12 +1600,12 @@ impl Render for Workspace {
             });
             self.open_settings(crate::settings::Section::Keys, window, cx);
         }
-        if self.confirm_close || state.read(cx).modal.is_some() {
+        if self.blocking_confirmation() || state.read(cx).modal.is_some() {
             if let Some(settings) = &self.settings {
                 if settings.read(cx).open { settings.update(cx, |settings, cx| settings.suspend(cx)); }
             }
         }
-        let active_viewed = window.is_window_active() && !self.confirm_close && !self.settings.as_ref().is_some_and(|settings| settings.read(cx).open);
+        let active_viewed = window.is_window_active() && !self.blocking_confirmation() && !self.settings.as_ref().is_some_and(|settings| settings.read(cx).open);
         for (index, conversation) in self.conversations.iter_mut().enumerate() {
             let completed = conversation.state.read(cx).completed_content_runs;
             let newly_completed = completed != conversation.seen_completed_runs;
@@ -2077,7 +1628,8 @@ impl Render for Workspace {
                 }
             }
         }
-        if let Some((cwd, path, client)) = self.pending.take() {
+        if let Some((opening, client)) = self.pending.take() {
+            let OpeningSession { cwd, path, title } = opening;
             let editor = cx.new(|cx| Editor::new("", "Pergunte algo ao agente", window, cx));
             let modal_editor = cx.new(|cx| Editor::new("", "Escreva aqui…", window, cx));
             let search = cx.new(|cx| Editor::new("", "Buscar modelos ou provedores…", window, cx));
@@ -2091,6 +1643,8 @@ impl Render for Workspace {
                 }, None, cx)
             });
             state.update(cx, |state, cx| {
+                state.restoring_session = path.is_some();
+                state.initial_title = title;
                 if let Some(open) = self.preferences.details_open {
                     state.sidebar = open;
                     state.inspector_initialized = true;
@@ -2151,12 +1705,12 @@ impl Render for Workspace {
         if state.read(cx).new_session_requested {
             let cwd = state.read(cx).cwd.clone();
             state.update(cx, |state, _| state.new_session_requested = false);
-            self.spawn_conversation(cwd, None, cx);
+            self.spawn_conversation(cwd, None, None, cx);
         }
         let settings_open = self.settings.as_ref().is_some_and(|settings| settings.read(cx).open);
         for (index, conversation) in self.conversations.iter().enumerate() {
             conversation.state.update(cx, |state, _| {
-                state.visible = index == self.active && !self.confirm_close && !settings_open
+                state.visible = index == self.active && !self.blocking_confirmation() && !settings_open
             });
         }
         let active = state.read(cx);
@@ -2168,9 +1722,12 @@ impl Render for Workspace {
             .size_full()
             .flex()
             .flex_col()
-            .bg(theme::bg())
+            .bg(theme::surface())
             .text_color(theme::text())
             .font_family(theme::FONT_UI)
+            .on_scroll_wheel(cx.listener(|workspace, _, window, cx| {
+                workspace.dismiss_session_menu(window, cx);
+            }))
             // Arrasto da divisa do painel de sessões.
             .on_mouse_move(cx.listener(|workspace, event: &MouseMoveEvent, _, cx| {
                 let Some((start_x, start_width)) = workspace.resizing_nav else {
@@ -2198,59 +1755,72 @@ impl Render for Workspace {
             .on_action(cx.listener(|workspace, _: &crate::ui::ToggleHelp, window, cx| {
                 workspace.open_settings(crate::settings::Section::Keys, window, cx);
             }))
-            .on_action(cx.listener(|workspace, _: &NavUp, window, cx| workspace.nav_move(-1, window, cx)))
-            .on_action(cx.listener(|workspace, _: &NavDown, window, cx| workspace.nav_move(1, window, cx)))
+            .on_action(cx.listener(|workspace, _: &NavUp, window, cx| {
+                if !workspace.blocking_confirmation() { workspace.nav_move(-1, window, cx); }
+            }))
+            .on_action(cx.listener(|workspace, _: &NavDown, window, cx| {
+                if !workspace.blocking_confirmation() { workspace.nav_move(1, window, cx); }
+            }))
             .on_action(cx.listener(|workspace, _: &NavAccept, window, cx| {
-                workspace.nav_accept(window, cx)
+                if !workspace.blocking_confirmation() { workspace.nav_accept(window, cx); }
             }))
             .on_action(cx.listener(|workspace, _: &NavCollapse, _, cx| {
-                workspace.nav_toggle_project(true, cx)
+                if !workspace.blocking_confirmation() { workspace.nav_toggle_project(true, cx); }
             }))
             .on_action(cx.listener(|workspace, _: &NavExpand, _, cx| {
-                workspace.nav_toggle_project(false, cx)
+                if !workspace.blocking_confirmation() { workspace.nav_toggle_project(false, cx); }
             }))
             .on_action(cx.listener(|workspace, _: &NextConversation, window, cx| {
-                if !workspace.confirm_close && !workspace.settings.as_ref().is_some_and(|s| s.read(cx).open) {
+                if !workspace.blocking_confirmation() && !workspace.settings.as_ref().is_some_and(|s| s.read(cx).open) {
                     workspace.select((workspace.active + 1) % workspace.conversations.len(), window, cx);
                 }
             }))
             .on_action(cx.listener(|workspace, _: &PreviousConversation, window, cx| {
-                if !workspace.confirm_close && !workspace.settings.as_ref().is_some_and(|s| s.read(cx).open) {
+                if !workspace.blocking_confirmation() && !workspace.settings.as_ref().is_some_and(|s| s.read(cx).open) {
                     let len = workspace.conversations.len();
                     workspace.select((workspace.active + len - 1) % len, window, cx);
                 }
             }))
             .on_action(cx.listener(|workspace, _: &FocusPrompt, window, cx| {
-                if !workspace.confirm_close && !workspace.settings.as_ref().is_some_and(|s| s.read(cx).open) {
+                if !workspace.blocking_confirmation() && !workspace.settings.as_ref().is_some_and(|s| s.read(cx).open) {
                     workspace.select(workspace.active, window, cx);
                 }
             }))
-            .on_action(cx.listener(|workspace, _: &FindCurrent, window, cx| workspace.open_content_search(false, window, cx)))
-            .on_action(cx.listener(|workspace, _: &FindProject, window, cx| workspace.open_content_search(true, window, cx)))
-            .on_action(cx.listener(|workspace, _: &ExitSearch, window, cx| workspace.exit_search(window, cx)))
-            .on_action(cx.listener(|workspace, _: &NextMatch, window, cx| workspace.step_match(1, window, cx)))
-            .on_action(cx.listener(|workspace, _: &PreviousMatch, window, cx| workspace.step_match(-1, window, cx)))
-            .on_action(cx.listener(|workspace, _: &AcceptMatch, window, cx| workspace.accept_match(window, cx)))
+            .on_action(cx.listener(|workspace, _: &FindCurrent, window, cx| {
+                if !workspace.blocking_confirmation() { workspace.session_menu = None; workspace.open_content_search(false, window, cx); }
+            }))
+            .on_action(cx.listener(|workspace, _: &FindProject, window, cx| {
+                if !workspace.blocking_confirmation() { workspace.session_menu = None; workspace.open_content_search(true, window, cx); }
+            }))
+            .on_action(cx.listener(|workspace, _: &ExitSearch, window, cx| {
+                if !workspace.blocking_confirmation() { workspace.session_menu = None; workspace.exit_search(window, cx); }
+            }))
+            .on_action(cx.listener(|workspace, _: &NextMatch, window, cx| {
+                if !workspace.blocking_confirmation() { workspace.session_menu = None; workspace.step_match(1, window, cx); }
+            }))
+            .on_action(cx.listener(|workspace, _: &PreviousMatch, window, cx| {
+                if !workspace.blocking_confirmation() { workspace.session_menu = None; workspace.step_match(-1, window, cx); }
+            }))
+            .on_action(cx.listener(|workspace, _: &AcceptMatch, window, cx| {
+                if !workspace.blocking_confirmation() { workspace.session_menu = None; workspace.accept_match(window, cx); }
+            }))
             .on_action(cx.listener(|workspace, _: &SearchSessions, window, cx| {
-                if workspace.confirm_close || workspace.settings.as_ref().is_some_and(|s| s.read(cx).open) { return; }
+                if workspace.blocking_confirmation() || workspace.settings.as_ref().is_some_and(|s| s.read(cx).open) { return; }
+                workspace.session_menu = None;
                 workspace.visible = true;
                 workspace.nav_user_choice = true;
                 workspace.query.read(cx).focus_handle.clone().focus(window, cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|workspace, _: &CloseConversation, window, cx| {
-                if workspace.confirm_close || workspace.settings.as_ref().is_some_and(|s| s.read(cx).open) { return; }
+                if workspace.blocking_confirmation() || workspace.settings.as_ref().is_some_and(|s| s.read(cx).open) { return; }
                 let index = workspace.active;
-                if workspace.conversations[index].state.read(cx).streaming {
-                    workspace.confirm_close = true;
-                    workspace.close_target = Some(index);
-                    cx.notify();
-                } else {
-                    workspace.close_conversation(index, window, cx);
-                }
+                let target = SessionTarget::Live(workspace.conversations[index].state.entity_id());
+                workspace.request_session_close(&target, window, cx);
             }))
             .on_action(cx.listener(|workspace, _: &ToggleSessions, _, cx| {
-                if workspace.settings.as_ref().is_some_and(|s| s.read(cx).open) { return; }
+                if workspace.blocking_confirmation() || workspace.settings.as_ref().is_some_and(|s| s.read(cx).open) { return; }
+                workspace.session_menu = None;
                 workspace.visible = !workspace.visible;
                 workspace.nav_user_choice = true;
                 cx.notify();
@@ -2263,7 +1833,8 @@ impl Render for Workspace {
         }
         root = root
             .on_action(cx.listener(|workspace, _: &CycleSessionFilter, window, cx| {
-                if workspace.confirm_close || workspace.settings.as_ref().is_some_and(|settings| settings.read(cx).open) { return; }
+                if workspace.blocking_confirmation() || workspace.settings.as_ref().is_some_and(|settings| settings.read(cx).open) { return; }
+                workspace.session_menu = None;
                 workspace.filter = match workspace.filter {
                     SessionFilter::All => SessionFilter::NeedsInput,
                     SessionFilter::NeedsInput => SessionFilter::Unread,
@@ -2289,7 +1860,7 @@ impl Render for Workspace {
         }
         let mut body = div().relative().flex_1().min_h(px(0.)).flex().flex_row();
         if self.visible {
-            body = body.child(self.navigation(window, cx));
+            body = body.child(crate::ui::motion::panel(self.navigation(window, cx), "navigation-enter", false));
         } else {
             // Recolhida: o pratinho reabre e cada conversa vira um ponto de
             // status — dá para trocar de sessão sem reabrir o painel.
@@ -2324,7 +1895,7 @@ impl Render for Workspace {
                         .child(img("dish-icon.png").flex_none().w(px(22.)).h(px(22.))),
                 )
                 .child(div().w(px(20.)).h(px(1.)).bg(theme::line_soft()))
-                .child(nav_icon_button("nav-settings-collapsed", crate::ui::icons::Icon::Dots, cx,
+                .child(nav_icon_button("nav-settings-collapsed", crate::ui::icons::Icon::Settings, cx,
                     |workspace, window, cx| workspace.open_settings(crate::settings::Section::App, window, cx)));
 
             let mut groups: BTreeMap<PathBuf, Vec<usize>> = BTreeMap::new();
@@ -2417,10 +1988,24 @@ impl Render for Workspace {
                             }),
                     );
                 }
+                // Recolher a navegação muda só sua apresentação: projetos
+                // fechados continuam sem sessões visíveis também nesta faixa.
+                // Seus indicadores agregados permanecem no ícone da pasta.
+                if self.collapsed.contains(&cwd) {
+                    dots = dots.child(group);
+                    continue;
+                }
+                let any_opening_saved = self
+                    .opening
+                    .as_ref()
+                    .is_some_and(|opening| opening.path.is_some());
                 for index in open_indices {
-                    let signals = SessionSignals::from_state(self.conversations[index].state.read(cx), self.conversations[index].unread_completion);
-                    let active = index == self.active;
+                    let conv_state = self.conversations[index].state.read(cx);
+                    let signals = SessionSignals::from_state(conv_state, self.conversations[index].unread_completion);
+                    let loading_session = conv_state.is_loading_session();
+                    let active = !any_opening_saved && index == self.active;
                     let pulse_id = format!("nav-pulse-{index}");
+                    let spinner_id = format!("nav-dot-spinner-{index}");
                     group = group.child(
                         div()
                             .id(SharedString::from(format!("nav-dot-{index}")))
@@ -2444,7 +2029,9 @@ impl Render for Workspace {
                             .on_click(cx.listener(move |workspace, _: &ClickEvent, window, cx| {
                                 workspace.select(index, window, cx);
                             }))
-                            .child(if signals.needs_input {
+                            .child(if loading_session {
+                                crate::ui::icons::spinner(spinner_id, 14., theme::accent()).into_any_element()
+                            } else if signals.needs_input {
                                 crate::ui::icons::icon(crate::ui::icons::Icon::Alert, 12., theme::warn()).into_any_element()
                             } else if signals.error {
                                 crate::ui::icons::icon(crate::ui::icons::Icon::Alert, 12., theme::failure()).into_any_element()
@@ -2453,15 +2040,21 @@ impl Render for Workspace {
                             } else if signals.unread {
                                 crate::ui::icons::icon(crate::ui::icons::Icon::File, 12., theme::attention()).into_any_element()
                             } else {
-                                crate::ui::dot(if active { theme::text() } else { theme::faint() }, 8.).into_any_element()
+                                crate::ui::icons::icon(if active { crate::ui::icons::Icon::CurrentSession } else { crate::ui::icons::Icon::OpenSession },
+                                    16., if active { theme::accent() } else { theme::dim() }).into_any_element()
                             }),
                     );
                 }
                 for info_index in saved_indices {
-                    let unread = self
-                        .catalog
-                        .get(info_index)
+                    let info_ref = self.catalog.get(info_index);
+                    let opening_here = info_ref.is_some_and(|info| {
+                        self.opening
+                            .as_ref()
+                            .is_some_and(|opening| opening.path.as_ref() == Some(&info.path))
+                    });
+                    let unread = info_ref
                         .is_some_and(|info| self.preferences.unread_sessions.contains_key(&info.path));
+                    let spinner_id = format!("nav-saved-spinner-{info_index}");
                     group = group.child(
                         div()
                             .id(SharedString::from(format!("nav-saved-{info_index}")))
@@ -2472,6 +2065,11 @@ impl Render for Workspace {
                             .justify_center()
                             .cursor_pointer()
                             .hover(|style| style.bg(theme::hover()))
+                            .when(opening_here, |el| {
+                                el.bg(theme::surface_2())
+                                    .border_1()
+                                    .border_color(theme::accent_edge())
+                            })
                             .on_hover(cx.listener(move |workspace, hovered: &bool, _, cx| {
                                 workspace.hovered =
                                     hovered.then_some(NavHover::Saved(info_index));
@@ -2482,10 +2080,12 @@ impl Render for Workspace {
                                     workspace.open(info, window, cx);
                                 }
                             }))
-                            .child(if unread {
+                            .child(if opening_here {
+                                crate::ui::icons::spinner(spinner_id, 14., theme::accent()).into_any_element()
+                            } else if unread {
                                 crate::ui::icons::icon(crate::ui::icons::Icon::File, 12., theme::attention()).into_any_element()
                             } else {
-                                crate::ui::ring(theme::faint(), 7.).into_any_element()
+                                crate::ui::icons::icon(crate::ui::icons::Icon::SavedSession, 16., theme::faint()).into_any_element()
                             }),
                     );
                 }
@@ -2528,7 +2128,22 @@ impl Render for Workspace {
                 }
             }
         }
-        root = root.child(body.child(div().flex_1().min_w(px(0.)).h_full().child(state)));
+        let opening_view = self
+            .opening
+            .as_ref()
+            .filter(|opening| opening.path.is_some())
+            .map(|opening| {
+                crate::ui::opening_session_view(&opening.cwd, opening.title.as_deref())
+                    .into_any_element()
+            });
+        let main_view = opening_view.unwrap_or_else(|| state.into_any_element());
+        root = root.child(body.child(div().flex_1().min_w(px(0.)).h_full().p(px(theme::S2)).child(
+            crate::ui::motion::reveal(
+                div().size_full().rounded(theme::r_surface()).overflow_hidden()
+                    .border_1().border_color(theme::line_soft()).child(main_view),
+                ElementId::NamedInteger("conversation-enter".into(), self.active as u64),
+            ),
+        )));
         self.refresh_content_search_scope(cx);
         self.resolve_search_jump(cx);
         if let Some(panel) = self.content_search_panel(cx) {
@@ -2582,14 +2197,14 @@ impl Render for Workspace {
                         let signals = self.conversations.get(index).map(|conversation| {
                             SessionSignals::from_state(conversation.state.read(cx), conversation.unread_completion)
                         }).unwrap_or_default();
-                        (self.conversation_title(index, cx), signals.labels())
+                        (self.conversation_title(index, cx), format!("{} · {}", lifecycle_label(true, index == self.active), signals.labels()))
                     }
                     NavHover::Saved(index) => {
                         let info = self.catalog.get(*index);
                         (
                             info.map(|info| info.title.clone())
                                 .unwrap_or_else(|| "sessão salva".into()),
-                            "salva".to_string(),
+                            "Salva".to_string(),
                         )
                     }
                 };
@@ -2628,6 +2243,21 @@ impl Render for Workspace {
         if let Some(settings) = &self.settings {
             if settings.read(cx).open { root = root.child(settings.clone()); }
         }
+        if self.session_menu.is_some() {
+            let missing = self.session_menu.as_ref().is_some_and(|menu| {
+                matches!(menu.target, SessionTarget::Live(_)) && self.target_index(&menu.target).is_none()
+            });
+            if missing || !self.visible || self.blocking_confirmation() || settings_open {
+                self.dismiss_session_menu(window, cx);
+            } else {
+                if !self.session_menu_focus.is_focused(window) { self.session_menu_focus.focus(window, cx); }
+                if let Some(menu) = self.session_menu_element(window, cx) { root = root.child(menu); }
+            }
+        }
+        if self.pending_delete.is_some() {
+            if !self.confirm_focus.is_focused(window) { self.confirm_focus.focus(window, cx); }
+            if let Some(confirmation) = self.delete_confirmation_element(window, cx) { root = root.child(confirmation); }
+        }
         if self.confirm_close {
             if !self.confirm_focus.is_focused(window) {
                 self.confirm_focus.focus(window, cx);
@@ -2635,6 +2265,8 @@ impl Render for Workspace {
             let target = self.close_target;
             root = root.child(
                 div()
+                    .occlude()
+                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                     .absolute()
                     .inset(px(0.))
                     .flex()
@@ -2648,7 +2280,7 @@ impl Render for Workspace {
                         }),
                     )
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .bg(theme::wash(theme::bg(), 0.85))
+                    .bg(theme::scrim()).backdrop_blur(px(theme::SCRIM_BLUR))
                     .child(
                         div()
                             .w(px(420.))
@@ -2723,9 +2355,10 @@ impl Render for Workspace {
                                             .on_click(cx.listener(
                                                 move |workspace, _: &ClickEvent, window, cx| {
                                                     workspace.confirm_close = false;
-                                                    if let Some(index) = target {
-                                                        workspace
-                                                            .close_conversation(index, window, cx);
+                                                    if let Some(id) = target {
+                                                        if let Some(index) = workspace.target_index(&SessionTarget::Live(id)) {
+                                                            workspace.close_conversation(index, window, cx);
+                                                        }
                                                     } else {
                                                         window.remove_window();
                                                     }
@@ -2750,96 +2383,6 @@ fn add_to_catalog(catalog: &mut Vec<SessionInfo>, info: SessionInfo) {
     catalog.sort_by(|a, b| b.modified.cmp(&a.modified).then(a.path.cmp(&b.path)));
 }
 
-/// Lixeira de uma sessão salva; aparece no hover, como o botão de fechar.
-fn delete_session_button(target: SessionInfo, cx: &mut Context<Workspace>) -> AnyElement {
-    let weak = cx.entity().downgrade();
-    div()
-        .id(SharedString::from(format!(
-            "delete-{}",
-            target.path.display()
-        )))
-        .size(px(22.))
-        .rounded(theme::r_control())
-        .flex()
-        .items_center()
-        .justify_center()
-        .opacity(0.0)
-        .hover(|style| style.opacity(1.0))
-        .cursor_pointer()
-        .on_click(move |_event: &ClickEvent, _, cx: &mut App| {
-            cx.stop_propagation();
-            weak.update(cx, |workspace, cx| {
-                workspace.pending_delete = Some(target.path.clone());
-                cx.notify();
-            })
-            .ok();
-        })
-        .child(crate::ui::icons::icon(
-            crate::ui::icons::Icon::Trash,
-            12.,
-            theme::faint(),
-        ))
-        .into_any_element()
-}
-
-/// Confirmação embutida na linha: "Cancelar" / "Excluir".
-fn delete_confirm_controls(target: SessionInfo, cx: &mut Context<Workspace>) -> AnyElement {
-    let weak = cx.entity().downgrade();
-    let cancel = weak.clone();
-    div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap(px(theme::S1))
-        .child(
-            div()
-                .id(SharedString::from(format!(
-                    "delete-cancel-{}",
-                    target.path.display()
-                )))
-                .px(px(theme::S2))
-                .py(px(1.))
-                .rounded(theme::r_control())
-                .cursor_pointer()
-                .text_size(px(theme::TEXT_XS))
-                .text_color(theme::dim())
-                .hover(|style| style.bg(theme::hover()))
-                .on_click(move |_event: &ClickEvent, _, cx: &mut App| {
-                    cx.stop_propagation();
-                    cancel
-                        .update(cx, |workspace, cx| {
-                            workspace.pending_delete = None;
-                            cx.notify();
-                        })
-                        .ok();
-                })
-                .child("Cancelar"),
-        )
-        .child(
-            div()
-                .id(SharedString::from(format!(
-                    "delete-confirm-{}",
-                    target.path.display()
-                )))
-                .px(px(theme::S2))
-                .py(px(1.))
-                .rounded(theme::r_control())
-                .cursor_pointer()
-                .text_size(px(theme::TEXT_XS))
-                .text_color(theme::danger())
-                .hover(|style| style.bg(theme::hover()))
-                .on_click(move |_event: &ClickEvent, _, cx: &mut App| {
-                    cx.stop_propagation();
-                    weak.update(cx, |workspace, cx| {
-                        workspace.delete_session(target.clone(), cx)
-                    })
-                    .ok();
-                })
-                .child("Excluir"),
-        )
-        .into_any_element()
-}
-
 /// Nome curto de um projeto: o nome da pasta, ou o caminho inteiro.
 fn folder_of(cwd: &std::path::Path) -> String {
     cwd.file_name()
@@ -2862,6 +2405,46 @@ mod tests {
             modified: std::time::UNIX_EPOCH + std::time::Duration::from_secs(modified),
             scan: Default::default(),
         }
+    }
+
+    #[test]
+    fn lifecycle_distinguishes_current_open_and_saved_without_activity() {
+        assert_eq!(super::lifecycle_label(true, true), "Atual");
+        assert_eq!(super::lifecycle_label(true, false), "Aberta");
+        assert_eq!(super::lifecycle_label(false, false), "Salva");
+    }
+
+    #[test]
+    fn delayed_live_action_keeps_identity_when_an_earlier_session_closes() {
+        let first = gpui::EntityId::from(0x1_0000_0001_u64);
+        let second = gpui::EntityId::from(0x1_0000_0002_u64);
+        let target = super::SessionTarget::Live(second);
+        assert_eq!(super::resolve_session_target(&target, [(first, None), (second, None)].into_iter()), Some(1));
+        assert_eq!(super::resolve_session_target(&target, [(second, None)].into_iter()), Some(0));
+        assert_eq!(super::resolve_session_target(&target, [(first, None)].into_iter()), None);
+    }
+
+    #[test]
+    fn saved_action_resolves_a_file_that_became_live_after_menu_opened() {
+        let path = PathBuf::from("/beta.jsonl");
+        let target = super::SessionTarget::Saved(path.clone());
+        let id = gpui::EntityId::from(0x1_0000_0001_u64);
+        assert_eq!(super::resolve_session_target(&target, [(id, Some(path.as_path()))].into_iter()), Some(0));
+        assert_eq!(super::resolve_session_target(&target, [(id, None)].into_iter()), None);
+    }
+
+    #[test]
+    fn stale_catalog_snapshot_cannot_resurrect_a_trashed_session() {
+        assert!(super::catalog_snapshot(vec![info("/deleted.jsonl", 1)], 3, 4, &Default::default()).is_none());
+    }
+
+    #[test]
+    fn catalog_snapshot_fences_paths_while_shutdown_and_trash_are_pending() {
+        let deleting = [PathBuf::from("/pending.jsonl")].into_iter().collect();
+        let snapshot = super::catalog_snapshot(vec![info("/pending.jsonl", 2), info("/other.jsonl", 1)],
+            3, 3, &deleting).unwrap();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].path, PathBuf::from("/other.jsonl"));
     }
 
     #[test]

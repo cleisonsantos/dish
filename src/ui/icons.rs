@@ -27,10 +27,14 @@ pub enum Icon {
     Copy,
     Terminal,
     Dots,
+    Settings,
     Minimize,
     Close,
     Trash,
     Pin,
+    CurrentSession,
+    OpenSession,
+    SavedSession,
 }
 
 /// Um ícone desenhado num quadrado de `size` px.
@@ -48,6 +52,70 @@ pub fn icon(icon: Icon, size: f32, color: Hsla) -> impl IntoElement {
     .flex_none()
     .w(px(size))
     .h(px(size))
+}
+
+/// Indicador circular em rotação contínua para carregamento de sessão.
+pub fn spinner(id: impl Into<ElementId>, size: f32, color: Hsla) -> impl IntoElement {
+    let id = id.into();
+    let stroke = (size * 0.105).clamp(1.2, 2.4);
+    div()
+        .flex_none()
+        .size(px(size))
+        .with_animation(
+            id,
+            Animation::new(std::time::Duration::from_millis(900)).repeat(),
+            move |element, delta| {
+                let angle = delta * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
+                element.child(
+                    canvas(
+                        move |_bounds, _window, _cx| (),
+                        move |bounds, _state, window, _cx| {
+                            let scale = f32::from(bounds.size.width) / 16.0;
+                            let mut track = PathBuilder::stroke(px(stroke));
+                            circle(&mut track, 8., 8., 5.8, false);
+                            track.scale(scale);
+                            track.translate(bounds.origin);
+                            if let Ok(path) = track.build() {
+                                window.paint_path(path, crate::theme::wash(color, 0.22));
+                            }
+                            if let Some(arc) = build_arc(stroke, scale, bounds.origin, angle, 2.1) {
+                                window.paint_path(arc, color);
+                            }
+                        },
+                    )
+                    .size(px(size)),
+                )
+            },
+        )
+}
+
+fn build_arc(
+    stroke: f32,
+    scale: f32,
+    origin: Point<Pixels>,
+    start_angle: f32,
+    sweep: f32,
+) -> Option<Path<Pixels>> {
+    let r = 5.8;
+    let cx = 8.0;
+    let cy = 8.0;
+    let end_angle = start_angle + sweep;
+    let x0 = cx + r * start_angle.cos();
+    let y0 = cy + r * start_angle.sin();
+    let x1 = cx + r * end_angle.cos();
+    let y1 = cy + r * end_angle.sin();
+    let mut b = PathBuilder::stroke(px(stroke));
+    b.move_to(point(px(x0), px(y0)));
+    b.arc_to(
+        point(px(r), px(r)),
+        px(0.),
+        sweep > std::f32::consts::PI,
+        true,
+        point(px(x1), px(y1)),
+    );
+    b.scale(scale);
+    b.translate(origin);
+    b.build().ok()
 }
 
 fn circle(b: &mut PathBuilder, cx: f32, cy: f32, r: f32, _filled: bool) {
@@ -193,10 +261,45 @@ fn build(icon: Icon, stroke: f32, scale: f32, origin: Point<Pixels>) -> Option<P
             b.move_to(to(8.8, 11.));
             b.line_to(to(11.6, 11.));
         }
+        Icon::CurrentSession => {
+            circle(&mut b, 8., 8., 5.6, false);
+            b.move_to(to(4.8, 8.));
+            b.line_to(to(7., 10.2));
+            b.line_to(to(11.2, 5.8));
+        }
+        Icon::OpenSession => {
+            rounded_rect(&mut b, 2., 3., 12., 10., 1.2);
+            b.move_to(to(2., 6.));
+            b.line_to(to(14., 6.));
+        }
+        Icon::SavedSession => {
+            b.move_to(to(3.5, 2.));
+            b.line_to(to(9., 2.));
+            b.line_to(to(12.5, 5.5));
+            b.line_to(to(12.5, 14.));
+            b.line_to(to(3.5, 14.));
+            b.close();
+            b.move_to(to(9., 2.));
+            b.line_to(to(9., 5.5));
+            b.line_to(to(12.5, 5.5));
+            b.move_to(to(6., 8.));
+            b.line_to(to(10., 8.));
+            b.move_to(to(6., 10.5));
+            b.line_to(to(10., 10.5));
+        }
         Icon::Dots => {
             circle(&mut b, 4., 8., 1.1, true);
             circle(&mut b, 8., 8., 1.1, true);
             circle(&mut b, 12., 8., 1.1, true);
+        }
+        Icon::Settings => {
+            for (y, knob) in [(4., 5.), (8., 10.), (12., 6.)] {
+                b.move_to(to(2., y));
+                b.line_to(to(knob - 1.5, y));
+                circle(&mut b, knob, y, 1.5, false);
+                b.move_to(to(knob + 1.5, y));
+                b.line_to(to(14., y));
+            }
         }
         Icon::Minimize => {
             b.move_to(to(3., 8.));
