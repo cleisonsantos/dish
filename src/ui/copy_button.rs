@@ -31,6 +31,9 @@ pub struct CopyButton {
     pub id: ElementId,
     pub text: String,
     pub label: &'static str,
+    /// Quando definido, o botão só aparece com o mouse sobre o grupo (ou com
+    /// o foco do teclado nele), para a ação não repetir ruído a cada turno.
+    pub group: Option<&'static str>,
 }
 
 fn copy(text: &str, copied: &Entity<Option<Instant>>, cx: &mut App) {
@@ -72,8 +75,15 @@ impl RenderOnce for CopyButton {
             .focusable()
             .tab_index(0)
             .hover(|s| s.bg(theme::hover()))
+            .active(|s| s.opacity(0.7))
+            .when_some(self.group, |el, group| {
+                // Concluído continua visível: o retorno da ação não some.
+                el.when(!done, |el| el.opacity(0.))
+                    .group_hover(group, |s| s.opacity(1.))
+            })
             .focus(|s| {
-                s.bg(theme::hover())
+                s.opacity(1.)
+                    .bg(theme::hover())
                     .border_1()
                     .border_color(theme::accent())
             })

@@ -1,9 +1,23 @@
 # Temas do Dish
 
-O Dish traz quatro temas embutidos — `Grafite` (escuro), `Papel frio`
-(claro), `Papel quente` (claro) e `Grafite baixo` (escuro de baixo
-contraste) — e aceita temas seus em JSON, escolhidos na seção
-**Aparência** das configurações.
+O Dish traz oito temas embutidos, agrupados em **Escuros** e **Claros** na
+seção **Aparência** das configurações. Também aceita temas seus em JSON.
+
+| Aparência | Nome | Id | Superfícies |
+| --- | --- | --- | --- |
+| Escuro | Grafite | `dish-dark` | Grafite com conversa elevada |
+| Escuro | Grafite baixo | `dish-dim` | Neutros suaves |
+| Escuro | Noite azul | `dish-midnight` | Azul profundo e aço |
+| Escuro | Ameixa | `dish-plum` | Violeta escuro |
+| Claro | Papel frio | `dish-light` | Branco frio e cinza azulado |
+| Claro | Papel quente | `dish-paper` | Porcelana e papel quente |
+| Claro | Lavanda | `dish-lavender` | Violeta claro |
+| Claro | Sálvia | `dish-sage` | Verde mineral claro |
+
+Escolher um tema aplica sua paleta imediatamente e salva a escolha para a próxima
+abertura. A lista rola para alcançar todos os temas, inclusive os personalizados.
+A tipografia, a composição e a rampa de esforço não mudam entre presets da mesma
+aparência. As cores de execução, erro e conteúdo novo continuam independentes.
 
 ## Onde os arquivos ficam
 

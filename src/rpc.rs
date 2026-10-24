@@ -45,36 +45,55 @@ impl PiConfig {
 }
 
 /// Kills the child process when the last clone of the client goes away.
-struct ChildGuard(Mutex<Option<Child>>);
+struct ChildGuard(Mutex<Option<Child>>, AtomicBool);
 
 impl Drop for ChildGuard {
     fn drop(&mut self) {
-        let mut guard = match self.0.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
+        let child = match self.0.get_mut() {
+            Ok(child) => child.take(),
+            Err(poisoned) => poisoned.into_inner().take(),
         };
-        if let Some(mut child) = guard.take() {
-            // Pi's SIGTERM handler cleans up tracked tool subprocesses. The
-            // whole process group receives it, so tools started by Pi do not
-            // survive when the client goes away. Reaping must not block
-            // navigation; force termination only after a grace period.
-            #[cfg(unix)]
-            unsafe {
-                libc::kill(-(child.id() as libc::pid_t), libc::SIGTERM);
+        if let Some(mut child) = child {
+            // Request stop before returning: on app exit the detached reaper
+            // may never get scheduled. The signal is cheap; waiting is not.
+            if !self.1.swap(true, Ordering::AcqRel) { request_child_stop(&mut child); }
+            thread::spawn(move || { let _ = reap_child(&mut child); });
+        }
+    }
+}
+
+fn request_child_stop(child: &mut Child) {
+    // Give Pi's SIGTERM handler time to clean up tracked tools.
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(-(child.id() as libc::pid_t), libc::SIGTERM);
+    }
+    #[cfg(not(unix))]
+    let _ = child.kill();
+}
+
+/// Blocking exit barrier. Only call on a worker, never the UI thread.
+fn reap_child(child: &mut Child) -> std::io::Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                // Also stop descendants that outlived Pi's handler.
+                crate::process::terminate_tree(child);
+                return Ok(());
             }
-            #[cfg(not(unix))]
-            let _ = child.kill();
-            thread::spawn(move || {
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-                loop {
-                    if child.try_wait().ok().flatten().is_some() { break; }
-                    if std::time::Instant::now() >= deadline {
-                        crate::process::terminate_tree(&mut child);
-                        break;
-                    }
-                    thread::sleep(std::time::Duration::from_millis(20));
-                }
-            });
+            Err(error) => {
+                crate::process::terminate_tree(child);
+                return Err(error);
+            }
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                crate::process::terminate_tree(child);
+                return match child.try_wait()? {
+                    Some(_) => Ok(()),
+                    None => Err(std::io::Error::other("Pi não encerrou; arquivo preservado")),
+                };
+            }
+            Ok(None) => thread::sleep(std::time::Duration::from_millis(20)),
         }
     }
 }
@@ -324,19 +343,58 @@ impl PiClient {
             failures: failure_rx,
             next_id: Arc::new(AtomicU64::new(1)),
             failed,
-            _guard: Arc::new(ChildGuard(Mutex::new(Some(child)))),
+            _guard: Arc::new(ChildGuard(Mutex::new(Some(child)), AtomicBool::new(false))),
         })
     }
 
-    /// Send an arbitrary command, assigning it a fresh correlating id.
+    /// Nonblocking stop request, including when an async close is still queued.
+    /// Make this request before relinquishing a view: app exit must not depend
+    /// on the background executor getting another turn. Signals are sent once.
+    pub fn request_shutdown(&self) {
+        self.failed.store(true, Ordering::Release);
+        let mut guard = match self._guard.0.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+            // Another stop requester or exit waiter owns the mutex. Workers
+            // serialize behind it; a UI stop request must never wait here.
+            Err(std::sync::TryLockError::WouldBlock) => return,
+        };
+        if !self._guard.1.swap(true, Ordering::AcqRel) {
+            if let Some(child) = guard.as_mut() { request_child_stop(child); }
+        }
+    }
+
+    /// Stop and reap this exact Pi before moving its session file. Retain a
+    /// client clone before removing its view, then call this off the UI thread.
+    /// No extra stdin writer is created; queued writes end with the process.
+    pub fn shutdown_and_wait(&self) -> std::io::Result<()> {
+        self.request_shutdown();
+        // Hold the guard through the wait (on the worker). Concurrent callers
+        // must observe completed exit, never an empty slot taken by a waiter.
+        let mut guard = self._guard.0.lock()
+            .map_err(|_| std::io::Error::other("É impossível confirmar o encerramento do Pi"))?;
+        if let Some(child) = guard.as_mut() {
+            reap_child(child)?;
+            guard.take();
+        }
+        Ok(())
+    }
+
+    /// Send a command with a fresh correlating id, except extension UI replies:
+    /// those must retain the request id Pi uses to resolve its pending dialog.
     ///
-    /// `Err` means the command was not accepted into the writer queue.  A
+    /// `Err` means the command was not accepted into the writer queue. A
     /// failure that happens after acceptance is delivered through `failures`.
     pub fn send(&self, mut command: Value) -> SendResult<String> {
         if self.failed.load(Ordering::Acquire) {
             return Err(RpcSendError::Closed);
         }
-        let id = format!("d{}", self.next_id.fetch_add(1, Ordering::Relaxed));
+        let reply_id = (command.get("type").and_then(Value::as_str) == Some("extension_ui_response"))
+            .then(|| command.get("id").and_then(Value::as_str).map(str::to_owned))
+            .flatten();
+        let id = reply_id.unwrap_or_else(|| {
+            format!("d{}", self.next_id.fetch_add(1, Ordering::Relaxed))
+        });
         if let Value::Object(map) = &mut command {
             map.insert("id".into(), Value::String(id.clone()));
         }
@@ -614,6 +672,62 @@ mod tests {
     }
 }
 
+#[cfg(all(test, unix))]
+mod shutdown_tests {
+    use super::*;
+
+    #[test]
+    fn explicit_shutdown_waits_for_file_writer_and_fences_retained_clones() {
+        let root = std::env::temp_dir().join(format!("dish-shutdown-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("session.jsonl");
+        let done = root.join("done");
+        let ready = root.join("ready");
+        std::fs::write(&source, "original\n").unwrap();
+        let script = "trap 'sleep 0.15; printf stopped >> \"$1\"; printf done > \"$2\"; exit 0' TERM; printf ready > \"$3\"; while :; do sleep 1; done";
+        let config = PiConfig { program: "sh".into(), cwd: root.clone(), args: vec![
+            "-c".into(), script.into(), "dish-test".into(), source.to_string_lossy().into_owned(),
+            done.to_string_lossy().into_owned(), ready.to_string_lossy().into_owned(),
+        ] };
+        let client = PiClient::spawn(&config).unwrap();
+        let retained = client.clone();
+        let pid = client._guard.0.lock().unwrap().as_ref().unwrap().id();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !ready.exists() {
+            assert!(std::time::Instant::now() < deadline, "synthetic writer did not initialize");
+            thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let waiters: Vec<_> = (0..2).map(|_| {
+            let client = client.clone();
+            let barrier = barrier.clone();
+            let done = done.clone();
+            thread::spawn(move || {
+                barrier.wait();
+                client.shutdown_and_wait().unwrap();
+                assert!(done.exists(), "shutdown returned before final session write");
+            })
+        }).collect();
+        barrier.wait();
+        for waiter in waiters { waiter.join().unwrap(); }
+        assert!(done.exists(), "shutdown returned before final session write");
+        assert_eq!(std::fs::read_to_string(&source).unwrap(), "original\nstopped");
+        // A view/client clone retained by GPUI cannot postpone or undo shutdown.
+        assert!(retained.send(json!({"type": "get_state"})).is_err());
+        assert!(retained.shutdown_and_wait().is_ok());
+        // SAFETY: signal 0 only checks existence of our already-reaped fixture.
+        assert_eq!(unsafe { libc::kill(pid as libc::pid_t, 0) }, -1);
+        assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
+        let trash = root.join("trashed.jsonl");
+        std::fs::rename(&source, &trash).unwrap();
+        assert_eq!(std::fs::read_to_string(&trash).unwrap(), "original\nstopped");
+        drop(client);
+        drop(retained);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
 #[cfg(test)]
 mod privacy_tests {
     use super::*;
@@ -642,6 +756,28 @@ mod privacy_tests {
         assert!(!summary.contains(SECRET));
         assert!(!summary.contains("token"));
         assert!(summary.contains("bytes="));
+    }
+
+    #[test]
+    fn extension_ui_reply_preserves_request_id_and_command_ids_remain_fresh() {
+        let (tx, queued) = async_channel::bounded(2);
+        let (_, records) = async_channel::bounded(1);
+        let (_, logs) = async_channel::bounded(1);
+        let (_, failures) = async_channel::bounded(1);
+        let client = PiClient {
+            tx, records, logs, failures,
+            next_id: Arc::new(AtomicU64::new(1)),
+            failed: Arc::new(AtomicBool::new(false)),
+            _guard: Arc::new(ChildGuard(Mutex::new(None), AtomicBool::new(false))),
+        };
+        let reply = json!({"type": "extension_ui_response", "id": "pi-dialog-42", "value": "last option"});
+        assert_eq!(client.send(reply.clone()).unwrap(), "pi-dialog-42");
+        let written: Value = serde_json::from_str(&queued.try_recv().unwrap()).unwrap();
+        assert_eq!(written, reply);
+        // Normal commands still get Dish ids, even when a caller supplies one.
+        assert_eq!(client.send(json!({"type": "get_state", "id": "caller-id"})).unwrap(), "d1");
+        let written: Value = serde_json::from_str(&queued.try_recv().unwrap()).unwrap();
+        assert_eq!(written["id"], "d1");
     }
 
     #[test]

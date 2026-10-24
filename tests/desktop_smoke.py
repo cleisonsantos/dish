@@ -22,6 +22,26 @@ x11.XStringToKeysym.restype = ctypes.c_ulong
 x11.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
 x11.XKeysymToKeycode.restype = ctypes.c_uint
 x11.XFlush.argtypes = [ctypes.c_void_p]
+
+
+class XWindowAttributes(ctypes.Structure):
+    _fields_ = [
+        ("x", ctypes.c_int), ("y", ctypes.c_int),
+        ("width", ctypes.c_int), ("height", ctypes.c_int),
+        ("border_width", ctypes.c_int), ("depth", ctypes.c_int),
+        ("visual", ctypes.c_void_p), ("root", ctypes.c_ulong),
+        ("window_class", ctypes.c_int), ("bit_gravity", ctypes.c_int),
+        ("win_gravity", ctypes.c_int), ("backing_store", ctypes.c_int),
+        ("backing_planes", ctypes.c_ulong), ("backing_pixel", ctypes.c_ulong),
+        ("save_under", ctypes.c_int), ("colormap", ctypes.c_ulong),
+        ("map_installed", ctypes.c_int), ("map_state", ctypes.c_int),
+        ("all_event_masks", ctypes.c_long), ("your_event_mask", ctypes.c_long),
+        ("do_not_propagate_mask", ctypes.c_long), ("override_redirect", ctypes.c_int),
+        ("screen", ctypes.c_void_p),
+    ]
+
+
+x11.XGetWindowAttributes.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(XWindowAttributes)]
 x11.XQueryTree.argtypes = [ctypes.c_void_p, ctypes.c_ulong,
                           ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_ulong),
                           ctypes.POINTER(ctypes.POINTER(ctypes.c_ulong)), ctypes.POINTER(ctypes.c_uint)]
@@ -75,6 +95,16 @@ def wait_for(predicate, description, timeout=10):
     raise AssertionError(description)
 
 
+def prepare_window(window):
+    """RPC and WM_NAME can arrive before mapping; avoid early BadMatch/expose."""
+    def viewable():
+        attributes = XWindowAttributes()
+        return x11.XGetWindowAttributes(display, window, ctypes.byref(attributes)) and attributes.map_state == 2
+    wait_for(viewable, "Window did not become viewable")
+    x11.XSetInputFocus(display, window, 1, 0)
+    expose_window(window)
+
+
 def expose_window(window):
     # Xvfb has no window manager; request the expose a real desktop sends when
     # a newly mapped window becomes visible. Do not clear during pixel checks.
@@ -100,10 +130,21 @@ def type_text(text):
     time.sleep(0.1)
 
 
-# O ponto de accent visível: o marcador de esforço no compositor.
-ACCENT_PROBE = "220x80+300+740"
-# Botão de nova sessão no cabeçalho da navegação.
-NEW_SESSION = (209, 25)
+def visible_accent_pixels(window):
+    # Effort is text now, not a solid dot. Include the composer regardless of
+    # navigation/details width; never require a decorative marker for this test.
+    attributes = XWindowAttributes()
+    assert x11.XGetWindowAttributes(display, window, ctypes.byref(attributes))
+    height = max(1, attributes.height // 4)
+    crop = f"{attributes.width}x{height}+0+{attributes.height - height}"
+    return subprocess.check_output(
+        ["import", "-window", str(window), "-crop", crop, "-depth", "8", "rgb:-"])
+
+
+def contains_rendered_color(pixels, expected, tolerance=8):
+    # Font rasterization can blend even the most opaque stroke with its surface.
+    return any(all(abs(channel - target) <= tolerance for channel, target in zip(pixel, expected))
+               for pixel in zip(pixels[0::3], pixels[1::3], pixels[2::3]))
 
 
 def click(window, x, y):
@@ -158,6 +199,18 @@ def drag(window, start, end):
     time.sleep(0.2)
 
 
+def wheel_at(window, x, y, button, count):
+    """Scroll without activating whatever happens to be under the pointer."""
+    root_x, root_y, child = ctypes.c_int(), ctypes.c_int(), ctypes.c_ulong()
+    x11.XTranslateCoordinates(display, window, root_window, x, y,
+                              ctypes.byref(root_x), ctypes.byref(root_y), ctypes.byref(child))
+    xtst.XTestFakeMotionEvent(display, -1, root_x.value, root_y.value, 0)
+    for _ in range(count):
+        xtst.XTestFakeButtonEvent(display, button, True, 0)
+        xtst.XTestFakeButtonEvent(display, button, False, 0)
+    x11.XFlush(display)
+
+
 def scroll_up(window):
     click(window, 700, 300)
     for _ in range(8):
@@ -203,15 +256,15 @@ def park_mouse(window):
     x11.XFlush(display)
 
 
-def transcript_pixels(window):
+def transcript_pixels(window, crop="600x400+280+100"):
     return subprocess.check_output(
-        ["import", "-window", str(window), "-crop", "600x400+280+100", "-depth", "8", "rgb:-"])
+        ["import", "-window", str(window), "-crop", crop, "-depth", "8", "rgb:-"])
 
 
-def stable_transcript_pixels(window):
-    previous = [transcript_pixels(window)]
+def stable_transcript_pixels(window, crop="600x400+280+100"):
+    previous = [transcript_pixels(window, crop)]
     def stable():
-        current = transcript_pixels(window)
+        current = transcript_pixels(window, crop)
         same = current == previous[0]
         previous[0] = current
         return same
@@ -386,12 +439,15 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         for attempt in range(3):
             header = find_word(window, "Buscar")
             click(window, header[0] + header[2] // 2, header[1] + header[3] // 2)
-            before_search_wheel = stable_transcript_pixels(window)
+            # Compare only background, not search results/hover inside the panel.
+            # The old 600px crop crossed the overlay after layout changes.
+            background_crop = f"{max(64, header[0] - 332)}x260+300+130"
+            before_search_wheel = stable_transcript_pixels(window, background_crop)
             for _ in range(6):
                 xtst.XTestFakeButtonEvent(display, 4, True, 0)
                 xtst.XTestFakeButtonEvent(display, 4, False, 0)
             x11.XFlush(display)
-            if stable_transcript_pixels(window) == before_search_wheel:
+            if stable_transcript_pixels(window, background_crop) == before_search_wheel:
                 break
         else:
             raise AssertionError("Search wheel leaked to the underlying transcript")
@@ -439,9 +495,8 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
                  "Background extension dialog did not arrive")
         time.sleep(0.2)
         # Alpha has just changed to max; beta's visible accent must remain low.
-        accent_pixels = subprocess.check_output(
-            ["import", "-window", str(window), "-crop", ACCENT_PROBE, "-depth", "8", "rgb:-"])
-        assert bytes((84, 137, 164)) in accent_pixels, "Background effort changed the visible accent"
+        accent_pixels = visible_accent_pixels(window)
+        assert contains_rendered_color(accent_pixels, (84, 137, 164)), "Background effort changed the visible accent"
         type_text("still-beta")
         press("Return")
         wait_for(lambda: len(commands("prompt")) == 6, "Hidden dialog stole keyboard focus")
@@ -468,7 +523,10 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         wait_for(lambda: len(commands("get_messages")) == 4, "/new did not create an independent session")
         assert not commands("new_session"), "A new session replaced an existing process"
         # New-session button follows the same workspace path.
-        click(window, *NEW_SESSION)
+        # Locate the named action: navigation width and header layout may change.
+        wait_for(lambda: find_word(window, "sess"), "New session action missing")
+        new_session = find_word(window, "sess")
+        click(window, new_session[0] + new_session[2] // 2, new_session[1] + new_session[3] // 2)
         wait_for(lambda: len(commands("get_messages")) == 5, "Details button did not create an independent session")
         # Start an active task, then exercise the OS window-close path.
         type_text("long-window-close")
@@ -708,6 +766,7 @@ with tempfile.TemporaryDirectory(prefix="dish-metadata-") as directory:
             # With details closed, the full marker must still be readable in
             # the hoverable tooltip, not only the truncated summary.
             bash = find_word(window, "bash")
+            assert bash, "Historical tool header is no longer visible after copying"
             click(window, bash[0] + bash[2] // 2, bash[1] + bash[3] // 2)
             wait_for(lambda: find_word(window, "COMANDO_COMPLETO"), "Full command tooltip missing", timeout=4)
             park_mouse(window)

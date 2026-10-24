@@ -25,7 +25,7 @@ pub fn toasts(state: &AppState, _cx: &Context<AppState>) -> Vec<AnyElement> {
         .gap(px(6.))
         .children(state.toasts.iter().map(|toast| {
             let color = tone_color(toast.tone);
-            div()
+            let element = div()
                 .id(SharedString::from(format!("toast-{}", toast.id)))
                 .max_w(px(420.))
                 .flex()
@@ -61,7 +61,9 @@ pub fn toasts(state: &AppState, _cx: &Context<AppState>) -> Vec<AnyElement> {
                                 .min_w(px(0.))
                                 .child(SharedString::from(toast.text.clone())),
                         ),
-                )
+                );
+            super::motion::reveal(element,
+                ElementId::NamedInteger("toast-enter".into(), toast.id))
                 .into_any_element()
         }));
     vec![stack.into_any_element()]
@@ -158,7 +160,8 @@ pub fn model_picker(state: &AppState, window: &Window, cx: &Context<AppState>) -
         .id("model-picker")
         // Clicar dentro não fecha; o clique fora chega ao root.
         .on_mouse_down(MouseButton::Left, |_event, _window, cx| cx.stop_propagation())
-        .mx(px(theme::S5))
+        .mx(px(theme::CHAT_INSET))
+        .max_w(px(theme::COMPOSER_PICKER_WIDTH))
         .flex()
         .flex_col()
         .rounded(theme::r_surface())
@@ -292,15 +295,23 @@ pub fn modal(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) 
         return Vec::new();
     };
 
-    if state.visible && modal.wants_input {
-        let focus = state.modal_editor.read(cx).focus_handle.clone();
+    let selecting = modal.kind == ModalKind::Select;
+    let dialog_focus = state.modal_editor.read(cx).focus_handle.clone();
+    if state.visible && (modal.wants_input || selecting) {
+        let focus = dialog_focus.clone();
         if !focus.is_focused(window) {
             focus.focus(window, cx);
         }
     }
 
+    let viewport_height = f32::from(window.bounds().size.height);
+    // Leave the scrim visible and never let a long option list exceed the
+    // supported minimum window height; it scrolls instead.
+    let card_max_height = (viewport_height - 48.).max(240.);
+    let options_max_height = (card_max_height - 150.).max(120.);
+
     let body = match modal.kind {
-        ModalKind::Select => select_body(state, cx),
+        ModalKind::Select => select_body(state, options_max_height, cx),
         ModalKind::Confirm => confirm_body(cx),
         ModalKind::Input | ModalKind::Editor => input_body(state, modal.kind, cx),
     };
@@ -309,6 +320,12 @@ pub fn modal(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) 
     let card = div()
         .id("modal-card")
         .w(px(if wide { 640. } else { 460. }))
+        .max_w(relative(1.))
+        .max_h(relative(1.))
+        .min_w(px(0.))
+        .min_h(px(0.))
+        .overflow_hidden()
+        .when(selecting, |el| el.key_context("DishModal").track_focus(&dialog_focus))
         .flex()
         .flex_col()
         .gap(px(14.))
@@ -321,11 +338,16 @@ pub fn modal(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) 
         .py(px(18.))
         .child(
             div()
+                .id("modal-heading")
+                .flex_none()
+                .max_h(px((card_max_height * 0.35).min(140.)))
+                .overflow_y_scroll()
                 .flex()
                 .flex_col()
                 .gap(px(6.))
                 .child(
                     div()
+                        .flex_none()
                         .text_size(px(15.))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme::text())
@@ -337,6 +359,7 @@ pub fn modal(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) 
                             .text_size(px(theme::TEXT_SM))
                             .line_height(px(19.))
                             .text_color(theme::faint())
+                            .flex_none()
                             .child(SharedString::from(message)),
                     )
                 }),
@@ -345,19 +368,23 @@ pub fn modal(state: &AppState, window: &mut Window, cx: &mut Context<AppState>) 
 
     let scrim = div()
         .id("modal-scrim")
+        .occlude()
+        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
         .absolute()
         .inset(px(0.))
+        .p(px(theme::S5))
         .flex()
         .items_center()
         .justify_center()
-        .bg(theme::wash(theme::bg(), 0.78))
+        .rounded(theme::r_surface_inner())
+        .bg(theme::scrim()).backdrop_blur(px(theme::SCRIM_BLUR))
         .on_mouse_down(MouseButton::Left, |_event, _window, _cx| {})
         .child(card);
 
     vec![scrim.into_any_element()]
 }
 
-fn select_body(state: &AppState, cx: &Context<AppState>) -> AnyElement {
+fn select_body(state: &AppState, max_height: f32, cx: &Context<AppState>) -> AnyElement {
     let weak = cx.entity().downgrade();
     let options = state
         .modal
@@ -366,6 +393,11 @@ fn select_body(state: &AppState, cx: &Context<AppState>) -> AnyElement {
         .unwrap_or_default();
 
     div()
+        .id("modal-options")
+        .min_h(px(0.))
+        .max_h(px(max_height))
+        .overflow_y_scroll()
+        .track_scroll(&state.modal_scroll)
         .flex()
         .flex_col()
         .gap(px(4.))
@@ -374,6 +406,7 @@ fn select_body(state: &AppState, cx: &Context<AppState>) -> AnyElement {
             let value = option.clone();
             div()
                 .id(SharedString::from(format!("option-{index}")))
+                .flex_none()
                 .px(px(11.))
                 .py(px(8.))
                 .rounded(theme::r_small())
