@@ -245,48 +245,98 @@ def scroll_up(window):
     time.sleep(0.3)
 
 
-def click_nav_label(window, label, close=False):
+def click_nav_label(window, label, close=False, keyboard_fallback=True):
     # Busy indicators change row heights; saved sessions have no fixed y.
+    def match_text(text):
+        return "".join(char for char in text.lower() if char.isalnum())
+
     def find_row():
+        # The narrow, tall rail makes tesseract's PSM 6 put every row in the
+        # same logical line. Cluster words by their visual center instead of
+        # trusting block/paragraph/line numbers from the TSV.
         with tempfile.NamedTemporaryFile(suffix=".png") as image:
             subprocess.run(["import", "-window", str(window), "-crop", "264x10000+0+0", "-resize", "200%", image.name], check=True)
-            rows = subprocess.check_output(
-                ["tesseract", image.name, "stdout", "--psm", "6", "tsv"],
-                stderr=subprocess.DEVNULL).decode().splitlines()[1:]
-        lines = {}
-        for row in rows:
-            fields = row.split("\t")
-            if len(fields) == 12 and fields[11].strip() and int(fields[6]) < 528:
-                lines.setdefault(tuple(fields[1:5]), []).append(fields)
-        for words in lines.values():
-            def match_text(text):
-                return "".join(char for char in text.lower() if char.isalnum())
-            if match_text(label) in match_text(" ".join(word[11] for word in words)):
-                first = words[0]
-                return (int(first[7]) + int(first[9]) // 2) // 2
+            for psm in ("6", "11"):
+                rows = subprocess.check_output(
+                    ["tesseract", image.name, "stdout", "--psm", psm, "tsv"],
+                    stderr=subprocess.DEVNULL).decode().splitlines()[1:]
+                words = []
+                for row in rows:
+                    fields = row.split("\t")
+                    if len(fields) != 12 or not fields[11].strip():
+                        continue
+                    if int(fields[6]) >= 528 or int(fields[9]) > 70:
+                        continue  # outside the rail or a tall scrollbar glyph
+                    words.append(fields)
+                visual = []
+                for fields in sorted(words, key=lambda f: (int(f[7]) + int(f[9]) // 2, int(f[6]))):
+                    center = int(fields[7]) + int(fields[9]) // 2
+                    for line in visual:
+                        if abs(center - line["center"]) <= 16:
+                            line["words"].append(fields)
+                            line["center"] = (line["center"] + center) // 2
+                            break
+                    else:
+                        visual.append({"center": center, "words": [fields]})
+                for line in visual:
+                    line_words = sorted(line["words"], key=lambda f: int(f[6]))
+                    text = " ".join(word[11] for word in line_words)
+                    if match_text(label) in match_text(text):
+                        return line["center"] // 2
         return None
 
-    y = find_row()
+    y = None
+    # A session row can appear a frame after its title; retry the same OCR
+    # pass before deciding the row is absent.
+    for _ in range(4):
+        y = find_row()
+        if y is not None:
+            break
+        time.sleep(0.25)
     if y is None:
         # Running rows grow activity lines; in a full list the requested
-        # session can sit below the viewport. Scroll the rail and locate by
-        # text again instead of assuming the row was never rendered.
-        for button in (5, 4):
-            for _ in range(8):
-                wheel_at(window, 90, 420, button, 4)
-                time.sleep(0.2)
-                y = find_row()
-                if y is not None:
-                    break
+        # session can sit below the viewport. Start at the top and scan down,
+        # so a row above the current scroll position is not skipped.
+        for _ in range(12):
+            wheel_at(window, 90, 420, 4, 4)
+            time.sleep(0.15)
+        y = find_row()
+        for _ in range(20):
             if y is not None:
                 break
+            wheel_at(window, 90, 420, 5, 4)
+            time.sleep(0.15)
+            y = find_row()
+    if y is None and not close and keyboard_fallback:
+        print(f"Navigation OCR missed {label!r}; using keyboard fallback", flush=True)
+        # Last resort: use the navigation search that the user has. This is
+        # still a real selection; the caller's following state assertions
+        # (active session, prompt, dialog response) decide whether it worked.
+        chord("Control_L", "k")
+        chord("Control_L", "a")
+        press("BackSpace")
+        type_text(label)
+        time.sleep(0.3)
+        press("Down")
+        press("Return")
+        # Selecting through search keeps the query in the field; clear it the
+        # same way the keyboard session helper does.
+        chord("Control_L", "k")
+        chord("Control_L", "a")
+        press("BackSpace")
+        wait_for(lambda: find_word(window, "Filtrar") is not None,
+                 f"Keyboard fallback did not clear search for {label}")
+        # Search owns the keyboard until the user returns to the conversation;
+        # the normal row click does this through Workspace::select.
+        chord("Control_L", "l")
+        return
     if y is None:
         raise AssertionError(f"Navigation label not found: {label}")
     click(window, 230 if close else 90, y)
 
 
-def click_beta_session(window, close=False):
-    click_nav_label(window, "beta saved", close)
+def click_beta_session(window, close=False, keyboard_fallback=True):
+    click_nav_label(window, "beta saved", close, keyboard_fallback)
 
 
 def park_mouse(window):
@@ -396,13 +446,14 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
 
     def activate_beta():
         try:
-            click_beta_session(window)
+            # While alpha's hidden dialog is open, typing in the nav search
+            # would reach the modal editor. Disable that fallback here and use
+            # conversation order instead: the only open sessions are alpha
+            # and beta, so Ctrl+Tab moves to beta without typing anywhere.
+            click_beta_session(window, keyboard_fallback=False)
         except AssertionError:
-            # A click that lands on beta's project header folds the group and
-            # hides the saved row. Click the header again to reopen it; the
-            # next wait iteration retries the row itself.
-            click_nav_label(window, "beta")
-            return False
+            chord("Control_L", "Tab")
+            return active_project() == str(projects[1])
         return active_project() == str(projects[1])
 
     try:
@@ -574,10 +625,15 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         wait_for(lambda: len(commands("prompt")) == 6, "Hidden dialog stole keyboard focus", timeout=30)
         assert commands("prompt")[-1]["pid"] == prompts[1]["pid"]
         click_nav_label(window, "dialog")
+        # The click (or its keyboard fallback) must really have selected the
+        # alpha conversation before the answer is typed.
+        wait_for(lambda: active_project() == str(projects[0]),
+                 "Dialog session did not become active")
         type_text("answer")
         press("Return")
         wait_for(lambda: commands("extension_ui_response"), "Pending dialog could not be answered")
-        assert commands("extension_ui_response")[-1]["command"]["value"] == "answer"
+        response = commands("extension_ui_response")[-1]["command"]
+        assert response["value"] == "answer", response
         click_beta_session(window)
         type_text("long-close")
         press("Return")
