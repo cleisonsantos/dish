@@ -258,6 +258,13 @@ impl Settings {
             }
             ProvidersView::Unavailable(reason) => {
                 page = page.child(note(&reason));
+                // O caminho de saída quando o pacote não foi encontrado: a
+                // pessoa aponta o executável sem precisar editar variável.
+                actions = actions.child(control(
+                    "providers-choose-pi",
+                    "Escolher executável do Pi",
+                    cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::ChoosePi)),
+                ));
                 // Sem Node ou sem pacote, o terminal ainda resolve: o Dish
                 // abre o Pi e a pessoa usa /login lá.
                 actions = actions.child(control("providers-terminal", "Abrir o Pi num terminal", cx.listener(

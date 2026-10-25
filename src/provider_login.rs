@@ -14,7 +14,7 @@ use anyhow::{anyhow, Result};
 use async_channel::Receiver;
 use serde_json::Value;
 use std::io::{BufReader, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Stdio};
 
 /// Qual método de autenticação o usuário escolheu.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -192,8 +192,8 @@ fn failure_text(value: &Value) -> String {
         "busy" => "Já existe um login em andamento.".into(),
         "unsupported_type" => "Este provedor não oferece esse tipo de login.".into(),
         "unknown_provider" => "O Pi não conhece esse provedor.".into(),
-        "package_not_found" => "Não encontrei a instalação do Pi.".into(),
-        "package_invalid" => "O caminho configurado para o Pi não contém o pacote.".into(),
+        "package_not_found" => "Não encontrei a instalação do Pi. Informe o executável do Pi em Configurações.".into(),
+        "package_invalid" => "O caminho configurado para o Pi não contém o pacote. Informe o executável do Pi em Configurações.".into(),
         "login_failed" => "O provedor recusou a credencial.".into(),
         "logout_failed" => "O Pi não conseguiu remover a credencial.".into(),
         "unknown_prompt" => "A resposta não corresponde a nenhuma pergunta.".into(),
@@ -229,9 +229,9 @@ impl LoginSession {
         let node = crate::providers::find_node()
             .ok_or_else(|| anyhow!("Node não está no PATH, então o Dish não consegue falar com o Pi."))?;
         let adapter = crate::providers::materialize_adapter()?;
-        let mut command = Command::new(node);
+        let mut command =
+            crate::providers::adapter_command(&node, &adapter, &crate::installation::pi_location());
         command
-            .arg(&adapter)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
@@ -324,8 +324,8 @@ pub fn logout(provider: &str) -> Result<()> {
     let node = crate::providers::find_node()
         .ok_or_else(|| anyhow!("Node não está no PATH, então o Dish não consegue falar com o Pi."))?;
     let adapter = crate::providers::materialize_adapter()?;
-    let mut command = Command::new(node);
-    command.arg(&adapter);
+    let command =
+        crate::providers::adapter_command(&node, &adapter, &crate::installation::pi_location());
     let body = format!("{}\n", serde_json::json!({ "id": 1, "op": "logout", "provider": provider }));
     let output = crate::providers::run_with_stdin(command, &body, std::time::Duration::from_secs(20))?;
     match parse_message(&output) {

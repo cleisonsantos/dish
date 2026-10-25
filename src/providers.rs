@@ -10,7 +10,7 @@
 
 use anyhow::{anyhow, Result};
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
@@ -143,8 +143,8 @@ pub fn probe() -> Probed {
         Ok(path) => path,
         Err(error) => return Probed::Unavailable(format!("{error:#}")),
     };
-    let mut command = Command::new(node);
-    command.arg(&adapter).arg("--status");
+    let mut command = adapter_command(&node, &adapter, &crate::installation::pi_location());
+    command.arg("--status");
     let output = match run_bounded(command, PROBE_TIMEOUT) {
         Ok(output) => output,
         Err(error) => return Probed::Unavailable(format!("{error:#}")),
@@ -220,8 +220,8 @@ fn method(auth: &Value, key: &str) -> Option<AuthMethod> {
 /// porque pode carregar caminho da máquina sem ajudar quem está lendo a tela.
 fn adapter_error(root: &Value) -> String {
     match root.get("error").and_then(Value::as_str).unwrap_or_default() {
-        "package_not_found" => "Não encontrei a instalação do Pi para ler o catálogo.".into(),
-        "package_invalid" => "O caminho configurado para o Pi não contém o pacote.".into(),
+        "package_not_found" => "Não encontrei a instalação do Pi para ler o catálogo. Informe o executável do Pi em Configurações.".into(),
+        "package_invalid" => "O caminho configurado para o Pi não contém o pacote. Informe o executável do Pi em Configurações.".into(),
         "probe_failed" => "O Pi não respondeu ao pedido de estado dos provedores.".into(),
         "bad_json" => "O adaptador recebeu uma entrada inválida.".into(),
         "" => "O adaptador falhou sem informar o motivo.".into(),
@@ -262,6 +262,26 @@ fn cache_dir() -> Option<PathBuf> {
                     .map(|home| PathBuf::from(home).join(".cache"))
             })
         })
+}
+
+/// Monta o comando do adaptador já com a localização do Pi.
+///
+/// Status, login e logout usam esta mesma montagem: uma chamada não pode
+/// esquecer `--pi-bin`/`--package` enquanto as outras informam.
+pub(crate) fn adapter_command(
+    node: &Path,
+    adapter: &Path,
+    location: &crate::installation::PiLocation,
+) -> Command {
+    let mut command = Command::new(node);
+    command.arg(adapter);
+    if let Some(program) = &location.program {
+        command.arg("--pi-bin").arg(program);
+    }
+    if let Some(package) = &location.package {
+        command.arg("--package").arg(package);
+    }
+    command
 }
 
 /// Node no `PATH`, com o sufixo do Windows.
@@ -343,7 +363,10 @@ mod tests {
             "detail":"/home/alguem/.pi/afetado não contém o pacote"}"#;
         let error = parse(payload).expect_err("erro do adaptador");
         let message = format!("{error:#}");
-        assert_eq!(message, "O caminho configurado para o Pi não contém o pacote.");
+        assert_eq!(
+            message,
+            "O caminho configurado para o Pi não contém o pacote. Informe o executável do Pi em Configurações."
+        );
         assert!(!message.contains("/home/alguem"), "{message}");
     }
 
@@ -408,7 +431,36 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         assert_eq!(
             format!("{:#}", parse(&output).expect_err("erro")),
-            "Não encontrei a instalação do Pi para ler o catálogo."
+            "Não encontrei a instalação do Pi para ler o catálogo. Informe o executável do Pi em Configurações."
+        );
+    }
+
+    #[test]
+    fn adapter_command_carries_the_pi_location() {
+        let package = PathBuf::from("/opt/pi/lib/node_modules/@earendil-works/pi-coding-agent");
+        let location = crate::installation::PiLocation {
+            program: Some(PathBuf::from("/opt/pi/bin/pi")),
+            package: Some(package.clone()),
+        };
+        let command = adapter_command(
+            Path::new("/usr/bin/node"),
+            Path::new("/tmp/pi-auth-adapter.mjs"),
+            &location,
+        );
+        let arguments: Vec<String> = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect();
+        // O login e o logout reutilizam esta montagem.
+        assert_eq!(
+            arguments,
+            vec![
+                "/tmp/pi-auth-adapter.mjs".to_string(),
+                "--pi-bin".to_string(),
+                "/opt/pi/bin/pi".to_string(),
+                "--package".to_string(),
+                package.to_string_lossy().into_owned(),
+            ]
         );
     }
 

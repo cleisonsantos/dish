@@ -117,10 +117,12 @@ O desfecho de um login informa **provedor e tipo** — nunca a credencial, que o
 Pi já gravou. Um login por vez: uma segunda tentativa responde `busy`.
 
 Localização do pacote do Pi, em ordem: `--package`, `DISH_PI_PACKAGE`, o prefixo
-privado do Dish (`$XDG_DATA_HOME/dish/pi`), as releases do instalador oficial
-(`~/.pi/agent/install/releases/*/node_modules/…`) e, por último, subir a partir
-do executável do Pi. Um caminho explícito é **autoridade**: se não contém o
-pacote, o adaptador falha em vez de usar outra instalação em silêncio.
+privado do Dish (`$XDG_DATA_HOME/dish/pi` ou `%LOCALAPPDATA%\dish\pi`), as
+releases do instalador oficial (`~/.pi/agent/install/releases/*/node_modules/…`),
+o npm global (`%APPDATA%\npm\node_modules`, `npm root -g`) e, por último, subir
+a partir do executável do Pi (`--pi-bin`/`DISH_PI_BIN`), seguindo links
+simbólicos. Um caminho explícito é **autoridade**: se não contém o pacote, o
+adaptador falha em vez de usar outra instalação em silêncio.
 
 ## Contrato de segurança
 
