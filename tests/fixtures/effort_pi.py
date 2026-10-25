@@ -14,7 +14,7 @@ switching = False
 ladders = {
     "alpha": ["off", "low", "high"],
     "beta": ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
-    "gamma": [],
+    "gamma": ["off"],
 }
 root = Path(os.environ["DISH_EFFORT_TEST_DIR"])
 

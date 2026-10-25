@@ -27,7 +27,8 @@ que poderiam mudar novamente o modelo no Pi após a última seleção.
 ## Interface e falhas
 
 - Durante a transação: `atualizando esforço…`, sem expor a escada anterior.
-- Lista vazia confirmada: `sem raciocínio`; não inventar opções fixas.
+- Lista vazia ou somente `off` confirmada: `sem raciocínio`. O Pi representa
+  modelo sem suporte a reasoning como `["off"]`; não inventar opções fixas.
 - Erro na troca: aviso em português e releitura automática do modelo efetivo no
   Pi. Isso cobre uma troca intermediária que funcionou antes de a última falhar.
 - Erro na consulta ou lista malformada: `esforço indisponível` e aviso em português.
@@ -50,8 +51,9 @@ presumidas de modelos reais:
 - Testes puros de `ModelSync`: ordem das consultas, correlação de IDs, respostas
   obsoletas, escolhas rápidas, falha e recuperação.
 - `tests/model_effort_smoke.py` + `tests/fixtures/effort_pi.py`: Pi assíncrono com
-  confirmação bloqueada por barreira, listas diferentes, lista vazia, duplicação
-  atrasada de capacidades e falhas. Exercita seletor e as duas formas de `/model`.
+  confirmação bloqueada por barreira, listas diferentes, modelo sem reasoning
+  (`["off"]`, como o Pi reporta), duplicação atrasada de capacidades e falhas.
+  Exercita seletor e as duas formas de `/model`.
 
 A troca específica entre os modelos reais mencionados pelo usuário ainda precisa
 ser validada com os IDs e as listas efetivamente reportadas pelo Pi/provedor.
