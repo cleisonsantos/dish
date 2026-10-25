@@ -230,8 +230,9 @@ fn model_control(state: &AppState, cx: &Context<AppState>) -> AnyElement {
 
 fn effort_control(state: &AppState, cx: &Context<AppState>) -> AnyElement {
     let level = state.thinking_level.clone().unwrap_or_default();
-    // Modelo sem escada de raciocínio: diga isso em vez de mostrar vazio.
-    if state.thinking_levels.is_empty() {
+    // O Pi reporta `["off"]` para modelo sem reasoning; lista vazia também é
+    // tratada como sem escada. Diga isso em vez de oferecer um `off` sem sentido.
+    if !crate::state::supports_reasoning(&state.thinking_levels) {
         return div()
             .id("composer-effort")
             .flex()

@@ -2908,6 +2908,10 @@ impl AppState {
             self.push_toast("Aguarde a atualização dos níveis de esforço do modelo.".into(), Tone::Info, cx);
             return;
         }
+        if !supports_reasoning(&self.thinking_levels) {
+            self.push_toast("Este modelo não controla o nível de esforço".into(), Tone::Info, cx);
+            return;
+        }
         let Some(level) = next_effort_level(&self.thinking_levels, self.thinking_level.as_deref())
             .map(str::to_string)
         else {
@@ -3306,6 +3310,12 @@ pub fn reconcile_effort_level<'a>(
         .map(String::as_str)
 }
 
+/// Se o Pi reporta uma escada de raciocínio. O Pi representa modelo sem
+/// suporte a reasoning como `["off"]`; lista vazia também é sem escada.
+pub fn supports_reasoning(levels: &[String]) -> bool {
+    levels.iter().any(|level| level != "off")
+}
+
 fn next_effort_level<'a>(levels: &'a [String], current: Option<&str>) -> Option<&'a str> {
     if levels.is_empty() {
         return None;
@@ -3398,6 +3408,14 @@ mod effort_tests {
     fn handles_empty_and_single_level_lists() {
         assert_eq!(next_effort_level(&[], Some("high")), None);
         assert_eq!(next_effort_level(&["off".into()], Some("off")), Some("off"));
+    }
+
+    #[test]
+    fn pi_off_only_ladder_means_no_reasoning() {
+        assert!(!super::supports_reasoning(&[]));
+        assert!(!super::supports_reasoning(&["off".into()]));
+        assert!(super::supports_reasoning(&["off".into(), "low".into()]));
+        assert!(super::supports_reasoning(&["low".into()]));
     }
 }
 
