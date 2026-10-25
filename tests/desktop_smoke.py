@@ -11,6 +11,9 @@ import subprocess
 import tempfile
 import time
 
+from ui_test_support import UiTrace, parse_words, visible_point, visual_lines
+
+UI_TRACES = {}
 ROOT = Path(__file__).resolve().parents[1]
 x11 = ctypes.CDLL(ctypes.util.find_library("X11"))
 xtst = ctypes.CDLL(ctypes.util.find_library("Xtst"))
@@ -89,8 +92,9 @@ def find_window(parent=root_window):
 def wait_for(predicate, description, timeout=10):
     end = time.monotonic() + timeout
     while time.monotonic() < end:
-        if predicate():
-            return
+        result = predicate()
+        if result:
+            return result
         time.sleep(0.05)
     raise AssertionError(description)
 
@@ -158,38 +162,111 @@ def click(window, x, y):
     time.sleep(0.2)
 
 
-def find_word(window, needle, last=False):
-    """Locate rendered text instead of assuming transcript row coordinates."""
-    def scan(path, scale, psm):
-        rows = subprocess.check_output(
-            ["tesseract", path, "stdout", "--psm", psm, "tsv"],
-            stderr=subprocess.DEVNULL).decode().splitlines()[1:]
-        found = []
-        for row in rows:
-            fields = row.split("\t")
-            if len(fields) == 12 and needle.casefold() in fields[11].casefold():
-                found.append(tuple(int(fields[i]) // scale for i in (6, 7, 8, 9)))
-        return found
+def find_word(window, needle, last=False, crop=None):
+    """OCR only for visual checks/selection. Prefer paint state for app state.
 
-    with tempfile.NamedTemporaryFile(suffix=".png") as image:
-        capture = subprocess.run(["import", "-window", str(window), image.name],
+    Crop before enlarging: unrelated columns confuse segmentation. Return words
+    in visual Y/X order, never tesseract's block/paragraph/line ordering.
+    """
+    origin = crop[:2] if crop else (0, 0)
+    with tempfile.TemporaryDirectory(prefix="dish-ocr-") as directory:
+        image = str(Path(directory) / "crop.png")
+        args = ["import", "-window", str(window)]
+        if crop:
+            x, y, width, height = crop
+            args += ["-crop", f"{width}x{height}+{x}+{y}"]
+        capture = subprocess.run(args + ["-resize", "200%", image],
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if capture.returncode != 0:
             return None  # Window may have its title before it is mapped.
-        matches = scan(image.name, 1, "11")
-        if not matches:
-            # Metadata and tool state labels are 10-11px; at native size the
-            # CI font loses a letter ("resultado" becomes "resuitado"). Retry
-            # the same frame enlarged instead of reporting the text absent.
-            large = image.name + ".large.png"
-            subprocess.run(["convert", image.name, "-resize", "200%", large],
-                           check=True, stderr=subprocess.DEVNULL)
-            matches = scan(large, 2, "11")
-            if not matches:
-                # PSM 11 drops the compact metadata badges entirely on some
-                # rows; PSM 6 reads the same enlarged frame.
-                matches = scan(large, 2, "6")
-    return (matches[-1] if last else matches[0]) if matches else None
+        for psm in ("11", "6"):
+            tsv = subprocess.check_output(
+                ["tesseract", image, "stdout", "--psm", psm, "tsv"],
+                stderr=subprocess.DEVNULL).decode()
+            lines = visual_lines(parse_words(tsv, origin=origin))
+            matches = [tuple(word[:4]) for line in lines for word in line
+                       if needle.casefold() in word.text.casefold()]
+            if matches:
+                return matches[-1] if last else matches[0]
+    return None
+
+
+def wait_ui(window, identity, description=None, condition=lambda node: True):
+    found = []
+    def ready():
+        node = UI_TRACES[window].node(identity)
+        if node and visible_point(node) and condition(node):
+            found[:] = [node]
+            return True
+        return False
+    wait_for(ready, description or f"Painted UI node missing: {identity}")
+    return found[0]
+
+
+def click_ui(window, identity):
+    node = wait_ui(window, identity)
+    click(window, *visible_point(node))
+
+
+def reveal_ui(window, predicate, description, scroll="transcript"):
+    """Bounded scroll on viewport margin, outside nested scrollable details.
+
+    Paint clips decide visibility. No guessed row height, badge count, or OCR.
+    """
+    trace = UI_TRACES[window]
+    for _ in range(20):
+        node = trace.matching(predicate)
+        if node and visible_point(node):
+            return node
+        viewport = wait_ui(window, scroll)
+        x, y, width, height = viewport["visible"]
+        direction = 4 if node and node["bounds"][1] < y else 5
+        generation = trace.generation
+        wheel_at(window, round(x + 8), round(y + height / 2), direction, 3)
+        expose_window(window)
+        wait_for(lambda: (trace.poll() is not None and trace.generation > generation),
+                 f"No paint after scrolling {scroll}")
+    raise AssertionError(f"{description}\n{trace.describe()}")
+
+
+def set_ui_expanded(window, identity, expanded):
+    node = reveal_ui(window, lambda node: node["id"] == identity, f"Missing control: {identity}")
+    if node["data"]["expanded"] != expanded:
+        click(window, *visible_point(node))
+    wait_for(lambda: (node := UI_TRACES[window].node(identity))
+             and node["data"]["expanded"] == expanded, f"{identity}: expanded != {expanded}")
+
+
+def open_tool_activity(window, call_id):
+    node = reveal_ui(window, lambda node: node["id"].startswith("activity-")
+                     and call_id in node["data"]["tools"], f"Activity missing: {call_id}")
+    if node["data"]["expanded"]:
+        # Running groups are open by default, not by user override. Completion
+        # collapses them again, taking the finished card with it; wait for that
+        # close so the reopen below records an explicit "stay open".
+        wait_for(lambda: (current := UI_TRACES[window].node(node["id"]))
+                 and not current["data"]["expanded"],
+                 f"Activity did not finish: {call_id}")
+    set_ui_expanded(window, node["id"], True)
+
+
+def save_ui_trace(window, prefix):
+    trace = UI_TRACES.get(window)
+    if trace and trace.path.exists():
+        path = tempfile.mktemp(prefix=prefix + "-ui-", suffix=".jsonl")
+        Path(path).write_bytes(trace.path.read_bytes())
+        print(f"UI paint trace: {path}")
+
+
+def copy_ui_text(window, text):
+    node = reveal_ui(window, lambda node: node["id"].startswith("selection-")
+                     and node["data"].get("text") == text, "Selectable text missing")
+    click(window, *visible_point(node))
+    chord("Control_L", "a")
+    chord("Control_L", "c")
+    copied = clipboard_text()
+    assert copied == text, repr(copied)
+    return copied
 
 
 def clipboard_text():
@@ -246,6 +323,18 @@ def scroll_up(window):
 
 
 def click_nav_label(window, label, close=False, keyboard_fallback=True):
+    if window in UI_TRACES:
+        def matches(node):
+            return node["id"].startswith("nav-") and label.casefold() in node["data"].get("title", "").casefold()
+        row = reveal_ui(window, matches, f"Navigation label missing: {label}", scroll="nav-list")
+        if close:
+            click_ui(window, row["data"]["actions"])
+        else:
+            click(window, *visible_point(row))
+            wait_for(lambda: UI_TRACES[window].matching(lambda node: matches(node) and node["data"]["active"]),
+                     f"Navigation click did not activate {label}")
+        return
+    # Other smokes without tracing still use bounded OCR + keyboard fallback.
     # Busy indicators change row heights; saved sessions have no fixed y.
     def match_text(text):
         return "".join(char for char in text.lower() if char.isalnum())
@@ -417,7 +506,8 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
     log_path = temp / "events.jsonl"
     env = dict(os.environ, DISH_PI_BIN=str(wrapper), PI_CODING_AGENT_DIR=str(agent),
                XDG_CONFIG_HOME=str(temp / "config"), XDG_DATA_HOME=str(temp / "data"),
-               DISH_FAKE_PI_LOG=str(log_path), XDG_SESSION_TYPE="x11")
+               DISH_FAKE_PI_LOG=str(log_path), XDG_SESSION_TYPE="x11",
+               DISH_TEST_UI_LOG=str(temp / "ui.jsonl"))
     env.pop("WAYLAND_DISPLAY", None)
     env.pop("PI_CODING_AGENT_SESSION_DIR", None)
     log = open(temp / "dish.log", "w")
@@ -459,33 +549,40 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
     try:
         wait_for(lambda: find_window(), "Window not created")
         window = find_window()
+        UI_TRACES[window] = UiTrace(temp / "ui.jsonl")
+        prepare_window(window)
+        wait_ui(window, "frame")
         wait_for(lambda: commands("get_messages"), "Initial Pi did not initialize")
         time.sleep(1)
         x11.XSetInputFocus(display, window, 1, 0)
         expose_window(window)
-        # Wait for rendered placeholder text, then click its actual glyphs.
-        # A native title/get_messages can exist before focus/layout is ready.
-        wait_for(lambda: find_word(window, "Pergunte"), "Composer did not render")
+        # Native title/get_messages can precede layout. Target actual painted
+        # input, then confirm focus; OCR is not a focus/readiness signal.
+        wait_ui(window, "composer-input", "Composer did not render")
         wait_for(lambda: find_word(window, "gitcontext-main"), "Git branch footer did not render")
-        placeholder = find_word(window, "Pergunte")
-        click(window, placeholder[0] + placeholder[2] // 2, placeholder[1] + placeholder[3] // 2)
+        click_ui(window, "composer-input")
+        wait_ui(window, "composer-input", condition=lambda node: node["data"]["focused"])
         # Content search reaches archived message bodies, not just titles,
         # and stays scoped to the current project's sessions.
         type_text("draft-")
         chord("Control_L", "Shift_L", "f")
         type_text("ARCHIVESEARCH")
-        wait_for(lambda: find_word(window, "CONTENTONLY"), "Archived content search did not render")
-        assert find_word(window, "alpha"), "Active project search result missing"
+        search = wait_ui(window, "content-search", "Archived content search did not render",
+                         lambda node: not node["data"]["loading"] and any(
+                             "CONTENTONLY" in hit["snippet"] for hit in node["data"]["hits"]))
+        assert all("alpha" in hit["title"] for hit in search["data"]["hits"]), search
+        assert all("beta" not in hit["title"] for hit in search["data"]["hits"]), search
         search_screenshot = f"/tmp/dish-search-{next(tempfile._get_candidate_names())}.png"
         subprocess.run(["import", "-window", str(window), search_screenshot], check=True)
         press("Escape")
-        wait_for(lambda: not find_word(window, "CONTENTONLY"), "Escape did not close content search")
+        wait_for(lambda: "content-search" not in UI_TRACES[window].poll(), "Escape did not close content search")
         chord("Control_L", "k")
         type_text("saved")
         press("Escape")
         type_text("returned")
         # Esc must focus the prompt, not leave text in the sidebar filter.
-        wait_for(lambda: find_word(window, "draft-returned"), "Sidebar Escape did not focus prompt")
+        wait_ui(window, "frame", "Sidebar Escape did not focus prompt",
+                lambda node: node["data"]["draft"] == "draft-returned")
         def copied_draft():
             # Key events can be delivered before the escape/focus frame lands;
             # repeat the copy and judge the clipboard content, never skip it.
@@ -516,28 +613,25 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         print("Git context screenshot:", git_screenshot)
         chord("Control_L", "f")
         type_text("long-a")
-        wait_for(lambda: find_word(window, "resultado"), "Current-session content search did not render")
+        wait_ui(window, "content-search", "Current-session content search did not render",
+                lambda node: not node["data"]["loading"] and bool(node["data"]["hits"]))
         press("Tab")
         chord("Control_L", "a")
         type_text("tab-navigation-query")
-        wait_for(lambda: find_word(window, "tab-navigation-query"), "Query field did not retain focus after Tab")
-        # The footer hint can be clipped or OCR can miss its final word at
-        # different font metrics. Locate the query relative to the panel title
-        # instead of depending on the word "sair" being recognized.
-        wait_for(lambda: find_word(window, "Fechar"), "Search panel title did not render")
-        query_box = find_word(window, "tab-navigation-query")
-        title_box = find_word(window, "Fechar")
-        assert query_box and title_box, "Search query/title disappeared during focus check"
-        assert title_box[1] <= query_box[1] < title_box[1] + 6 * max(query_box[3], title_box[3]), "Tab moved focus to the prompt"
+        wait_ui(window, "content-search", "Query field did not retain focus after Tab",
+                lambda node: node["data"]["query"] == "tab-navigation-query")
+        assert UI_TRACES[window].node("frame")["data"]["draft"] == "", "Tab moved focus to the prompt"
         chord("Control_L", "a")
         type_text("long-a")
         chord("Shift_L", "Tab")
         press("Down")
         press("Up")
-        assert find_word(window, "Fechar"), "Navigating results closed the search"
-        wait_for(lambda: find_word(window, "resultado"), "Search results did not settle")
+        assert UI_TRACES[window].node("content-search"), "Navigating results closed the search"
+        wait_ui(window, "content-search", "Search results did not settle",
+                lambda node: not node["data"]["loading"] and bool(node["data"]["hits"]))
         press("Return")
-        wait_for(lambda: not find_word(window, "Fechar"), "Enter did not open the selected result and close search")
+        wait_for(lambda: "content-search" not in UI_TRACES[window].poll(),
+                 "Enter did not open the selected result and close search")
         assert len(commands("prompt")) == 1, "Navigating matches submitted another prompt"
         assert not commands("abort"), "Leaving search canceled the running agent"
         # Exercise the cleared composer while the first session is still running.
@@ -554,15 +648,16 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         # behind it, even though the header itself has no scrollable content.
         chord("Control_L", "f")
         type_text("Saved")
-        wait_for(lambda: find_word(window, "resultados"), "Saved-message search did not render")
+        wait_ui(window, "content-search", "Saved-message search did not render",
+                lambda node: not node["data"]["loading"] and node["data"]["query"] == "saved")
         # O OCR pode localizar o cabeçalho alguns pixels fora em fontes diferentes;
         # repete a checagem antes de acusar vazamento do scroll.
         for attempt in range(3):
-            header = find_word(window, "Buscar")
-            click(window, header[0] + header[2] // 2, header[1] + header[3] // 2)
-            # Compare only background, not search results/hover inside the panel.
-            # The old 600px crop crossed the overlay after layout changes.
-            background_crop = f"{max(64, header[0] - 332)}x260+300+130"
+            panel = wait_ui(window, "content-search")
+            x, y, _, _ = panel["bounds"]
+            click(window, round(x + 12), round(y + 20))
+            # Exclude overlay using its painted left edge, not an OCR heading.
+            background_crop = f"{max(64, round(x) - 312)}x260+300+130"
             before_search_wheel = stable_transcript_pixels(window, background_crop)
             for _ in range(6):
                 xtst.XTestFakeButtonEvent(display, 4, True, 0)
@@ -639,11 +734,18 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         press("Return")
         wait_for(lambda: len(commands("prompt")) == 7, "Close test prompt not sent")
         click_beta_session(window, close=True)
+        # The menu opens on "Fixar"; move to "Fechar sessão" before Enter.
+        press("Down")
         press("Return")
+        wait_ui(window, "frame", "Close confirmation did not open",
+                lambda node: node["data"]["confirming_close"])
         assert len(commands("prompt")) == 7, "Close confirmation did not isolate keyboard input"
         press("Escape")
+        wait_ui(window, "frame", "Escape did not cancel the close",
+                lambda node: not node["data"]["confirming_close"] and not node["data"]["session_menu"])
         assert not commands("abort"), "Canceling close interrupted a task"
         # Creating a session while beta runs must allocate a new process, not new_session.
+        chord("Control_L", "l")
         chord("Control_L", "n")
         wait_for(lambda: len(commands("get_messages")) == 3, "Ctrl+N did not create an independent session")
         type_text("/new")
@@ -652,9 +754,7 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         assert not commands("new_session"), "A new session replaced an existing process"
         # New-session button follows the same workspace path.
         # Locate the named action: navigation width and header layout may change.
-        wait_for(lambda: find_word(window, "sess"), "New session action missing")
-        new_session = find_word(window, "sess")
-        click(window, new_session[0] + new_session[2] // 2, new_session[1] + new_session[3] // 2)
+        click_ui(window, "nav-new-session")
         wait_for(lambda: len(commands("get_messages")) == 5, "Details button did not create an independent session")
         # Start an active task, then exercise the OS window-close path.
         type_text("long-window-close")
@@ -745,8 +845,7 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         time.sleep(0.65)
         assert transcript_pixels(window) == before, "Streaming pulled the reader back to the bottom"
         # Direct selection on formatted text, including Unicode and code.
-        placeholder = find_word(window, "Pergunte")
-        click(window, placeholder[0] + placeholder[2] // 2, placeholder[1] + placeholder[3] // 2)
+        click_ui(window, "composer-input")
         initializations = len(commands("get_messages"))
         chord("Control_L", "n")
         wait_for(lambda: len(commands("get_messages")) > initializations,
@@ -756,11 +855,16 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         type_text("selection")
         press("Return")
         wait_for(lambda: len(commands("prompt")) > previous_prompts, "Selection prompt not sent")
-        wait_for(lambda: find_word(window, "Primeiro"), "Formatted selection response not rendered")
         wait_for(lambda: any(item.get("record", {}).get("type") == "message_end"
                              and "Final da resposta." in str(item["record"]) for item in events()),
                  "Selection response did not finish")
-        first = find_word(window, "Primeiro")
+        selection = wait_for(lambda: UI_TRACES[window].matching(lambda node:
+            node["id"].startswith("selection-reply-text-")
+            and node["data"].get("text", "").startswith("Primeiro parágrafo")),
+            "Formatted selection response not painted")
+        selection_crop = tuple(round(value) for value in selection["visible"])
+        first = wait_for(lambda: find_word(window, "Primeiro", crop=selection_crop),
+                         "Formatted selection response not rendered")
         click(window, first[0] + first[2] // 2, first[1] + first[3] // 2)
         click(window, first[0] + first[2] // 2, first[1] + first[3] // 2)
         chord("Control_L", "c")
@@ -787,7 +891,8 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         time.sleep(0.2)
         assert clipboard_text() == "printf 'ação\\n'\necho café", repr(clipboard_text())
         assert len(commands("prompt")) == previous_prompts + 1, "Copy activated the composer"
-        last = find_word(window, "café", last=True)
+        last = wait_for(lambda: find_word(window, "café", last=True, crop=selection_crop),
+                        "Final code word missing from selection")
         drag(window, (first[0] + 1, first[1] + first[3] // 2),
              (last[0] + last[2] - 1, last[1] + last[3] // 2))
         chord("Control_L", "c")
@@ -817,6 +922,7 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         screenshot = tempfile.mktemp(prefix="dish-desktop-failure-", suffix=".png")
         subprocess.run(["import", "-window", "root", screenshot], check=False)
         print(f"Desktop failure screenshot: {screenshot}")
+        save_ui_trace(locals().get("window"), "dish-desktop")
         print((temp / "dish.log").read_text())
         raise
     finally:
@@ -846,6 +952,7 @@ with tempfile.TemporaryDirectory(prefix="dish-metadata-") as directory:
         PI_CODING_AGENT_DIR=str(directory / "agent"),
         XDG_CONFIG_HOME=str(directory / "config"), XDG_DATA_HOME=str(directory / "data"),
         DISH_FAKE_PI_LOG=str(metadata_log), TZ="UTC", XDG_SESSION_TYPE="x11",
+        DISH_TEST_UI_LOG=str(directory / "ui.jsonl"),
         DISH_FAKE_METADATA_HISTORY=str(ROOT / "tests/fixtures/metadata_history.json"))
     metadata_env.pop("WAYLAND_DISPLAY", None)
     metadata_env.pop("PI_CODING_AGENT_SESSION_DIR", None)
@@ -865,6 +972,9 @@ with tempfile.TemporaryDirectory(prefix="dish-metadata-") as directory:
         try:
             wait_for(lambda: find_window(), "Metadata window not created")
             window = find_window()
+            UI_TRACES[window] = UiTrace(directory / "ui.jsonl")
+            prepare_window(window)
+            wait_ui(window, "frame")
             wait_for(lambda: any(item.get("command", {}).get("type") == "get_messages"
                                  for item in metadata_events()), "Metadata Pi did not initialize")
             x11.XSetInputFocus(display, window, 1, 0)
@@ -877,172 +987,63 @@ with tempfile.TemporaryDirectory(prefix="dish-metadata-") as directory:
             assert datetime.datetime.now(
                 datetime.timezone.utc).strftime("%d/%m/%Y") not in initial, \
                 "History received fabricated current timestamps"
-            # Open the historical tool and copy its command from rendered details.
-            group = find_word(window, "comando")
-            click(window, group[0] + group[2] // 2, group[1] + group[3] // 2)
-            wait_for(lambda: find_word(window, "bash"), "Historical tool row did not open")
-            bash = find_word(window, "bash")
-            click(window, bash[0] + bash[2] // 2, bash[1] + bash[3] // 2)
-            wait_for(lambda: find_word(window, "COMANDO_COMPLETO"), "Complete command details missing")
-            marker = find_word(window, "COMANDO_COMPLETO")
-            click(window, marker[0] + marker[2] // 2, marker[1] + marker[3] // 2)
-            chord("Control_L", "a")
-            chord("Control_L", "c")
+            # Stable call identity + actual painted bounds, not "last comando"
+            # or "second fim". Actions still go through real XTest and clipboard.
             history = json.loads((ROOT / "tests/fixtures/metadata_history.json").read_text())
-            expected_command = history[1]["content"][0]["arguments"]["command"]
-            assert clipboard_text() == expected_command, repr(clipboard_text())
-            # With details closed, the header must still be readable and its
-            # hover tooltip must repeat the full command. The 12px monospace
-            # tool name is routinely OCR'd as "bas"/"hack", so anchor on the
-            # header's command summary and click the name to its left; that is
-            # the same row, without loosening the visibility assertion.
-            header = None
-            for _ in range(24):
-                header = find_word(window, "print")
-                if header:
-                    break
-                time.sleep(0.25)
-            assert header, "Historical tool header is no longer visible after copying"
-            click(window, max(0, header[0] - 30), header[1] + header[3] // 2)
-            # If the header were gone this click would hit the selectable
-            # section body and the details would stay open.
-            wait_for(lambda: not find_word(window, "argumentos"),
-                     "Historical tool details did not close", timeout=4)
+            call = history[1]["content"][0]
+            call_id = call["id"]
+            expected_command = call["arguments"]["command"]
+            open_tool_activity(window, call_id)
+            set_ui_expanded(window, f"tool-{call_id}", True)
+            copy_ui_text(window, expected_command)
+            set_ui_expanded(window, f"tool-{call_id}", False)
+            # Tooltip is a visual assertion; keep OCR here, enlarged/multi-PSM.
             wait_for(lambda: find_word(window, "COMANDO_COMPLETO"), "Full command tooltip missing", timeout=4)
             park_mouse(window)
-            # The tooltip overlay fades after the pointer leaves; the metadata
-            # row it covered is only OCR-readable once that frame is gone.
-            result = None
-            for _ in range(20):
-                result = find_word(window, "resultado")
-                if result:
-                    break
-                time.sleep(0.2)
-            assert result, "Historical result metadata missing"
-            click(window, result[0] + result[2] // 2, result[1] + result[3] // 2)
+            badge_id = f"tool-metadata-{call_id}-badge"
+            set_ui_expanded(window, badge_id, True)
             park_mouse(window)
-            wait_for(lambda: find_word(window, "registrado"), "Historical timestamp details missing")
-            recorded = find_word(window, "registrado")
-            click(window, recorded[0] + recorded[2] // 2, recorded[1] + recorded[3] // 2)
-            chord("Control_L", "a")
-            chord("Control_L", "c")
-            historical_metadata = clipboard_text()
+            details = wait_ui(window, f"tool-metadata-{call_id}-details")
+            historical_metadata = copy_ui_text(window, details["data"]["text"])
             assert "Resultado registrado pelo Pi" in historical_metadata, historical_metadata
             assert "03/12/2024 14:00:03.000 +00:00" in historical_metadata, historical_metadata
             assert "Duração" not in historical_metadata and "Fim observado" not in historical_metadata, historical_metadata
-            # A live tool has observed boundaries and monotonic duration in
-            # addition to the Pi-authored result timestamp.
+            # Pi commands/events prove protocol delivery, not the UI's expanded
+            # state. Trace observes the UI; clipboard checks actual rendered text.
             chord("Control_L", "l")
             type_text("metadata-tool")
             press("Return")
             wait_for(lambda: any(item.get("record", {}).get("type") == "tool_execution_end" for item in metadata_events()), "Live tool did not finish")
             wait_for(lambda: any(item.get("record", {}).get("type") == "agent_end" for item in metadata_events()), "Live tool run did not finish")
-            # Bring the newest turn into view. The historical group above is
-            # taller than the window, so without scrolling OCR calls it the
-            # "last" activity group and expands the wrong card.
-            for _ in range(8):
-                wheel_at(window, 700, 500, 5, 4)
-                time.sleep(0.15)
-
-            def find_live_group():
-                # PSM 11 merges the live "1 comando" header with the status
-                # line and drops it; PSM 6 reads it. The live group is the
-                # lowest rendered activity summary after scrolling to the end.
-                with tempfile.NamedTemporaryFile(suffix=".png") as image:
-                    subprocess.run(["import", "-window", str(window), image.name], check=True)
-                    rows = subprocess.check_output(
-                        ["tesseract", image.name, "stdout", "--psm", "6", "tsv"],
-                        stderr=subprocess.DEVNULL).decode().splitlines()[1:]
-                boxes = []
-                for row in rows:
-                    fields = row.split("\t")
-                    word = fields[11].casefold() if len(fields) == 12 else ""
-                    # Only the activity summary itself ("1 comando"/"comando"),
-                    # not the command body ("COMANDO_AO_VIVO") or a historical
-                    # "comando_cancelado" line.
-                    if word.replace(" ", "") in ("comando", "1comando"):
-                        boxes.append(tuple(int(fields[i]) for i in (6, 7, 8, 9)))
-                return max(boxes, key=lambda box: box[1]) if boxes else None
-
-            wait_for(find_live_group, "Live activity group missing")
-            group = find_live_group()
-            click(window, group[0] + group[2] // 2, group[1] + group[3] // 2)
-
-            def find_rendered_all(needle):
-                # PSM 11 keeps only the assistant footer badge and drops the
-                # compact tool badge; PSM 6 reads both.
-                with tempfile.NamedTemporaryFile(suffix=".png") as image:
-                    subprocess.run(["import", "-window", str(window), image.name], check=True)
-                    rows = subprocess.check_output(
-                        ["tesseract", image.name, "stdout", "--psm", "6", "tsv"],
-                        stderr=subprocess.DEVNULL).decode().splitlines()[1:]
-                boxes = []
-                for row in rows:
-                    fields = row.split("\t")
-                    if len(fields) == 12 and needle.casefold() in fields[11].casefold():
-                        boxes.append(tuple(int(fields[i]) for i in (6, 7, 8, 9)))
-                return boxes
-
-            def find_rendered(needle, last=True):
-                boxes = find_rendered_all(needle)
-                return (boxes[-1] if last else boxes[0]) if boxes else None
-
-            def tool_badge():
-                # The assistant footer always has a "fim" badge; the tool row
-                # adds a second, lower one. Requiring both keeps the wait from
-                # accepting the assistant footer while the tool row is still
-                # covered by the composer after the group expands.
-                fims = find_rendered_all("fim")
-                return fims[-1] if len(fims) >= 2 else None
-
-            for _ in range(6):
-                if tool_badge():
-                    break
-                wheel_at(window, 700, 500, 5, 3)
-                time.sleep(0.2)
-            wait_for(tool_badge, "Live completion timestamp missing")
-
-            def open_observed_metadata():
-                # Expanding a virtualised tool group can remeasure/reposition
-                # its row between OCR and the click, especially in release CI.
-                # Re-locate the badge on each attempt and stop once details open
-                # rather than clicking twice and closing them again.
-                #
-                # O clique vai na borda esquerda do texto: o centro da palavra
-                # pode cair sobre o cabeçalho do cartão (que abre o cartão em
-                # vez do bloco de metadados) em fontes diferentes das do CI.
-                if find_rendered("monot"):
-                    return True
-                if not find_rendered("observado"):
-                    end = tool_badge()
-                    if end is None:
-                        return False
-                    click(window, end[0] + 2, end[1] + end[3] // 2)
-                # O bloco aberto pode continuar abaixo do composer; rolar o
-                # transcript como o usuário faria revela as linhas restantes.
-                for _ in range(4):
-                    if find_rendered("monot"):
-                        return True
-                    wheel_at(window, 700, 600, 5, 3)
-                    time.sleep(0.2)
-                return find_rendered("monot")
-
-            wait_for(open_observed_metadata, "Observed duration details missing")
-            duration_word = find_rendered("monot")
-            click(window, duration_word[0] + duration_word[2] // 2, duration_word[1] + duration_word[3] // 2)
-            chord("Control_L", "a")
-            chord("Control_L", "c")
-            live_metadata = clipboard_text()
+            live_call = next(item["record"]["toolCallId"] for item in metadata_events()
+                             if item.get("record", {}).get("type") == "tool_execution_end")
+            # Real jump-to-end action avoids wheel events landing in a nested
+            # metadata scroller. Any later reveal scrolls the viewport margin.
+            if not UI_TRACES[window].node("transcript")["data"]["following_tail"]:
+                click_ui(window, "transcript-jump-end")
+            open_tool_activity(window, live_call)
+            badge_id = f"tool-metadata-{live_call}-badge"
+            badge = reveal_ui(window, lambda node: node["id"] == badge_id
+                             and node["data"]["label"].startswith("fim ·")
+                             and "Duração observada pelo Dish (relógio monotônico)" in node["data"]["details"],
+                             "Live completion timestamp missing")
+            expected_metadata = badge["data"]["details"]
+            assert "Duração observada pelo Dish (relógio monotônico)" in expected_metadata, expected_metadata
+            set_ui_expanded(window, badge_id, True)
+            reveal_ui(window, lambda node: node["id"] == f"tool-metadata-{live_call}-details",
+                      "Observed duration details missing")
+            live_metadata = copy_ui_text(window, expected_metadata)
             assert "Início observado pelo Dish" in live_metadata, live_metadata
             assert "Fim observado pelo Dish" in live_metadata, live_metadata
             assert "Resultado registrado pelo Pi" in live_metadata, live_metadata
-            assert "Duração observada pelo Dish" in live_metadata, live_metadata
+            assert "Duração observada pelo Dish (relógio monotônico)" in live_metadata, live_metadata
             assert process.poll() is None, (directory / "dish.log").read_text()
             print("Metadata smoke passed: history, cancellation, full commands, timestamps and duration")
         except Exception:
             screenshot = tempfile.mktemp(prefix="dish-metadata-failure-", suffix=".png")
             subprocess.run(["import", "-window", "root", screenshot], check=False)
             print(f"Metadata failure screenshot: {screenshot}")
+            save_ui_trace(locals().get("window"), "dish-metadata")
             print((directory / "dish.log").read_text())
             raise
         finally:

@@ -652,7 +652,13 @@ impl Workspace {
                     ),
             );
         }
-        Some(panel.child(hits))
+        Some(panel.child(hits).test_probe(|| "content-search".into(), || serde_json::json!({
+            "query": self.content_search.editor.as_ref().map(|editor| editor.read(cx).text(cx)),
+            "loading": self.content_search.loading,
+            "hits": self.content_search.results.hits.iter().map(|hit| serde_json::json!({
+                "title": hit.title, "snippet": hit.snippet,
+            })).collect::<Vec<_>>(),
+        })))
     }
 }
 

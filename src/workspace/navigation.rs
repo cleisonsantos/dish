@@ -209,6 +209,7 @@ impl Workspace {
             )
             .child(
                 div().id("nav-new-session")
+                    .test_probe(|| "nav-new-session".into(), || serde_json::json!({}))
                     .mx(px(theme::S3)).mb(px(theme::S3))
                     .px(px(theme::S3)).py(px(theme::S2))
                     .flex().items_center().gap(px(theme::S2))
@@ -349,6 +350,7 @@ impl Workspace {
 
         let mut list = div()
             .id("nav-list")
+            .test_probe(|| "nav-list".into(), || serde_json::json!({}))
             .flex_1()
             .min_h(px(0.))
             .overflow_y_scroll()
@@ -626,8 +628,12 @@ impl Workspace {
                                 };
                                 let action_target = live.map(|index| SessionTarget::Live(self.conversations[index].state.entity_id()))
                                     .or_else(|| info.as_ref().map(|info| SessionTarget::Saved(info.path.clone())));
+                                let action_id = action_target.as_ref().map(|target| format!("session-actions-{}", target.key()));
                                 let action_button = action_target.map(|target| self.session_actions_button(target, cx));
                                 div()
+                                    .test_probe(|| format!("nav-{key}"), || serde_json::json!({
+                                        "title": title, "active": active, "actions": action_id,
+                                    }))
                                     .id(SharedString::from(key))
                                     .anchor_scroll(anchor)
                                     .flex()

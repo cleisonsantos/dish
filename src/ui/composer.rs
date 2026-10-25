@@ -13,6 +13,7 @@ use crate::editor::standard_actions;
 use crate::state::AppState;
 use crate::theme;
 use crate::ui::icons::{Icon, icon};
+use super::test_probe::TestProbe;
 
 pub fn composer(
     state: &AppState,
@@ -93,6 +94,9 @@ pub fn composer(
                     .child(
                         div()
                             .id("composer-input")
+                            .test_probe(|| "composer-input".into(), || serde_json::json!({
+                                "focused": focused,
+                            }))
                             .flex_1()
                             .min_w(px(0.))
                             .min_h(px(theme::WRITING_HEIGHT))

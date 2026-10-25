@@ -173,6 +173,7 @@ fn looks_like_path(argument: &str) -> bool {
 }
 
 fn main() {
+    ui::test_probe::init();
     // `DISH_BACKEND=x11` força o XWayland no Linux: é o caminho para ter as
     // decorações do sistema onde o compositor Wayland não as fornece (GNOME).
     // Ignorado em macOS e Windows.

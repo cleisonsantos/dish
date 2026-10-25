@@ -18,6 +18,7 @@ pub mod motion;
 pub mod icons;
 pub mod inspector;
 pub mod metadata_view;
+pub mod test_probe;
 pub mod overlays;
 pub mod transcript;
 pub mod selectable;

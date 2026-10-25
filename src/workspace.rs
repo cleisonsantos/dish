@@ -10,6 +10,7 @@ use crate::rpc::{PiClient, PiConfig};
 use crate::sessions::{self, SessionInfo};
 use crate::state::AppState;
 use crate::theme;
+use crate::ui::test_probe::TestProbe;
 use crate::session_activity::{SessionFilter, SessionSignals, epoch_millis, from_epoch_millis, relative_time};
 
 mod navigation;
@@ -1002,6 +1003,7 @@ impl Workspace {
         let click_focus = focus.clone();
         let key_focus = focus.clone();
         div().id(SharedString::from(format!("session-actions-{key}")))
+            .test_probe(|| format!("session-actions-{key}"), || serde_json::json!({}))
             .relative().flex_none().w(px(24.)).h(px(theme::S6)).rounded(theme::r_control())
             .track_focus(&focus).flex().items_center().justify_center()
             .cursor_pointer().hover(|style| style.bg(theme::hover()).text_color(theme::text()))
@@ -2387,7 +2389,16 @@ impl Render for Workspace {
                     ),
             );
         }
-        root
+        // Last painted child delimits a complete observation frame. Nodes not
+        // painted in this frame (virtualised/closed) must not survive in tests.
+        let active = self.conversations[self.active].state.read(cx);
+        root.test_probe(|| "frame".into(), || serde_json::json!({
+            "project": active.cwd,
+            "draft": active.editor.read(cx).text(cx),
+            "nav_query": self.query.read(cx).text(cx),
+            "confirming_close": self.confirm_close,
+            "session_menu": self.session_menu.is_some(),
+        }))
     }
 }
 

@@ -13,7 +13,7 @@ use crate::markdown;
 use crate::state::{AppState, Block, Message, Role, ToolCard, ToolStatus};
 use crate::theme;
 use crate::ui::icons::{Icon, icon};
-use crate::ui::{content_id, markdown_style};
+use crate::ui::{content_id, markdown_style, test_probe::TestProbe};
 
 pub fn transcript(state: &AppState, cx: &Context<AppState>) -> Div {
     let weak = cx.entity().downgrade();
@@ -78,10 +78,13 @@ pub fn transcript(state: &AppState, cx: &Context<AppState>) -> Div {
                     state.list_state.set_follow_mode(FollowMode::Tail);
                     cx.notify();
                 }))
+                .test_probe(|| "transcript-jump-end".into(), || serde_json::json!({}))
                 .child(icon(Icon::ChevronDown, 16., theme::dim())),
         );
     }
-    root
+    root.test_probe(|| "transcript".into(), || serde_json::json!({
+        "following_tail": state.list_state.is_following_tail(),
+    }))
 }
 
 // ------------------------------------------------------------- empty state
@@ -709,6 +712,13 @@ fn activity_group(
         .child(
             div()
                 .id(SharedString::from(format!("activity-{message_index}")))
+                .test_probe(|| format!("activity-{message_index}"), || serde_json::json!({
+                    "expanded": open,
+                    "tools": group.iter().filter_map(|(_, tool)| match tool {
+                        ToolRef::Tool(card) => Some(card.id.as_str()),
+                        ToolRef::Bash(_) => None,
+                    }).collect::<Vec<_>>(),
+                }))
                 .flex()
                 .flex_row()
                 .items_center()
@@ -866,6 +876,10 @@ fn tool_row(
         .id(SharedString::from(format!(
             "tool-{message_index}-{block_index}"
         )))
+        .test_probe(|| format!("tool-{}", card.id), || serde_json::json!({
+            "expanded": expanded,
+            "name": card.name,
+        }))
         .flex()
         .flex_row()
         .flex_wrap()
