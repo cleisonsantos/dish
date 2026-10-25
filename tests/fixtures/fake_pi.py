@@ -70,6 +70,16 @@ def run(message, images):
         return
     emit({"type": "message_update", "assistantMessageEvent": {
         "type": "text_start", "contentIndex": 0}})
+    if message == "select-many":
+        dialog_answer.clear()
+        options = ["PRIMEIRA alternativa"] + [
+            f"Alternativa {index:03d} para revisar o código" for index in range(1, 59)
+        ] + ["ULTIMA alternativa"]
+        options[30] += " com uma descrição longa que precisa quebrar em várias linhas " * 4
+        emit({"type": "extension_ui_request", "method": "select", "id": "fake-select-many",
+              "title": "Escolher alternativa", "options": options,
+              "message": "Leia as opções antes de continuar. " * 30})
+        dialog_answer.wait(60)
     if message == "dialog":
         time.sleep(0.5)
         level = "max"

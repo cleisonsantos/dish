@@ -4,6 +4,7 @@ use crate::{
     editor::{CopySelection, SelectAllText},
     theme,
 };
+use super::test_probe::TestProbe;
 use gpui::prelude::*;
 use gpui::*;
 use std::{cell::RefCell, ops::Range, rc::Rc};
@@ -123,6 +124,9 @@ impl RenderOnce for SelectionGroup {
         let select_all = selection.clone();
         let dismiss = selection.clone();
         div()
+            .test_probe(|| format!("selection-{}", self.id), || serde_json::json!({
+                "text": selection.read(cx).text,
+            }))
             .id(self.id)
             .w_full()
             .flex()

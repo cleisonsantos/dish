@@ -113,12 +113,27 @@ class Harness:
         assert position, f"{self.name}: não achei {label!r} na tela:\n{self.capture()}"
         click(self.window, position[0], position[1])
 
-    def wait_text(self, needles, timeout=30):
-        for _ in range(int(timeout / 0.5)):
+    def ocr_large(self):
+        """OCR do mesmo frame em 2x para rótulos pequenos do catálogo.
+
+        O resumo do catálogo ("4 provedores") e a origem da credencial ficam em
+        texto micro; no runner sem GPU o tesseract às vezes perde um caractere
+        no tamanho nativo. A ampliação não muda a asserção, só a leitura."""
+        large = self.screenshot + ".large.png"
+        subprocess.run(["convert", self.screenshot, "-resize", "200%", large],
+                       check=True, stderr=subprocess.DEVNULL)
+        return subprocess.check_output(["tesseract", large, "stdout", "--psm", "6"],
+                                       stderr=subprocess.DEVNULL).decode()
+
+    def wait_text(self, needles, timeout=75):
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
             text = self.capture()
-            haystack = normalized(text)
-            if all(normalized(needle) in haystack for needle in needles):
+            if all(normalized(needle) in normalized(text) for needle in needles):
                 return text
+            large = self.ocr_large()
+            if all(normalized(needle) in normalized(large) for needle in needles):
+                return text + "\n" + large
             time.sleep(0.5)
         raise AssertionError(f"{self.name}: faltou algo em {needles!r}:\n{self.capture()}")
 

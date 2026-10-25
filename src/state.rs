@@ -339,6 +339,10 @@ pub struct AppState {
     pub disconnected: bool,
     pub new_session_requested: bool,
     pub loading: bool,
+    /// Se esta conversa foi aberta a partir de uma sessão salva e aguarda o histórico inicial.
+    pub restoring_session: bool,
+    /// Título conhecido pelo catálogo enquanto o histórico e o estado do Pi ainda não chegaram.
+    pub initial_title: Option<String>,
     /// Quando esta conversa foi aberta nesta janela.
     pub created_at: std::time::SystemTime,
     /// Última execução: o prompt mais recente enviado. `None` até o primeiro.
@@ -432,6 +436,8 @@ pub struct AppState {
     pub modal: Option<Modal>,
     /// Linha destacada nos diálogos de seleção de extensões.
     modal_index: usize,
+    /// Keeps the highlighted option visible in long extension dialogs.
+    pub modal_scroll: ScrollHandle,
     pub composer_focus_pending: bool,
     pub ext_status: Vec<(String, String)>,
     pub ext_widget: Vec<String>,
@@ -487,6 +493,8 @@ impl AppState {
             disconnected: false,
             new_session_requested: false,
             loading: true,
+            restoring_session: false,
+            initial_title: None,
             created_at: std::time::SystemTime::now(),
             last_run: None,
             client,
@@ -556,6 +564,7 @@ impl AppState {
             banner: None,
             modal: None,
             modal_index: 0,
+            modal_scroll: ScrollHandle::new(),
             composer_focus_pending: false,
             ext_status: Vec::new(),
             ext_widget: Vec::new(),
@@ -1915,6 +1924,7 @@ impl AppState {
                     wants_input: matches!(kind, ModalKind::Input | ModalKind::Editor),
                 });
                 self.modal_index = 0;
+                self.modal_scroll = ScrollHandle::new();
             }
             _ => {}
         }
@@ -1937,6 +1947,8 @@ impl AppState {
         }
         self.modal_index =
             (self.modal_index as isize + delta).rem_euclid(count as isize) as usize;
+        // Mudar apenas o índice deixava a escolha fora da área visível.
+        self.modal_scroll.scroll_to_item(self.modal_index);
         cx.notify();
     }
 
@@ -2020,6 +2032,10 @@ impl AppState {
     }
 
     fn push_local_user(&mut self, text: &str) {
+        // Enviar de novo é um pedido explícito para ver a conversa: retoma o
+        // acompanhamento do fim mesmo depois de abrir um bloco antigo (que
+        // fixa o scroll para o cabeçalho copiado não fugir da tela).
+        self.list_state.set_follow_mode(FollowMode::Tail);
         self.transcript_revision = self.transcript_revision.wrapping_add(1);
         let mut message = Message::new(Role::User);
         message.local = true;
@@ -2036,6 +2052,8 @@ impl AppState {
         self.title_generation = None;
         self.title_failure = None;
         self.pending_title_name = None;
+        self.restoring_session = false;
+        self.initial_title = None;
         self.messages.clear();
         self.tool_slots.clear();
         self.content_slots.clear();
@@ -2372,6 +2390,8 @@ impl AppState {
         let Some(id) = self.send_rpc(result, cx) else {
             return;
         };
+        // Um comando local também é atividade nova: volte ao fim da conversa.
+        self.list_state.set_follow_mode(FollowMode::Tail);
         let mut message = Message::new(Role::Bash);
         message.timestamp = now_ms().unwrap_or(0);
         message.timestamp_origin = TimeOrigin::Dish;
@@ -2393,7 +2413,13 @@ impl AppState {
     /// Replace the composer text, moving focus to the end of it.
     pub fn set_composer_text(&mut self, text: String, cx: &mut Context<Self>) {
         self.editor.update(cx, |editor, cx| editor.set_text(text, cx));
+        self.composer_focus_pending = true;
         cx.notify();
+    }
+
+    /// Verdadeiro enquanto uma sessão salva recém-aberta ainda aguarda `get_messages`.
+    pub fn is_loading_session(&self) -> bool {
+        self.loading && self.restoring_session && self.messages.is_empty()
     }
 
     /// O nome confirmado pelo Pi tem prioridade, inclusive após reabrir a sessão.
@@ -2405,6 +2431,11 @@ impl AppState {
     /// mostrar — a navegação usa isso para cair no título do catálogo.
     pub fn title_or_none(&self, max_chars: usize) -> Option<String> {
         let original = self.session.name.as_deref().filter(|name| !name.trim().is_empty());
+        let fallback_initial = || {
+            self.initial_title
+                .as_deref()
+                .and_then(|title| crate::demand::clip(title, max_chars))
+        };
         if self.generated_titles {
             let first = self.messages.iter().find(|message| message.role == Role::User)
                 .and_then(|message| crate::demand::clip(&message.text(), max_chars));
@@ -2413,9 +2444,13 @@ impl AppState {
                 original,
                 first.as_deref(),
                 max_chars,
-            );
+            )
+            .or_else(fallback_initial);
         }
-        original.map(str::to_owned).or_else(|| self.demand_title(max_chars))
+        original
+            .map(str::to_owned)
+            .or_else(|| self.demand_title(max_chars))
+            .or_else(fallback_initial)
     }
 
     /// Título pronto para exibir, nunca vazio.
@@ -2656,6 +2691,9 @@ impl AppState {
 
     pub fn set_activity(&mut self, message_index: usize, open: bool, cx: &mut Context<Self>) {
         self.activity_override.insert(message_index, open);
+        if !self.streaming {
+            self.list_state.set_follow_mode(FollowMode::Normal);
+        }
         if message_index < self.list_count {
             self.list_state
                 .remeasure_items(message_index..message_index + 1);
@@ -2668,6 +2706,9 @@ impl AppState {
             if let Some(Block::Tool(card)) = message.blocks.get_mut(block_index) {
                 card.expanded = !card.expanded;
             }
+        }
+        if !self.streaming {
+            self.list_state.set_follow_mode(FollowMode::Normal);
         }
         if message_index < self.list_count {
             self.list_state
@@ -2686,6 +2727,9 @@ impl AppState {
             if let Some(Block::Thinking { expanded, .. }) = message.blocks.get_mut(block_index) {
                 *expanded = !*expanded;
             }
+        }
+        if !self.streaming {
+            self.list_state.set_follow_mode(FollowMode::Normal);
         }
         if message_index < self.list_count {
             self.list_state

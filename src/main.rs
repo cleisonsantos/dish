@@ -173,6 +173,7 @@ fn looks_like_path(argument: &str) -> bool {
 }
 
 fn main() {
+    ui::test_probe::init();
     // `DISH_BACKEND=x11` força o XWayland no Linux: é o caminho para ter as
     // decorações do sistema onde o compositor Wayland não as fornece (GNOME).
     // Ignorado em macOS e Windows.
@@ -255,6 +256,7 @@ fn main() {
         keys.extend(editor_bindings("DishNavSearch"));
         keys.extend(editor_bindings("DishContentSearch"));
         keys.extend(editor_bindings("DishHelpSearch"));
+        keys.extend(editor_bindings("DishSettings"));
         keys.extend([
             // The composer owns up/down so the slash menu can take them over;
             // the menu handler forwards to the caret when it is closed.
@@ -313,6 +315,9 @@ fn main() {
         // resolve o modo Sistema a cada quadro.
         theme::set_mode(preferences.appearance);
         theme::set_theme(preferences.theme.clone());
+        if let Some(reduce_motion) = preferences.reduce_motion {
+            cx.set_reduce_motion(reduce_motion);
+        }
 
         let [width, height] = preferences.window_size
             .filter(|s| s.iter().all(|v| v.is_finite()) && s[0] >= 720. && s[1] >= 520.)

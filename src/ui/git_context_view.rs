@@ -22,11 +22,11 @@ pub fn footer(context: &GitContext) -> Stateful<Div> {
         .flex_none()
         .w_full()
         .min_w(px(0.))
-        .px(px(theme::S5))
+        .px(px(theme::CHAT_INSET))
         .pb(px(theme::S2))
         .font_family(theme::FONT_MONO)
         .text_size(px(theme::TEXT_XS))
-        .text_color(theme::faint());
+        .text_color(theme::dim());
     let GitContext::Repository(repo) = context else {
         return root.truncate().child(SharedString::from(context.summary()));
     };

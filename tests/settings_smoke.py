@@ -96,18 +96,25 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
         type_text("zzznomatch")
         wait_for(lambda: "Nenhum atalho" in capture(), "Shortcut filter did not show its empty state")
         press("Escape")
-        time.sleep(0.4)
-        assert "Configura" not in capture(), "Escape did not close settings"
+        # O fechamento é animado: no runner sem GPU o modal ainda aparece por
+        # alguns frames, então espera-se sumir em vez de dormir um valor fixo.
+        wait_for(lambda: "Configura" not in capture(), "Escape did not close settings", timeout=20)
         click(window, 239, 25)
         time.sleep(1)
         page = capture()
         assert "Aplicativo" in page and "Contas e provedores" not in page, page
         # Modelos: ocultar/reexibir é preferência do Dish e precisa persistir.
         state_path = temp / "config/dish/state.json"
-        click_label("Modelos")
+        # A troca de seção é animada e a lista de modelos chega do Pi em
+        # paralelo. Repetir o clique até a página mostrar o modelo evita
+        # capturar o frame antigo em vez de concluir que ele nunca chegou.
+        def open_models():
+            click_label("Modelos")
+            page = capture()
+            return "Modelos" in page and ("fake-model" in page or "test" in page)
+
+        wait_for(open_models, "Models page did not render the Pi model", timeout=20)
         models_page = capture()
-        assert "Modelos" in models_page, models_page
-        assert "fake-model" in models_page or "test" in models_page, models_page
         # Switch do provedor: desliga o grupo inteiro e volta a ligar.
         provider_y, _ = find_model_rows()
         click(window, 1003, provider_y)
@@ -125,16 +132,34 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
         click_label("Mostrar")
         wait_for(lambda: json.loads(state_path.read_text()).get("hidden_models") == [],
                  "Mostrar todos did not clear the hidden models")
-        click_label("Sobre / Pi")
-        about = capture()
-        compact_about = "".join(about.lower().split())
-        assert "piselecionado" in compact_about and "sdkdopi" not in compact_about, about
-        click_label("Aplicativo")
-        click_label("Painel de detalhes")
-        click_label("expandido")
+        # A troca de seção tem uma entrada animada; capturar logo após o
+        # clique lia só a navegação, com o conteúdo ainda transparente.
+        def open_about():
+            click_label("Sobre / Pi")
+            about = capture()
+            compact = "".join(about.lower().split())
+            return "piselecionado" in compact and "sdkdopi" not in compact
+
+        wait_for(open_about, "About page did not render")
         preferences = temp / "config/dish/state.json"
-        wait_for(lambda: json.loads(preferences.read_text()).get("details_open") is False, "Details setting not persisted")
-        wait_for(lambda: json.loads(preferences.read_text()).get("show_thinking") is False, "Thinking setting not persisted")
+
+        def open_app():
+            click_label("Aplicativo")
+            return "Painel de detalhes" in capture()
+
+        wait_for(open_app, "App page did not render")
+
+        def hide_details():
+            click_label("Painel de detalhes")
+            return json.loads(preferences.read_text()).get("details_open") is False
+
+        wait_for(hide_details, "Details setting not persisted")
+
+        def hide_thinking():
+            click_label("expandido")
+            return json.loads(preferences.read_text()).get("show_thinking") is False
+
+        wait_for(hide_thinking, "Thinking setting not persisted")
         # Closing button restores input focus and leaves no second help modal.
         click_label("Fechar")
         wait_for(lambda: "Configura" not in capture(), "Close button did not close")

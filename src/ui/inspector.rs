@@ -19,14 +19,24 @@ use crate::ui::meter;
 pub const NARROW: f32 = 1120.;
 pub const WIDTH: f32 = 316.;
 
+/// Preserve the original docked-details behaviour at ordinary desktop widths.
+pub fn uses_overlay(viewport: f32) -> bool {
+    viewport < NARROW
+}
+
 pub fn inspector(state: &AppState, cx: &Context<AppState>) -> Stateful<Div> {
     div()
         .id("inspector")
+        // GPUI dispatches wheel events across overlapping hitboxes, not only
+        // DOM-like ancestors. Keep this pane a scroll boundary, even at edges.
+        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
         .flex_none()
         .w(px(WIDTH))
         .h_full()
         .flex()
         .flex_col()
+        .rounded_tr(theme::r_surface_inner())
+        .rounded_br(theme::r_surface_inner())
         .bg(theme::surface())
         .border_l_1()
         .border_color(theme::line_soft())
@@ -56,12 +66,17 @@ pub fn inspector(state: &AppState, cx: &Context<AppState>) -> Stateful<Div> {
 pub fn overlay(state: &AppState, cx: &Context<AppState>) -> Stateful<Div> {
     div()
         .id("inspector-overlay")
+        // Block background hit testing for the whole overlay (body, header,
+        // and scrim). Overflow scrolling alone does not consume wheel events.
+        .occlude()
         .absolute()
         .inset(px(0.))
         .flex()
         .flex_row()
         .justify_end()
-        .bg(theme::wash(theme::bg(), 0.72))
+        .rounded(theme::r_surface_inner())
+        .bg(theme::scrim())
+        .backdrop_blur(px(theme::SCRIM_BLUR))
         .on_mouse_down(MouseButton::Left, cx.listener(|state, _, _, cx| {
             state.sidebar = false;
             cx.notify();
@@ -70,6 +85,8 @@ pub fn overlay(state: &AppState, cx: &Context<AppState>) -> Stateful<Div> {
             div()
                 .w(px(WIDTH))
                 .h_full()
+                .rounded_tr(theme::r_surface_inner())
+                .rounded_br(theme::r_surface_inner())
                 .bg(theme::surface())
                 .border_l_1()
                 .border_color(theme::line())
@@ -103,7 +120,7 @@ pub fn overlay(state: &AppState, cx: &Context<AppState>) -> Stateful<Div> {
 fn header(_state: &AppState, cx: &Context<AppState>) -> Div {
     div()
         .flex_none()
-        .h(px(52.))
+        .h(px(theme::HEADER_HEIGHT))
         .pl(px(theme::S4))
         .pr(px(theme::S2))
         .flex()
@@ -138,14 +155,59 @@ fn header(_state: &AppState, cx: &Context<AppState>) -> Div {
 
 fn heading(label: &str) -> Div {
     div()
-        .text_size(px(theme::TEXT_XS))
-        .font_weight(FontWeight::MEDIUM)
-        .letter_spacing(px(0.4))
-        .text_color(theme::faint())
+        .text_size(px(theme::TEXT))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(theme::dim())
         .child(SharedString::from(label.to_string()))
 }
 
+/// Mantém o fim de um caminho, que é a parte que identifica: `…/pasta/projeto`.
+/// Corta num separador quando possível, para não deixar um nome pela metade.
+fn shorten_start(value: &str, max: usize) -> String {
+    let count = value.chars().count();
+    if count <= max {
+        return value.to_string();
+    }
+    let tail: String = value.chars().skip(count - (max - 1)).collect();
+    match tail.find('/') {
+        Some(slash) if slash + 1 < tail.len() => format!("…{}", &tail[slash..]),
+        _ => format!("…{tail}"),
+    }
+}
+
+/// Valores técnicos longos ganham a linha inteira: rótulo acima, valor abaixo,
+/// fim do caminho preservado e o texto completo no tooltip.
+const STACK_FROM: usize = 26;
+const STACK_MAX: usize = 38;
+
 fn pair(label: &str, value: String, mono: bool) -> AnyElement {
+    if mono && value.chars().count() > STACK_FROM {
+        let full = value.clone();
+        return div()
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .child(
+                div()
+                    .text_size(px(theme::TEXT_XS))
+                    .text_color(theme::faint())
+                    .child(SharedString::from(label.to_string())),
+            )
+            .child(
+                div()
+                    .id(SharedString::from(format!("inspector-pair-{label}")))
+                    .min_w(px(0.))
+                    .truncate()
+                    .font_family(theme::FONT_MONO)
+                    .text_size(px(theme::TEXT_SM))
+                    .text_color(theme::dim())
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| crate::ui::copy_button::TextTooltip(full.clone())).into()
+                    })
+                    .child(SharedString::from(shorten_start(&value, STACK_MAX))),
+            )
+            .into_any_element();
+    }
     div()
         .flex()
         .flex_row()
@@ -241,7 +303,8 @@ fn files_section(state: &AppState) -> Div {
             div()
                 .text_size(px(theme::TEXT_SM))
                 .text_color(theme::faint())
-                .child("nenhum ainda"),
+                .line_height(px(20.))
+                .child("Os arquivos usados pelo agente aparecem aqui durante a execução."),
         );
     }
 
@@ -311,35 +374,36 @@ fn context_section(state: &AppState) -> Div {
             } else if ratio > 0.6 {
                 theme::warn()
             } else {
-                theme::line_strong()
+                theme::accent()
             };
             section = section
-                .child(meter(ratio, color))
                 .child(
                     div()
                         .flex()
                         .flex_row()
-                        .items_center()
+                        .items_baseline()
                         .justify_between()
                         .child(
                             div()
                                 .font_family(theme::FONT_MONO)
-                                .text_size(px(theme::TEXT_XS))
-                                .text_color(theme::faint())
-                                .child(SharedString::from(format!(
-                                    "{} de {}",
-                                    crate::state::format_tokens(used),
-                                    crate::state::format_tokens(window)
-                                ))),
+                                .text_size(px(theme::TITLE))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(if ratio > 0.6 { color } else { theme::text() })
+                                .child(SharedString::from(format!("{percent:.0}%"))),
                         )
                         .child(
                             div()
                                 .font_family(theme::FONT_MONO)
                                 .text_size(px(theme::TEXT_XS))
-                                .text_color(if ratio > 0.6 { color } else { theme::dim() })
-                                .child(SharedString::from(format!("{percent:.0}%"))),
+                                .text_color(theme::dim())
+                                .child(SharedString::from(format!(
+                                    "{} de {}",
+                                    crate::state::format_tokens(used),
+                                    crate::state::format_tokens(window)
+                                ))),
                         ),
-                );
+                )
+                .child(meter(ratio, color));
         }
         None => {
             section = section.child(
@@ -489,23 +553,17 @@ fn actions_section(state: &AppState, cx: &Context<AppState>) -> Div {
     div()
         .flex()
         .flex_col()
-        .gap(px(theme::S2))
+        .gap(px(theme::S3))
         .child(heading("Ações"))
         .child(
             div()
                 .flex()
                 .flex_row()
-                .flex_wrap()
                 .gap(px(theme::S2))
-                .child(action(
-                    "action-compact",
-                    "Compactar",
-                    cx,
-                    |state, cx| {
-                        state.compact(cx);
-                        cx.notify();
-                    },
-                ))
+                .child(action("action-compact", "Compactar", cx, |state, cx| {
+                    state.compact(cx);
+                    cx.notify();
+                }))
                 .child(action("action-export", "Exportar", cx, |state, cx| {
                     state.export_html(cx);
                     cx.notify();
@@ -515,63 +573,58 @@ fn actions_section(state: &AppState, cx: &Context<AppState>) -> Div {
                     // decide, para não substituir uma sessão em execução.
                     state.new_session_requested = true;
                     cx.notify();
+                })),
+        )
+        .child(
+            div()
+                .id("action-auto-compact")
+                .w_full()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(theme::S3))
+                .px(px(theme::S3))
+                .py(px(theme::S2))
+                .rounded(theme::r_control())
+                .border_1()
+                .border_color(theme::line_soft())
+                .cursor_pointer()
+                .hover(|style| style.bg(theme::hover()))
+                .on_click(cx.listener(|state, _: &ClickEvent, _window, cx| {
+                    state.toggle_auto_compaction(cx);
+                    cx.notify();
                 }))
-                .child(div().w_full().h(px(1.)).bg(theme::line_soft()))
                 .child(
                     div()
-                        .id("action-auto-compact")
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .justify_between()
-                        .px(px(theme::S3))
-                        .py(px(theme::S1 + 3.))
-                        .rounded(theme::r_control())
-                        .cursor_pointer()
-                        .hover(|style| style.bg(theme::hover()))
-                        .on_click(cx.listener(|state, _: &ClickEvent, _window, cx| {
-                            state.toggle_auto_compaction(cx);
-                            cx.notify();
-                        }))
-                        .child(
-                            div()
-                                .text_size(px(theme::TEXT_XS))
-                                .text_color(theme::dim())
-                                .child("compactar sozinho quando encher"),
-                        )
-                        .child(mini_switch(state.session.auto_compaction)),
-                ),
+                        .flex_1()
+                        .min_w(px(0.))
+                        .text_size(px(theme::TEXT_SM))
+                        .text_color(theme::dim())
+                        .child("compactar sozinho quando encher"),
+                )
+                .child(mini_switch(state.session.auto_compaction)),
         )
 }
 
-/// Interruptor compacto mesmo diálogo: quando ligado usa o accent da janela,
-/// que é o tom do nível de raciocínio — o único lugar onde essas duas coisas
-/// se encontram por decisão de produto.
-fn mini_switch(on: bool) -> Div {
+/// Interruptor compacto: quando ligado usa o accent da janela, que é o tom do
+/// nível de raciocínio — o único lugar onde essas duas coisas se encontram por
+/// decisão de produto. O botão desliza com o mesmo movimento das demais chaves.
+fn mini_switch(on: bool) -> impl IntoElement {
     div()
+        .relative()
         .flex_none()
-        .flex()
-        .flex_row()
-        .items_center()
-        .w(px(26.))
-        .h(px(15.))
-        .px(px(2.))
-        .rounded(px(7.5))
+        .w(px(34.))
+        .h(px(18.))
+        .rounded(px(9.))
         .bg(if on { theme::accent() } else { theme::inset() })
         .border_1()
-        .border_color(if on {
-            theme::accent()
-        } else {
-            theme::line_strong()
-        })
-        .when(on, |el| el.justify_end())
-        .child(
-            div()
-                .flex_none()
-                .size(px(9.))
-                .rounded(px(4.5))
-                .bg(if on { theme::on_accent() } else { theme::faint() }),
-        )
+        .border_color(if on { theme::accent() } else { theme::line_strong() })
+        .child(crate::ui::switch_knob(
+            if on { "inspector-switch-on" } else { "inspector-switch-off" },
+            on,
+            if on { theme::on_accent() } else { theme::faint() },
+        ))
 }
 
 fn action(
@@ -582,7 +635,10 @@ fn action(
 ) -> AnyElement {
     div()
         .id(id)
-        .px(px(theme::S3))
+        .flex_1()
+        .flex()
+        .justify_center()
+        .px(px(theme::S2))
         .py(px(theme::S1 + 3.))
         .rounded(theme::r_control())
         .bg(theme::surface_2())
@@ -595,9 +651,34 @@ fn action(
                 .border_color(theme::line())
                 .text_color(theme::text())
         })
+        .active(|style| style.opacity(0.8))
         .text_size(px(theme::TEXT_SM))
         .text_color(theme::dim())
         .on_click(cx.listener(move |state, _: &ClickEvent, _window, cx| run(state, cx)))
         .child(SharedString::from(label.to_string()))
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{shorten_start, uses_overlay};
+
+    #[test]
+    fn long_paths_keep_their_tail_and_cut_at_a_separator() {
+        assert_eq!(shorten_start("/curto/caminho", 38), "/curto/caminho");
+        let long = "/tmp/dish-review-rxl4lti5/projeto-sintetico/subpasta-bem-longa";
+        let short = shorten_start(long, 38);
+        assert!(short.starts_with("…/"), "{short}");
+        assert!(short.ends_with("subpasta-bem-longa"), "{short}");
+        assert!(short.chars().count() <= 38, "{short}");
+    }
+
+    #[test]
+    fn details_keep_the_original_desktop_breakpoint() {
+        assert!(uses_overlay(780.));
+        assert!(uses_overlay(1119.));
+        assert!(!uses_overlay(1120.));
+        assert!(!uses_overlay(1240.));
+        assert!(!uses_overlay(1600.));
+    }
 }

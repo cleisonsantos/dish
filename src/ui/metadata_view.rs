@@ -1,5 +1,5 @@
 //! Compact timestamps with provenance, full tooltip and keyboard-openable details.
-use super::{copy_button::TextTooltip, selectable};
+use super::{copy_button::TextTooltip, selectable, test_probe::TestProbe};
 use crate::{metadata::Metadata, theme};
 use gpui::prelude::*;
 use gpui::*;
@@ -8,6 +8,9 @@ use gpui::*;
 pub struct MetadataView {
     pub id: ElementId,
     pub metadata: Metadata,
+    /// Quando definido, o marcador de horário fica discreto e só ganha
+    /// contraste com o mouse sobre o grupo ou com o foco do teclado.
+    pub group: Option<&'static str>,
 }
 
 impl RenderOnce for MetadataView {
@@ -31,9 +34,13 @@ impl RenderOnce for MetadataView {
                     .rounded(theme::r_control())
                     .text_size(px(theme::TEXT_XS))
                     .text_color(theme::faint())
+                    .when_some(self.group, |el, group| {
+                        el.opacity(0.6).group_hover(group, |s| s.opacity(1.))
+                    })
                     .hover(|s| s.text_color(theme::text()))
                     .focus(|s| {
-                        s.bg(theme::hover())
+                        s.opacity(1.)
+                            .bg(theme::hover())
                             .border_1()
                             .border_color(theme::accent())
                     })
@@ -72,6 +79,11 @@ impl RenderOnce for MetadataView {
                             _ => {}
                         },
                     )
+                    .test_probe(|| format!("{}-badge", self.id), || serde_json::json!({
+                        "expanded": open,
+                        "label": self.metadata.label,
+                        "details": self.metadata.details,
+                    }))
                     .child(SharedString::from(self.metadata.label)),
             )
             .when(open, |el| {
@@ -84,6 +96,9 @@ impl RenderOnce for MetadataView {
                         .bg(theme::inset())
                         .text_size(px(theme::TEXT_XS))
                         .text_color(theme::dim())
+                        .test_probe(|| format!("{}-details", self.id), || serde_json::json!({
+                            "text": self.metadata.details,
+                        }))
                         .child(selectable::plain(
                             (self.id, "text").into(),
                             &self.metadata.details,

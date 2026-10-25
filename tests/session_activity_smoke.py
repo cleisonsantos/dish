@@ -95,16 +95,27 @@ with tempfile.TemporaryDirectory(prefix="dish-activity-") as temporary:
     def nav_text():
         collapsed = preferences().get("navigation_open") is False
         # Once collapsed, a wide crop includes the transcript, which swamps
-        # the tiny aggregate badges in OCR. Isolate and enlarge the actual rail.
+        # the tiny aggregate badges in OCR. Isolate the actual rail and enlarge
+        # it in both layouts: at 1x the 12px state labels are read as "1nova"
+        # or skipped entirely on the CI font.
         width = 44 if collapsed else int(preferences().get("navigation_width", 264))
-        subprocess.run(["import", "-window", str(window), "-crop", f"{width}x860+0+0", str(screenshot)], check=True)
-        if collapsed:
+        # A whole-rail capture makes tesseract merge the project header with
+        # the row beneath it and drop the row's title/state ("beta saved",
+        # "interrompida"). Short overlapping bands keep each row a separate
+        # text block; the bands also cover the full scroll viewport.
+        pieces = []
+        for top in range(0, 860, 150):
+            subprocess.run(["import", "-window", str(window), "-crop",
+                            f"{width}x180+0+{top}", str(screenshot)], check=True)
             subprocess.run(["convert", str(screenshot), "-resize", "300%", str(screenshot)], check=True)
-        return normalized(subprocess.check_output(["tesseract", str(screenshot), "stdout", "--psm", "6"],
-                                                  stderr=subprocess.DEVNULL).decode())
+            pieces.append(subprocess.check_output(
+                ["tesseract", str(screenshot), "stdout", "--psm", "6"],
+                stderr=subprocess.DEVNULL).decode())
+        return normalized("\n".join(pieces))
 
     def rail_text():
         subprocess.run(["import", "-window", str(window), "-crop", "44x860+0+0", str(screenshot)], check=True)
+        subprocess.run(["convert", str(screenshot), "-resize", "300%", str(screenshot)], check=True)
         return normalized(subprocess.check_output(["tesseract", str(screenshot), "stdout", "--psm", "6"],
                                                   stderr=subprocess.DEVNULL).decode())
 
@@ -180,7 +191,7 @@ with tempfile.TemporaryDirectory(prefix="dish-activity-") as temporary:
         # Two queued beta runs: the first response remains unread while the next runs.
         beta_pid = send("long-activity-b")
         send("long-activity-queued")
-        wait_for(lambda: "emfila" in nav_text().replace(" ", ""), "Queued prompt has no separate indicator")
+        wait_for(lambda: "emfila" in nav_text().replace(" ", ""), "Queued prompt has no separate indicator", timeout=30)
         chord("Control_L", "Tab")  # alpha
         wait_for(lambda: alpha_path not in preferences().get("unread_sessions", {}), "Viewing alpha did not mark it read")
         release_run("long-activity-b")

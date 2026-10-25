@@ -5,10 +5,8 @@
 //! quotes, tables and inline emphasis — without pulling in a full parser.
 
 use gpui::{
-    AnyElement, Font, FontWeight, Hsla, IntoElement, SharedString, TextRun,
-    div, img, prelude::*, px,
-    ObjectFit,
-
+    AnyElement, Font, FontWeight, Hsla, IntoElement, ObjectFit, ScrollHandle, SharedString,
+    TextRun, div, img, prelude::*, px,
 };
 
 use crate::theme;
@@ -277,6 +275,7 @@ fn code_block(language: Option<&str>, code: &str, style: &MarkdownStyle, selecti
                         .child(language.unwrap_or("code").to_uppercase()),
                 )
                 .child(crate::ui::copy_button::CopyButton {
+                    group: None,
                     id: ("copy-code", index).into(),
                     text: copy_code,
                     label: "Copiar código",
@@ -354,6 +353,16 @@ fn table_header(lines: &[&str], index: usize) -> Option<Vec<gpui::TextAlign>> {
 }
 
 fn table(rows: &[Vec<String>], alignments: &[gpui::TextAlign], style: &MarkdownStyle, selection: &mut crate::ui::selectable::SelectionBuilder) -> AnyElement {
+    table_with_scroll(rows, alignments, style, selection, None)
+}
+
+fn table_with_scroll(
+    rows: &[Vec<String>],
+    alignments: &[gpui::TextAlign],
+    style: &MarkdownStyle,
+    selection: &mut crate::ui::selectable::SelectionBuilder,
+    scroll_handle: Option<&ScrollHandle>,
+) -> AnyElement {
     let widths: Vec<f32> = (0..alignments.len()).map(|col| {
         rows.iter().filter_map(|row| row.get(col))
             .map(|cell| cell.chars().count() as f32 * 7.5 + 24.)
@@ -373,7 +382,9 @@ fn table(rows: &[Vec<String>], alignments: &[gpui::TextAlign], style: &MarkdownS
         body = body.child(rendered);
     }
     div().id(crate::ui::content_id("md-table", &format!("{rows:?}")))
-        .w_full().overflow_x_scroll().border_1().border_color(theme::line())
+        .w_full().overflow_x_scroll().restrict_scroll_to_axis()
+        .when_some(scroll_handle, |el, handle| el.track_scroll(handle))
+        .border_1().border_color(theme::line())
         .rounded(theme::r_technical()).child(body).into_any_element()
 }
 
@@ -782,6 +793,10 @@ pub fn blocks(text: &str, style: &MarkdownStyle, cwd: &std::path::Path, id: gpui
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::{
+        Bounds, Context, Modifiers, PlatformInput, Render, ScrollDelta, ScrollWheelEvent,
+        TouchPhase, Window, WindowBounds, WindowOptions, point, size,
+    };
 
     #[test]
     fn standalone_images_parse_without_consuming_partial_streams() {
@@ -909,5 +924,141 @@ mod tests {
         assert!(table_header(&["A | B", "---"], 0).is_none());
         assert!(table_header(&["A | B", "a | b"], 0).is_none());
         assert!(table_header(&["A | B"], 0).is_none());
+    }
+
+    #[test]
+    fn wide_table_vertical_wheel_scrolls_transcript_and_shift_wheel_scrolls_table() {
+        struct TableScrollHarness {
+            transcript_scroll: ScrollHandle,
+            table_scroll: ScrollHandle,
+        }
+
+        impl Render for TableScrollHarness {
+            fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+                let rows = vec![
+                    vec![
+                        "coluna_um_larga".to_string(),
+                        "coluna_dois_larga".to_string(),
+                        "coluna_tres_larga".to_string(),
+                        "coluna_quatro_larga".to_string(),
+                        "coluna_cinco_larga".to_string(),
+                        "coluna_seis_larga".to_string(),
+                    ],
+                    vec![
+                        "valor_1".to_string(),
+                        "valor_2".to_string(),
+                        "valor_3".to_string(),
+                        "valor_4".to_string(),
+                        "valor_5".to_string(),
+                        "valor_6".to_string(),
+                    ],
+                ];
+                let alignments = vec![gpui::TextAlign::Left; 6];
+                let style = crate::ui::markdown_style();
+                let mut selection = crate::ui::selectable::SelectionBuilder::with_search(None);
+                div()
+                    .id("transcript-viewport")
+                    .w(px(300.))
+                    .h(px(140.))
+                    .overflow_y_scroll()
+                    .restrict_scroll_to_axis()
+                    .track_scroll(&self.transcript_scroll)
+                    .flex()
+                    .flex_col()
+                    .child(table_with_scroll(
+                        &rows,
+                        &alignments,
+                        &style,
+                        &mut selection,
+                        Some(&self.table_scroll),
+                    ))
+                    .child(div().w_full().h(px(400.)).flex_none())
+            }
+        }
+
+        let verified = std::rc::Rc::new(std::cell::Cell::new(false));
+        let verified_flag = verified.clone();
+        gpui_platform::headless().run(move |cx| {
+            let transcript_scroll = ScrollHandle::new();
+            let table_scroll = ScrollHandle::new();
+            let transcript_handle = transcript_scroll.clone();
+            let table_handle = table_scroll.clone();
+            let window = cx
+                .open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                            point(px(0.), px(0.)),
+                            size(px(300.), px(140.)),
+                        ))),
+                        ..Default::default()
+                    },
+                    move |_window, cx| {
+                        cx.new(|_| TableScrollHarness {
+                            transcript_scroll,
+                            table_scroll,
+                        })
+                    },
+                )
+                .unwrap();
+            gpui::AnyWindowHandle::from(window)
+                .update(cx, |_, window, cx| {
+                    let _ = window.draw(cx);
+                    assert_eq!(transcript_handle.offset().y, px(0.));
+                    assert_eq!(table_handle.offset().x, px(0.));
+
+                    // Roda vertical sobre a tabela larga: o transcript rola na vertical
+                    // e o offset horizontal da tabela permanece em 0.
+                    window.dispatch_event(
+                        PlatformInput::ScrollWheel(ScrollWheelEvent {
+                            position: point(px(60.), px(24.)),
+                            delta: ScrollDelta::Pixels(point(px(0.), px(-48.))),
+                            modifiers: Modifiers::none(),
+                            touch_phase: TouchPhase::Moved,
+                        }),
+                        cx,
+                    );
+                    let _ = window.draw(cx);
+                    assert!(
+                        transcript_handle.offset().y < px(0.),
+                        "expected vertical transcript offset to change, got {:?}",
+                        transcript_handle.offset()
+                    );
+                    assert_eq!(
+                        table_handle.offset().x,
+                        px(0.),
+                        "expected horizontal table offset to stay 0 on vertical wheel"
+                    );
+
+                    // Shift+roda (convertido pela plataforma em delta horizontal sobre a tabela):
+                    // a tabela rola na horizontal e o offset vertical do transcript não muda.
+                    let vertical_after_wheel = transcript_handle.offset().y;
+                    window.dispatch_event(
+                        PlatformInput::ScrollWheel(ScrollWheelEvent {
+                            position: point(px(60.), px(24.)),
+                            delta: ScrollDelta::Pixels(point(px(-48.), px(0.))),
+                            modifiers: Modifiers {
+                                shift: true,
+                                ..Modifiers::none()
+                            },
+                            touch_phase: TouchPhase::Moved,
+                        }),
+                        cx,
+                    );
+                    let _ = window.draw(cx);
+                    assert!(
+                        table_handle.offset().x < px(0.),
+                        "expected horizontal table offset to change on Shift+wheel, got {:?}",
+                        table_handle.offset()
+                    );
+                    assert_eq!(transcript_handle.offset().y, vertical_after_wheel);
+                    verified_flag.set(true);
+                })
+                .unwrap();
+            cx.spawn(async move |cx| {
+                cx.update(|cx| cx.quit());
+            })
+            .detach();
+        });
+        assert!(verified.get());
     }
 }
