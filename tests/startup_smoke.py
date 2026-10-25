@@ -90,10 +90,11 @@ printf '#!/bin/sh\\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@
     try:
         wait_for(lambda: find_window(), "Setup window not created")
         window = find_window()
-        time.sleep(0.2)
-        x11.XSetInputFocus(display, window, 1, 0)
-        x11.XFlush(display)
-        time.sleep(2)
+        # O Xvfb não tem gerenciador de janelas: sem o expose que um desktop
+        # real envia ao mapear a janela, o primeiro quadro do assistente pode
+        # nunca ser pintado (captura preta, OCR sem nada para ler).
+        prepare_window(window)
+        time.sleep(1)
         assert process.poll() is None
         assert not install_log.exists(), "Installation ran without consent"
         assert not terminal_log.exists(), "Official installer ran without consent"
@@ -113,10 +114,9 @@ printf '#!/bin/sh\\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@
         process.wait(timeout=5)
         log.close()
         process, log = launch()
-        time.sleep(3)
+        wait_for(lambda: find_window(), "Setup window not recreated")
         window = find_window()
-        x11.XSetInputFocus(display, window, 1, 0)
-        x11.XFlush(display)
+        prepare_window(window)
         time.sleep(2)
         # Segundo passo do assistente: a alternativa sem terminal.
         click_text("Instalar o Pi")
@@ -140,6 +140,10 @@ printf '#!/bin/sh\\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@
         print("Startup installation smoke passed")
     except Exception:
         print((temp / "dish.log").read_text())
+        # A captura por janela pode sair preta sem WM; a raiz mostra o X inteiro.
+        root_shot = tempfile.mktemp(prefix="dish-setup-root-", suffix=".png")
+        subprocess.run(["import", "-window", "root", root_shot], check=False)
+        print(f"Root screenshot: {root_shot}", flush=True)
         raise
     finally:
         process.terminate()
