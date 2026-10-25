@@ -142,8 +142,31 @@ with tempfile.TemporaryDirectory(prefix="dish-appearance-") as temporary:
         assert close, "Settings header missing"
         attributes = XWindowAttributes()
         assert x11.XGetWindowAttributes(display, window, ctypes.byref(attributes))
-        # Inside the content column, anchored by the close control on its right.
-        wheel_at(window, close[0] - 24, attributes.height // 2, button, count)
+        # Sobre os rótulos do conteúdo, não na borda direita: ali ficam
+        # interruptores e o trilho da barra, que podem engolir a roda no runner.
+        x = max(200, close[0] - 250)
+        crop = f"600x450+{max(0, close[0] - 550)}+200"
+
+        def frame():
+            return subprocess.check_output(
+                ["import", "-window", str(window), "-crop", crop, "-depth", "8", "rgb:-"],
+                stderr=subprocess.DEVNULL)
+
+        # No runner sem GPU, vários eventos de roda enviados de uma vez podem
+        # coalescer num único passo. Só avança para o próximo evento depois de
+        # ver a lista mudar de frame; no limite do scroll, para.
+        current = frame()
+        for _ in range(count):
+            wheel_at(window, x, attributes.height // 2, button, 1)
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                time.sleep(0.03)
+                next_frame = frame()
+                if next_frame != current:
+                    current = next_frame
+                    break
+            else:
+                break
         previous = [None]
 
         def settled():

@@ -132,16 +132,34 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
         click_label("Mostrar")
         wait_for(lambda: json.loads(state_path.read_text()).get("hidden_models") == [],
                  "Mostrar todos did not clear the hidden models")
-        click_label("Sobre / Pi")
-        about = capture()
-        compact_about = "".join(about.lower().split())
-        assert "piselecionado" in compact_about and "sdkdopi" not in compact_about, about
-        click_label("Aplicativo")
-        click_label("Painel de detalhes")
-        click_label("expandido")
+        # A troca de seção tem uma entrada animada; capturar logo após o
+        # clique lia só a navegação, com o conteúdo ainda transparente.
+        def open_about():
+            click_label("Sobre / Pi")
+            about = capture()
+            compact = "".join(about.lower().split())
+            return "piselecionado" in compact and "sdkdopi" not in compact
+
+        wait_for(open_about, "About page did not render")
         preferences = temp / "config/dish/state.json"
-        wait_for(lambda: json.loads(preferences.read_text()).get("details_open") is False, "Details setting not persisted")
-        wait_for(lambda: json.loads(preferences.read_text()).get("show_thinking") is False, "Thinking setting not persisted")
+
+        def open_app():
+            click_label("Aplicativo")
+            return "Painel de detalhes" in capture()
+
+        wait_for(open_app, "App page did not render")
+
+        def hide_details():
+            click_label("Painel de detalhes")
+            return json.loads(preferences.read_text()).get("details_open") is False
+
+        wait_for(hide_details, "Details setting not persisted")
+
+        def hide_thinking():
+            click_label("expandido")
+            return json.loads(preferences.read_text()).get("show_thinking") is False
+
+        wait_for(hide_thinking, "Thinking setting not persisted")
         # Closing button restores input focus and leaves no second help modal.
         click_label("Fechar")
         wait_for(lambda: "Configura" not in capture(), "Close button did not close")
