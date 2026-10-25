@@ -393,7 +393,7 @@ pub fn install(npm: &str, destination: &Path) -> Result<String> {
 
 pub fn manual_command() -> &'static str {
     if cfg!(windows) {
-        "powershell -c \"irm https://pi.dev/install.ps1 | iex\""
+        include_str!("../scripts/install-pi-windows.ps1")
     } else {
         "curl -fsSL https://pi.dev/install.sh | sh"
     }

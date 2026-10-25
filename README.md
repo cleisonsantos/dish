@@ -424,3 +424,10 @@ The text editor in `src/editor.rs` is adapted from the `Editor` in the
 soft wrapping, vertical movement and imperative text access added.
 
 Licensed under Apache-2.0.
+
+Windows EDR/SmartScreen: Dish starts child processes such as `git`, `node` and,
+with installation consent, `npm`. Compare release downloads with the published
+SHA-256 (`Get-FileHash .\dish-<version>-windows-x86_64-setup.exe -Algorithm SHA256`).
+Signing is optional in CI; an unsigned build may still trigger reputation alerts.
+See [Windows false-positive investigation](docs/windows-false-positive.md) for
+installation consent, signature checks and reporting to SentinelOne or Microsoft.
