@@ -1858,7 +1858,7 @@ impl Render for Workspace {
                 .pr(px(crate::ui::window_frame::BORDER))
                 .pt(px(crate::ui::window_frame::BORDER))
                 .pb(px(crate::ui::window_frame::BORDER))
-                .child(crate::ui::client_titlebar());
+                .child(crate::ui::client_titlebar(window));
         }
         let mut body = div().relative().flex_1().min_h(px(0.)).flex().flex_row();
         if self.visible {

@@ -332,7 +332,9 @@ fn main() {
                 traffic_light_position: None,
             }),
             // No Linux a barra integrada é desenhada pelo Dish, como no Zed.
-            // Nas outras plataformas mantemos a decoração nativa por enquanto.
+            // No Windows o backend cria um HWND sem WS_CAPTION (e ignora este
+            // pedido), então o Dish também desenha a própria barra lá; o
+            // workaround fica em `ui::window_frame::client_side`.
             window_decorations: cfg!(target_os = "linux")
                 .then_some(WindowDecorations::Client),
             window_background: WindowBackgroundAppearance::Opaque,
