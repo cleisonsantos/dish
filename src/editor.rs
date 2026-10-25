@@ -536,21 +536,9 @@ impl Editor {
     }
 
     fn move_grapheme(&mut self, forward: bool, extend: bool, cx: &mut Context<Self>) {
-        if !extend {
-            let content = self.text(cx);
-            let caret = self.caret_after_horizontal(forward);
-            self.place(caret, false, cx);
-            let _ = content;
-            return;
-        }
         let content = self.text(cx);
-        let head = self.selection.head;
-        let target = if forward {
-            next_boundary(&content, head)
-        } else {
-            previous_boundary(&content, head)
-        };
-        self.place(target, true, cx);
+        let target = horizontal_target(&content, self.selection, forward, extend);
+        self.place(target, extend, cx);
     }
 
     fn move_word(&mut self, forward: bool, extend: bool, cx: &mut Context<Self>) {
@@ -930,6 +918,23 @@ impl Editor {
 }
 
 // ------------------------------------------------------------ text utilities
+
+/// New caret for a horizontal move: with a selection, collapse it in the
+/// direction of travel; otherwise step one grapheme.
+fn horizontal_target(content: &str, selection: Selection, forward: bool, extend: bool) -> usize {
+    if !extend && !selection.is_empty() {
+        return if forward {
+            selection.end()
+        } else {
+            selection.start()
+        };
+    }
+    if forward {
+        next_boundary(content, selection.head)
+    } else {
+        previous_boundary(content, selection.head)
+    }
+}
 
 fn previous_boundary(content: &str, offset: usize) -> usize {
     content
@@ -1599,7 +1604,7 @@ pub fn standard_actions<E: InteractiveElement>(editor: Entity<Editor>) -> impl F
 
 #[cfg(test)]
 mod tests {
-    use super::{trim_snapshots, PromptHistory, Selection, Snapshot};
+    use super::{horizontal_target, trim_snapshots, PromptHistory, Selection, Snapshot};
 
     #[test]
     fn undo_budget_drops_oldest_snapshots_but_keeps_the_latest() {
@@ -1656,6 +1661,97 @@ mod tests {
         history.push("um editado");
         assert_eq!(history.entries(), ["um", "um editado"]);
         assert_eq!(history.previous("vazio"), Some("um editado".into()));
+    }
+
+    #[test]
+    fn horizontal_move_steps_one_grapheme_with_empty_selection() {
+        let content = "ab";
+        assert_eq!(
+            horizontal_target(content, Selection::caret(1), true, false),
+            2,
+            "right moves forward in the middle of the draft"
+        );
+        assert_eq!(
+            horizontal_target(content, Selection::caret(1), false, false),
+            0,
+            "left moves backward in the middle of the draft"
+        );
+        assert_eq!(
+            horizontal_target(content, Selection::caret(0), false, false),
+            0,
+            "left at the start stays put"
+        );
+        assert_eq!(
+            horizontal_target(content, Selection::caret(content.len()), true, false),
+            content.len(),
+            "right at the end stays put"
+        );
+    }
+
+    #[test]
+    fn horizontal_move_collapses_selection_in_direction_of_travel() {
+        let content = "abcdef";
+        let forward = Selection::new(1, 4);
+        assert_eq!(horizontal_target(content, forward, true, false), 4);
+        assert_eq!(horizontal_target(content, forward, false, false), 1);
+
+        let reversed = Selection::new(4, 1);
+        assert_eq!(horizontal_target(content, reversed, true, false), 4);
+        assert_eq!(horizontal_target(content, reversed, false, false), 1);
+    }
+
+    #[test]
+    fn horizontal_move_with_extend_steps_from_the_head() {
+        let content = "abc";
+        assert_eq!(
+            horizontal_target(content, Selection::caret(1), true, true),
+            2
+        );
+        assert_eq!(
+            horizontal_target(content, Selection::caret(1), false, true),
+            0
+        );
+        assert_eq!(
+            horizontal_target(content, Selection::new(0, 2), false, true),
+            1,
+            "extending shrinks the selection instead of collapsing it"
+        );
+    }
+
+    #[test]
+    fn horizontal_move_keeps_multibyte_offsets_on_grapheme_boundaries() {
+        let accented = "é";
+        let accented_end = horizontal_target(accented, Selection::caret(0), true, false);
+        assert_eq!(accented_end, accented.len());
+        assert!(accented.is_char_boundary(accented_end));
+        assert_eq!(
+            horizontal_target(accented, Selection::caret(accented.len()), false, false),
+            0
+        );
+
+        let thumbs = "a👍b";
+        let after_thumbs = 1 + '👍'.len_utf8();
+        assert_eq!(
+            horizontal_target(thumbs, Selection::caret(1), true, false),
+            after_thumbs
+        );
+        assert_eq!(
+            horizontal_target(thumbs, Selection::caret(after_thumbs), true, false),
+            thumbs.len()
+        );
+        assert_eq!(
+            horizontal_target(thumbs, Selection::caret(after_thumbs), false, false),
+            1
+        );
+
+        let family = "👨‍👩‍👧‍👦";
+        let family_end = horizontal_target(family, Selection::caret(0), true, false);
+        assert_eq!(family_end, family.len(), "a ZWJ emoji is one grapheme");
+        assert!(family.is_char_boundary(family_end));
+        assert_eq!(
+            horizontal_target(family, Selection::caret(family.len()), false, false),
+            0
+        );
     }
 
     #[test]
