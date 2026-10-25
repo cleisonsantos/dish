@@ -105,10 +105,16 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
         assert "Aplicativo" in page and "Contas e provedores" not in page, page
         # Modelos: ocultar/reexibir é preferência do Dish e precisa persistir.
         state_path = temp / "config/dish/state.json"
-        click_label("Modelos")
+        # A troca de seção é animada e a lista de modelos chega do Pi em
+        # paralelo. Repetir o clique até a página mostrar o modelo evita
+        # capturar o frame antigo em vez de concluir que ele nunca chegou.
+        def open_models():
+            click_label("Modelos")
+            page = capture()
+            return "Modelos" in page and ("fake-model" in page or "test" in page)
+
+        wait_for(open_models, "Models page did not render the Pi model", timeout=20)
         models_page = capture()
-        assert "Modelos" in models_page, models_page
-        assert "fake-model" in models_page or "test" in models_page, models_page
         # Switch do provedor: desliga o grupo inteiro e volta a ligar.
         provider_y, _ = find_model_rows()
         click(window, 1003, provider_y)

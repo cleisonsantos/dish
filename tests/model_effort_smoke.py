@@ -44,8 +44,14 @@ with tempfile.TemporaryDirectory(prefix="dish-effort-") as temporary:
     def text():
         screenshot = temp / "screen.png"
         subprocess.run(["import", "-window", str(window), str(screenshot)], check=True)
-        raw = subprocess.check_output(["tesseract", str(screenshot), "stdout", "--psm", "11"], stderr=subprocess.DEVNULL).decode()
-        return normalized(raw)
+        # PSM 11 loses the tail of small labels on the CI font ("sem racio");
+        # PSM 6 reads the same composer row correctly. Combine both so a
+        # rendering that only one segmentation can read still counts.
+        raw = b"\n".join(
+            subprocess.check_output(["tesseract", str(screenshot), "stdout", "--psm", psm],
+                                    stderr=subprocess.DEVNULL)
+            for psm in ("11", "6"))
+        return normalized(raw.decode())
 
     def slash(model, provider=True):
         chord("Control_L", "l")

@@ -2032,6 +2032,10 @@ impl AppState {
     }
 
     fn push_local_user(&mut self, text: &str) {
+        // Enviar de novo é um pedido explícito para ver a conversa: retoma o
+        // acompanhamento do fim mesmo depois de abrir um bloco antigo (que
+        // fixa o scroll para o cabeçalho copiado não fugir da tela).
+        self.list_state.set_follow_mode(FollowMode::Tail);
         self.transcript_revision = self.transcript_revision.wrapping_add(1);
         let mut message = Message::new(Role::User);
         message.local = true;
@@ -2386,6 +2390,8 @@ impl AppState {
         let Some(id) = self.send_rpc(result, cx) else {
             return;
         };
+        // Um comando local também é atividade nova: volte ao fim da conversa.
+        self.list_state.set_follow_mode(FollowMode::Tail);
         let mut message = Message::new(Role::Bash);
         message.timestamp = now_ms().unwrap_or(0);
         message.timestamp_origin = TimeOrigin::Dish;

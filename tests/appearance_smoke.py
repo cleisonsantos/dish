@@ -188,13 +188,20 @@ with tempfile.TemporaryDirectory(prefix="dish-appearance-") as temporary:
         assert box, f"Theme not reachable by scrolling: {label}"
         # Com as linhas compactas do redesign o OCR pode errar o centro da
         # linha por poucos pixels; reclicar é mais barato que falhar o smoke.
-        for attempt in range(3):
+        # A lista também se desloca quando o tema aplicado redesenha as linhas,
+        # então cada tentativa relê a posição do rótulo em vez de reutilizar
+        # uma caixa que pode ter ficado sobre a linha vizinha.
+        for attempt in range(4):
+            box = text_box(label)
+            if not box:
+                content_scroll(5, 3)
+                continue
             activate(box)
             try:
                 wait_for(lambda: saved().get("theme") == theme_id, f"Theme id not saved: {theme_id}", timeout=10)
                 break
             except AssertionError:
-                if attempt == 2:
+                if attempt == 3:
                     raise
                 time.sleep(0.4)
         assert saved().get("appearance") == ("dark" if dark else "light")

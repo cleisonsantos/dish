@@ -160,24 +160,49 @@ def click(window, x, y):
 
 def find_word(window, needle, last=False):
     """Locate rendered text instead of assuming transcript row coordinates."""
+    def scan(path, scale, psm):
+        rows = subprocess.check_output(
+            ["tesseract", path, "stdout", "--psm", psm, "tsv"],
+            stderr=subprocess.DEVNULL).decode().splitlines()[1:]
+        found = []
+        for row in rows:
+            fields = row.split("\t")
+            if len(fields) == 12 and needle.casefold() in fields[11].casefold():
+                found.append(tuple(int(fields[i]) // scale for i in (6, 7, 8, 9)))
+        return found
+
     with tempfile.NamedTemporaryFile(suffix=".png") as image:
         capture = subprocess.run(["import", "-window", str(window), image.name],
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if capture.returncode != 0:
             return None  # Window may have its title before it is mapped.
-        rows = subprocess.check_output(
-            ["tesseract", image.name, "stdout", "--psm", "11", "tsv"],
-            stderr=subprocess.DEVNULL).decode().splitlines()[1:]
-    matches = []
-    for row in rows:
-        fields = row.split("\t")
-        if len(fields) == 12 and needle.casefold() in fields[11].casefold():
-            matches.append(tuple(int(fields[i]) for i in (6, 7, 8, 9)))
+        matches = scan(image.name, 1, "11")
+        if not matches:
+            # Metadata and tool state labels are 10-11px; at native size the
+            # CI font loses a letter ("resultado" becomes "resuitado"). Retry
+            # the same frame enlarged instead of reporting the text absent.
+            large = image.name + ".large.png"
+            subprocess.run(["convert", image.name, "-resize", "200%", large],
+                           check=True, stderr=subprocess.DEVNULL)
+            matches = scan(large, 2, "11")
+            if not matches:
+                # PSM 11 drops the compact metadata badges entirely on some
+                # rows; PSM 6 reads the same enlarged frame.
+                matches = scan(large, 2, "6")
     return (matches[-1] if last else matches[0]) if matches else None
 
 
 def clipboard_text():
-    return subprocess.check_output(["xclip", "-selection", "clipboard", "-out"], timeout=3).decode()
+    # A copy action owns the X selection asynchronously; reading it in the same
+    # tick can race the event loop. Retry the read, never the expected value.
+    end = time.monotonic() + 5
+    while time.monotonic() < end:
+        probe = subprocess.run(["xclip", "-selection", "clipboard", "-out"],
+                               capture_output=True, timeout=3)
+        if probe.returncode == 0:
+            return probe.stdout.decode()
+        time.sleep(0.1)
+    raise AssertionError("clipboard has no owner")
 
 
 def drag(window, start, end):
@@ -222,24 +247,42 @@ def scroll_up(window):
 
 def click_nav_label(window, label, close=False):
     # Busy indicators change row heights; saved sessions have no fixed y.
-    with tempfile.NamedTemporaryFile(suffix=".png") as image:
-        subprocess.run(["import", "-window", str(window), "-crop", "264x10000+0+0", "-resize", "200%", image.name], check=True)
-        rows = subprocess.check_output(
-            ["tesseract", image.name, "stdout", "--psm", "6", "tsv"],
-            stderr=subprocess.DEVNULL).decode().splitlines()[1:]
-    lines = {}
-    for row in rows:
-        fields = row.split("\t")
-        if len(fields) == 12 and fields[11].strip() and int(fields[6]) < 528:
-            lines.setdefault(tuple(fields[1:5]), []).append(fields)
-    for words in lines.values():
-        def match_text(text):
-            return "".join(char for char in text.lower() if char.isalnum())
-        if match_text(label) in match_text(" ".join(word[11] for word in words)):
-            first = words[0]
-            click(window, 230 if close else 90, (int(first[7]) + int(first[9]) // 2) // 2)
-            return
-    raise AssertionError(f"Navigation label not found: {label}")
+    def find_row():
+        with tempfile.NamedTemporaryFile(suffix=".png") as image:
+            subprocess.run(["import", "-window", str(window), "-crop", "264x10000+0+0", "-resize", "200%", image.name], check=True)
+            rows = subprocess.check_output(
+                ["tesseract", image.name, "stdout", "--psm", "6", "tsv"],
+                stderr=subprocess.DEVNULL).decode().splitlines()[1:]
+        lines = {}
+        for row in rows:
+            fields = row.split("\t")
+            if len(fields) == 12 and fields[11].strip() and int(fields[6]) < 528:
+                lines.setdefault(tuple(fields[1:5]), []).append(fields)
+        for words in lines.values():
+            def match_text(text):
+                return "".join(char for char in text.lower() if char.isalnum())
+            if match_text(label) in match_text(" ".join(word[11] for word in words)):
+                first = words[0]
+                return (int(first[7]) + int(first[9]) // 2) // 2
+        return None
+
+    y = find_row()
+    if y is None:
+        # Running rows grow activity lines; in a full list the requested
+        # session can sit below the viewport. Scroll the rail and locate by
+        # text again instead of assuming the row was never rendered.
+        for button in (5, 4):
+            for _ in range(8):
+                wheel_at(window, 90, 420, button, 4)
+                time.sleep(0.2)
+                y = find_row()
+                if y is not None:
+                    break
+            if y is not None:
+                break
+    if y is None:
+        raise AssertionError(f"Navigation label not found: {label}")
+    click(window, 230 if close else 90, y)
 
 
 def click_beta_session(window, close=False):
@@ -343,6 +386,25 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
     def commands(kind):
         return [item for item in events() if item.get("command", {}).get("type") == kind]
 
+    def active_project():
+        # The workspace persists the active session on the next render; this is
+        # the real selected state, not an OCR guess about the highlight.
+        try:
+            return json.loads((temp / "config/dish/state.json").read_text()).get("last_project")
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    def activate_beta():
+        try:
+            click_beta_session(window)
+        except AssertionError:
+            # A click that lands on beta's project header folds the group and
+            # hides the saved row. Click the header again to reopen it; the
+            # next wait iteration retries the row itself.
+            click_nav_label(window, "beta")
+            return False
+        return active_project() == str(projects[1])
+
     try:
         wait_for(lambda: find_window(), "Window not created")
         window = find_window()
@@ -373,9 +435,17 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         type_text("returned")
         # Esc must focus the prompt, not leave text in the sidebar filter.
         wait_for(lambda: find_word(window, "draft-returned"), "Sidebar Escape did not focus prompt")
-        chord("Control_L", "a")
-        chord("Control_L", "c")
-        assert clipboard_text() == "draft-returned", "Search lost the prompt draft or did not restore focus"
+        def copied_draft():
+            # Key events can be delivered before the escape/focus frame lands;
+            # repeat the copy and judge the clipboard content, never skip it.
+            chord("Control_L", "a")
+            chord("Control_L", "c")
+            try:
+                return clipboard_text() == "draft-returned"
+            except AssertionError:
+                return False
+
+        wait_for(copied_draft, "Search lost the prompt draft or did not restore focus")
         assert not commands("prompt"), "Search shortcuts accidentally submitted a prompt"
         press("BackSpace")
         chord("Control_L", "k")
@@ -490,7 +560,9 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         # A hidden extension dialog must neither take beta's input nor stop navigation.
         type_text("dialog")
         press("Return")
-        click_beta_session(window)
+        # A row can move while alpha's activity line grows; re-locate and click
+        # until the workspace actually reports beta as the active session.
+        wait_for(activate_beta, "Saved session did not become active", timeout=60)
         wait_for(lambda: any(item.get("record", {}).get("type") == "extension_ui_request" for item in events()),
                  "Background extension dialog did not arrive")
         time.sleep(0.2)
@@ -763,19 +835,34 @@ with tempfile.TemporaryDirectory(prefix="dish-metadata-") as directory:
             history = json.loads((ROOT / "tests/fixtures/metadata_history.json").read_text())
             expected_command = history[1]["content"][0]["arguments"]["command"]
             assert clipboard_text() == expected_command, repr(clipboard_text())
-            # With details closed, the full marker must still be readable in
-            # the hoverable tooltip, not only the truncated summary.
-            bash = None
+            # With details closed, the header must still be readable and its
+            # hover tooltip must repeat the full command. The 12px monospace
+            # tool name is routinely OCR'd as "bas"/"hack", so anchor on the
+            # header's command summary and click the name to its left; that is
+            # the same row, without loosening the visibility assertion.
+            header = None
             for _ in range(24):
-                bash = find_word(window, "bash")
-                if bash:
+                header = find_word(window, "print")
+                if header:
                     break
                 time.sleep(0.25)
-            assert bash, "Historical tool header is no longer visible after copying"
-            click(window, bash[0] + bash[2] // 2, bash[1] + bash[3] // 2)
+            assert header, "Historical tool header is no longer visible after copying"
+            click(window, max(0, header[0] - 30), header[1] + header[3] // 2)
+            # If the header were gone this click would hit the selectable
+            # section body and the details would stay open.
+            wait_for(lambda: not find_word(window, "argumentos"),
+                     "Historical tool details did not close", timeout=4)
             wait_for(lambda: find_word(window, "COMANDO_COMPLETO"), "Full command tooltip missing", timeout=4)
             park_mouse(window)
-            result = find_word(window, "resultado")
+            # The tooltip overlay fades after the pointer leaves; the metadata
+            # row it covered is only OCR-readable once that frame is gone.
+            result = None
+            for _ in range(20):
+                result = find_word(window, "resultado")
+                if result:
+                    break
+                time.sleep(0.2)
+            assert result, "Historical result metadata missing"
             click(window, result[0] + result[2] // 2, result[1] + result[3] // 2)
             park_mouse(window)
             wait_for(lambda: find_word(window, "registrado"), "Historical timestamp details missing")
@@ -793,10 +880,71 @@ with tempfile.TemporaryDirectory(prefix="dish-metadata-") as directory:
             type_text("metadata-tool")
             press("Return")
             wait_for(lambda: any(item.get("record", {}).get("type") == "tool_execution_end" for item in metadata_events()), "Live tool did not finish")
-            wait_for(lambda: find_word(window, "comando", last=True), "Live activity group missing")
-            group = find_word(window, "comando", last=True)
+            wait_for(lambda: any(item.get("record", {}).get("type") == "agent_end" for item in metadata_events()), "Live tool run did not finish")
+            # Bring the newest turn into view. The historical group above is
+            # taller than the window, so without scrolling OCR calls it the
+            # "last" activity group and expands the wrong card.
+            for _ in range(8):
+                wheel_at(window, 700, 500, 5, 4)
+                time.sleep(0.15)
+
+            def find_live_group():
+                # PSM 11 merges the live "1 comando" header with the status
+                # line and drops it; PSM 6 reads it. The live group is the
+                # lowest rendered activity summary after scrolling to the end.
+                with tempfile.NamedTemporaryFile(suffix=".png") as image:
+                    subprocess.run(["import", "-window", str(window), image.name], check=True)
+                    rows = subprocess.check_output(
+                        ["tesseract", image.name, "stdout", "--psm", "6", "tsv"],
+                        stderr=subprocess.DEVNULL).decode().splitlines()[1:]
+                boxes = []
+                for row in rows:
+                    fields = row.split("\t")
+                    word = fields[11].casefold() if len(fields) == 12 else ""
+                    # Only the activity summary itself ("1 comando"/"comando"),
+                    # not the command body ("COMANDO_AO_VIVO") or a historical
+                    # "comando_cancelado" line.
+                    if word.replace(" ", "") in ("comando", "1comando"):
+                        boxes.append(tuple(int(fields[i]) for i in (6, 7, 8, 9)))
+                return max(boxes, key=lambda box: box[1]) if boxes else None
+
+            wait_for(find_live_group, "Live activity group missing")
+            group = find_live_group()
             click(window, group[0] + group[2] // 2, group[1] + group[3] // 2)
-            wait_for(lambda: find_word(window, "fim", last=True), "Live completion timestamp missing")
+
+            def find_rendered_all(needle):
+                # PSM 11 keeps only the assistant footer badge and drops the
+                # compact tool badge; PSM 6 reads both.
+                with tempfile.NamedTemporaryFile(suffix=".png") as image:
+                    subprocess.run(["import", "-window", str(window), image.name], check=True)
+                    rows = subprocess.check_output(
+                        ["tesseract", image.name, "stdout", "--psm", "6", "tsv"],
+                        stderr=subprocess.DEVNULL).decode().splitlines()[1:]
+                boxes = []
+                for row in rows:
+                    fields = row.split("\t")
+                    if len(fields) == 12 and needle.casefold() in fields[11].casefold():
+                        boxes.append(tuple(int(fields[i]) for i in (6, 7, 8, 9)))
+                return boxes
+
+            def find_rendered(needle, last=True):
+                boxes = find_rendered_all(needle)
+                return (boxes[-1] if last else boxes[0]) if boxes else None
+
+            def tool_badge():
+                # The assistant footer always has a "fim" badge; the tool row
+                # adds a second, lower one. Requiring both keeps the wait from
+                # accepting the assistant footer while the tool row is still
+                # covered by the composer after the group expands.
+                fims = find_rendered_all("fim")
+                return fims[-1] if len(fims) >= 2 else None
+
+            for _ in range(6):
+                if tool_badge():
+                    break
+                wheel_at(window, 700, 500, 5, 3)
+                time.sleep(0.2)
+            wait_for(tool_badge, "Live completion timestamp missing")
 
             def open_observed_metadata():
                 # Expanding a virtualised tool group can remeasure/reposition
@@ -807,17 +955,24 @@ with tempfile.TemporaryDirectory(prefix="dish-metadata-") as directory:
                 # O clique vai na borda esquerda do texto: o centro da palavra
                 # pode cair sobre o cabeçalho do cartão (que abre o cartão em
                 # vez do bloco de metadados) em fontes diferentes das do CI.
-                if find_word(window, "monot", last=True):
+                if find_rendered("monot"):
                     return True
-                end = find_word(window, "fim", last=True)
-                if end is None:
-                    return False
-                click(window, end[0] + 2, end[1] + end[3] // 2)
-                park_mouse(window)
-                return find_word(window, "monot", last=True)
+                if not find_rendered("observado"):
+                    end = tool_badge()
+                    if end is None:
+                        return False
+                    click(window, end[0] + 2, end[1] + end[3] // 2)
+                # O bloco aberto pode continuar abaixo do composer; rolar o
+                # transcript como o usuário faria revela as linhas restantes.
+                for _ in range(4):
+                    if find_rendered("monot"):
+                        return True
+                    wheel_at(window, 700, 600, 5, 3)
+                    time.sleep(0.2)
+                return find_rendered("monot")
 
             wait_for(open_observed_metadata, "Observed duration details missing")
-            duration_word = find_word(window, "monot", last=True)
+            duration_word = find_rendered("monot")
             click(window, duration_word[0] + duration_word[2] // 2, duration_word[1] + duration_word[3] // 2)
             chord("Control_L", "a")
             chord("Control_L", "c")
