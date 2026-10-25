@@ -54,19 +54,129 @@ pub fn program() -> String {
     )
 }
 
+/// O que o adaptador de autenticação precisa para achar o pacote do Pi.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PiLocation {
+    /// Executável que o Dish usa para conversar com o Pi.
+    pub program: Option<PathBuf>,
+    /// Diretório do pacote npm. Para um caminho explícito que não contenha o
+    /// pacote, o caminho derivado é passado mesmo assim: o adaptador então
+    /// falha fechado em vez de usar outra instalação em silêncio.
+    pub package: Option<PathBuf>,
+}
+
+/// Executável do Pi e pacote correspondente, na mesma ordem de `program`.
+pub fn pi_location() -> PiLocation {
+    let mut location = locate(
+        env_path("DISH_PI_BIN"),
+        crate::preferences::load().pi_executable,
+        find_on_path("pi").or_else(find_installed),
+        prefix().map(|p| executable(&p)).filter(|p| p.is_file()),
+    );
+    // `DISH_PI_PACKAGE` é autoridade do adaptador; um `--package` derivado aqui
+    // poderia sobrepor o caminho que a pessoa escolheu.
+    if env_path("DISH_PI_PACKAGE").is_some() {
+        location.package = None;
+    }
+    location
+}
+
+fn locate(
+    override_program: Option<PathBuf>,
+    selected: Option<PathBuf>,
+    on_path: Option<PathBuf>,
+    private: Option<PathBuf>,
+) -> PiLocation {
+    let (program, explicit) = choose(override_program, selected, on_path, private);
+    let package = program
+        .as_deref()
+        .and_then(|program| resolve_package(program, explicit));
+    PiLocation { program, package }
+}
+
+/// Resolve o executável e diz se ele foi escolhido explicitamente.
+///
+/// A escolha explícita vence a descoberta; sem escolha, o `PATH` vence o
+/// prefixo privado do Dish, como em `program`.
+fn choose(
+    override_program: Option<PathBuf>,
+    selected: Option<PathBuf>,
+    on_path: Option<PathBuf>,
+    private: Option<PathBuf>,
+) -> (Option<PathBuf>, bool) {
+    if let Some(program) = override_program {
+        return (Some(program), true);
+    }
+    if let Some(program) = selected {
+        return (Some(program), true);
+    }
+    (on_path.or(private), false)
+}
+
 fn resolve(
     override_program: Option<String>,
     selected: Option<PathBuf>,
     on_path: Option<PathBuf>,
     private: Option<PathBuf>,
 ) -> String {
-    override_program.unwrap_or_else(|| {
-        selected
-            .or(on_path)
-            .or(private)
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "pi".into())
-    })
+    choose(
+        override_program.map(PathBuf::from),
+        selected,
+        on_path,
+        private,
+    )
+    .0
+    .map(|p| p.to_string_lossy().into_owned())
+    .unwrap_or_else(|| "pi".into())
+}
+
+/// Diretórios onde o pacote do Pi pode estar, a partir do executável.
+fn package_candidates(program: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    // `bin/pi` de um npm global costuma ser um link para dentro do pacote.
+    if let Ok(resolved) = std::fs::canonicalize(program) {
+        if let Some(package) = resolved
+            .ancestors()
+            .find(|ancestor| ancestor.ends_with(PACKAGE))
+        {
+            candidates.push(package.to_path_buf());
+        }
+    }
+    if let Some(parent) = program.parent() {
+        // `<prefixo>/bin/pi`, `<prefixo>/pi.cmd` e o prefixo local do npm.
+        // Em `<prefixo>/bin/pi` o prefixo é o pai do `bin`, não o próprio `bin`.
+        let roots: Vec<&Path> = if parent.file_name().and_then(|name| name.to_str()) == Some("bin")
+        {
+            parent.parent().into_iter().collect()
+        } else {
+            [Some(parent), parent.parent()]
+                .into_iter()
+                .flatten()
+                .collect()
+        };
+        for root in roots {
+            candidates.push(root.join("node_modules").join(PACKAGE));
+            candidates.push(root.join("lib").join("node_modules").join(PACKAGE));
+        }
+    }
+    candidates
+}
+
+fn resolve_package(program: &Path, explicit: bool) -> Option<PathBuf> {
+    let candidates = package_candidates(program);
+    if let Some(package) = candidates
+        .iter()
+        .find(|package| package.join("dist").join("index.js").is_file())
+    {
+        return Some(package.clone());
+    }
+    // Caminho explícito sem pacote não cai para outra instalação: o primeiro
+    // candidato vai ao adaptador e vira `package_invalid`.
+    if explicit {
+        candidates.into_iter().next()
+    } else {
+        None
+    }
 }
 
 fn find_on_path(name: &str) -> Option<PathBuf> {
@@ -406,6 +516,37 @@ chmod +x "$7/bin/pi""#,
         );
         assert!(install(&f.script("fail-npm", "exit 1"), &destination).is_err());
     }
+    #[test]
+    fn explicit_program_without_a_package_still_names_the_candidate() {
+        let f = Fixture::new();
+        let program = f.0.join("bin/pi");
+        std::fs::create_dir_all(program.parent().unwrap()).unwrap();
+        std::fs::write(&program, "#!/bin/sh\n").unwrap();
+        let location = locate(Some(program.clone()), None, None, None);
+        assert_eq!(location.program, Some(program));
+        // O adaptador recebe um caminho de pacote mesmo quando ele não existe:
+        // assim a falha é `package_invalid`, nunca outro Pi em silêncio.
+        assert_eq!(
+            location.package,
+            Some(f.0.join("node_modules").join(PACKAGE))
+        );
+    }
+
+    #[test]
+    fn discovered_program_passes_an_existing_package() {
+        let f = Fixture::new();
+        let prefix = f.0.join("dish/pi");
+        let package = prefix.join("lib/node_modules").join(PACKAGE);
+        std::fs::create_dir_all(package.join("dist")).unwrap();
+        std::fs::write(package.join("dist/index.js"), "export {};").unwrap();
+        let program = prefix.join("bin/pi");
+        std::fs::create_dir_all(program.parent().unwrap()).unwrap();
+        std::fs::write(&program, "#!/bin/sh\n").unwrap();
+        let location = locate(None, None, Some(program.clone()), None);
+        assert_eq!(location.program, Some(program));
+        assert_eq!(location.package, Some(package));
+    }
+
     #[test]
     fn override_wins_and_private_install_is_found_without_path_changes() {
         assert_eq!(

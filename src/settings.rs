@@ -251,13 +251,22 @@ impl Settings {
 
     /// Lista de provedores com estado, origem e a ação de cada linha.
     fn provider_list(&mut self, mut page: Div, cx: &mut Context<Self>) -> AnyElement {
-        let mut actions = div().flex().flex_row().gap(px(8.));
+        // Três controles numa linha só não cabem na largura da seção com a
+        // sidebar aberta: sem quebra, os rótulos comprimem e ficam ilegíveis.
+        let mut actions = div().flex().flex_row().flex_wrap().items_center().gap(px(8.));
         match self.providers.clone() {
             ProvidersView::Idle | ProvidersView::Loading => {
                 page = page.child(note("Consultando o Pi…"));
             }
             ProvidersView::Unavailable(reason) => {
                 page = page.child(note(&reason));
+                // O caminho de saída quando o pacote não foi encontrado: a
+                // pessoa aponta o executável sem precisar editar variável.
+                actions = actions.child(control(
+                    "providers-choose-pi",
+                    "Escolher executável do Pi",
+                    cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::ChoosePi)),
+                ).flex_none());
                 // Sem Node ou sem pacote, o terminal ainda resolve: o Dish
                 // abre o Pi e a pessoa usa /login lá.
                 actions = actions.child(control("providers-terminal", "Abrir o Pi num terminal", cx.listener(
@@ -267,7 +276,7 @@ impl Settings {
                             .map(|error| format!("{error:#}"));
                         cx.notify();
                     },
-                )));
+                )).flex_none());
             }
             ProvidersView::Ready(snapshot) => {
                 if snapshot.empty() {
@@ -356,7 +365,7 @@ impl Settings {
         }
         actions = actions.child(control("providers-retry", "Verificar de novo", cx.listener(
             |this, _, _, cx| this.refresh_providers(cx),
-        )));
+        )).flex_none());
         page.child(actions).child(note(
             "Provedores locais e endpoints compatíveis são configurados em models.json, como o Pi descreve em docs/models.md.",
         )).into_any_element()

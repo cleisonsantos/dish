@@ -7,7 +7,7 @@
 // credencial de volta.
 //
 // Uso:
-//   node pi-auth-adapter.mjs --status [--package DIR] [--agent-dir DIR]
+//   node pi-auth-adapter.mjs --status [--package DIR] [--agent-dir DIR] [--pi-bin CAMINHO]
 //   echo '{"id":1,"op":"status"}' | node pi-auth-adapter.mjs
 //
 // Protocolo (uma linha JSON por mensagem, stdin/stdout). O processo é de longa
@@ -30,9 +30,10 @@
 // nada mais. Nunca escreve nada além de JSON em stdout; diagnóstico vai para
 // stderr.
 
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 
@@ -86,22 +87,67 @@ function write(message) {
 /// não contém o pacote, a busca para ali e o adaptador falha, em vez de usar
 /// silenciosamente outra instalação que o usuário não pediu. Sem caminho
 /// explícito, a ordem é o prefixo privado do Dish, as releases do instalador
-/// oficial e, por último, subindo a partir do executável do Pi.
+/// oficial, o npm global e, por último, subindo a partir do executável do Pi.
 ///
 /// Devolve `{ dirs, rejected }`.
+function hasPackageIndex(dir) {
+  return Boolean(dir) && existsSync(path.join(dir, "dist", "index.js"));
+}
+
+/** O pacote dentro de uma raiz npm, nas duas formas de prefixo. */
+function packageDirs(root) {
+  return [
+    path.join(root, "node_modules", PACKAGE_NAME),
+    path.join(root, "lib", "node_modules", PACKAGE_NAME),
+  ];
+}
+
+/** O nome com escopo não cabe em `basename`, que devolveria `pi-coding-agent`. */
+function isPackageDir(dir) {
+  const parts = path.resolve(dir).split(path.sep);
+  return parts.length >= 2 && parts.at(-2) === "@earendil-works" && parts.at(-1) === "pi-coding-agent";
+}
+
+function realPath(file) {
+  try {
+    return realpathSync(file);
+  } catch {
+    return path.resolve(file);
+  }
+}
+
+/** `npm root -g`, quando o npm está disponível; sem ele, a busca continua. */
+function npmGlobalRoot(env) {
+  try {
+    const result = spawnSync("npm", ["root", "-g"], {
+      encoding: "utf8",
+      env,
+      timeout: 3000,
+      windowsHide: true,
+      shell: process.platform === "win32",
+    });
+    if (result.status !== 0 || typeof result.stdout !== "string") return null;
+    return result.stdout.trim().split(/\r?\n/).filter(Boolean).pop() ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export function packageCandidates({ explicit, agentDir, piBin, env = process.env, home = homedir() } = {}) {
   const candidates = [];
-  const packageDir = (root) => path.join(root, "node_modules", PACKAGE_NAME);
-  const hasIndex = (dir) => Boolean(dir) && existsSync(path.join(dir, "dist", "index.js"));
 
   const stated = [explicit, env.DISH_PI_PACKAGE].filter(Boolean).map((dir) => path.resolve(dir));
   for (const dir of stated) {
-    if (!hasIndex(dir)) return { dirs: [], rejected: dir };
+    if (!hasPackageIndex(dir)) return { dirs: [], rejected: dir };
     candidates.push(dir);
   }
 
-  const dataHome = env.XDG_DATA_HOME || path.join(home, ".local", "share");
-  candidates.push(path.join(dataHome, "dish", "pi", "node_modules", PACKAGE_NAME));
+  // Prefixo privado do Dish: XDG no Unix, LOCALAPPDATA no Windows.
+  const dataRoots = [];
+  if (env.XDG_DATA_HOME) dataRoots.push(env.XDG_DATA_HOME);
+  if (env.LOCALAPPDATA) dataRoots.push(env.LOCALAPPDATA);
+  if (dataRoots.length === 0) dataRoots.push(path.join(home, ".local", "share"));
+  for (const root of dataRoots) candidates.push(...packageDirs(path.join(root, "dish", "pi")));
 
   const installRoot = path.join(agentDir || path.join(home, ".pi", "agent"), "install", "releases");
   if (existsSync(installRoot)) {
@@ -111,26 +157,45 @@ export function packageCandidates({ explicit, agentDir, piBin, env = process.env
     } catch {
       releases = [];
     }
-    for (const release of releases.reverse()) candidates.push(packageDir(path.join(installRoot, release)));
+    for (const release of releases.reverse()) candidates.push(...packageDirs(path.join(installRoot, release)));
   }
 
+  // npm global no Windows e outros prefixos npm conhecidos pelo ambiente.
+  if (env.APPDATA) candidates.push(...packageDirs(path.join(env.APPDATA, "npm")));
+  if (env.npm_config_prefix) candidates.push(...packageDirs(env.npm_config_prefix));
+
   // Um executável dentro do próprio pacote (npm global, prefixos locais).
+  // O link `bin/pi` é resolvido antes: o alvo é que indica o pacote.
   if (piBin) {
-    let current = path.dirname(path.resolve(piBin));
+    let current = path.dirname(realPath(piBin));
+    const roots = [];
     for (let depth = 0; depth < 6; depth += 1) {
-      if (path.basename(current) === PACKAGE_NAME) candidates.push(current);
+      if (isPackageDir(current)) candidates.push(current);
+      roots.push(current);
       const parent = path.dirname(current);
       if (parent === current) break;
       current = parent;
     }
+    for (const root of roots) candidates.push(...packageDirs(root));
   }
 
   const seen = new Set();
   const dirs = candidates.filter((dir) => {
     if (!dir || seen.has(dir)) return false;
     seen.add(dir);
-    return hasIndex(dir);
+    return hasPackageIndex(dir);
   });
+
+  // Último recurso: perguntar ao npm onde ficam os pacotes globais. Só roda
+  // quando as formas conhecidas falharam, para não atrasar o caminho comum.
+  if (dirs.length === 0 && !env.DISH_PI_PACKAGE) {
+    const npmRoot = npmGlobalRoot(env);
+    if (npmRoot) {
+      const packagePath = path.join(npmRoot, PACKAGE_NAME);
+      if (hasPackageIndex(packagePath)) dirs.push(packagePath);
+    }
+  }
+
   return { dirs, rejected: null };
 }
 

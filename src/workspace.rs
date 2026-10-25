@@ -569,6 +569,13 @@ impl Workspace {
                                 let (message, tone) = match result {
                                     Ok(version) => {
                                         crate::installation::remember(&program);
+                                        // Se a pessoa escolheu o executável na tela de
+                                        // provedores, relê o catálogo com o novo caminho.
+                                        if let Some(settings) = workspace.settings.clone() {
+                                            if settings.read(cx).open {
+                                                settings.update(cx, |settings, cx| settings.refresh_providers(cx));
+                                            }
+                                        }
                                         (format!("Pi {version} salvo. Novas conversas usarão esse executável."), crate::state::Tone::Success)
                                     }
                                     Err(error) => (format!("Esse executável não respondeu como o Pi: {error:#}"), crate::state::Tone::Error),

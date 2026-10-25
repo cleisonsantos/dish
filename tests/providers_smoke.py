@@ -6,6 +6,7 @@ não depende de um Pi instalado — `DISH_PI_PACKAGE` aponta para
 credenciais em memória.
 """
 import re
+import shutil
 import unicodedata
 from pathlib import Path
 helper_path = Path(__file__).with_name("desktop_smoke.py")
@@ -26,13 +27,29 @@ def normalized(text):
 class Harness:
     """Abre o Dish, a seção Provedores e oferece as ações que os casos usam."""
 
-    def __init__(self, name, env):
+    def __init__(self, name, env, npm_global=False):
         self.name = name
         self.directory = tempfile.TemporaryDirectory(prefix=f"dish-providers-{name}-")
         temp = Path(self.directory.name)
-        wrapper = temp / "fake-pi"
-        wrapper.write_text(f'#!/bin/sh\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@"\n')
-        wrapper.chmod(0o700)
+        if npm_global:
+            # Instalação npm global fora dos dois layouts fixos: o pacote fica
+            # em <prefixo>/lib/node_modules e bin/pi é um link para dentro dele.
+            prefix = temp / "npm-global"
+            package = prefix / "lib/node_modules/@earendil-works/pi-coding-agent"
+            shutil.copytree(ROOT / "tests/fixtures/fake-pi-sdk", package)
+            packaged_pi = package / "bin/pi"
+            packaged_pi.parent.mkdir(parents=True)
+            packaged_pi.write_text(
+                f'#!/bin/sh\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@"\n')
+            packaged_pi.chmod(0o700)
+            wrapper = prefix / "bin/pi"
+            wrapper.parent.mkdir(parents=True)
+            wrapper.symlink_to(packaged_pi)
+            (temp / "home").mkdir()
+        else:
+            wrapper = temp / "fake-pi"
+            wrapper.write_text(f'#!/bin/sh\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@"\n')
+            wrapper.chmod(0o700)
         self.log_path = temp / "events.jsonl"
         session = temp / "session.jsonl"
         session.write_text(json.dumps({"type": "session", "cwd": str(temp), "id": f"providers-{name}"}) + "\n")
@@ -41,6 +58,9 @@ class Harness:
                       XDG_CACHE_HOME=str(temp / "cache"),
                       DISH_FAKE_PI_LOG=str(self.log_path), XDG_SESSION_TYPE="x11")
         merged.update(env)
+        if npm_global:
+            merged["HOME"] = str(temp / "home")
+            merged.pop("DISH_PI_PACKAGE", None)
         merged.pop("WAYLAND_DISPLAY", None)
         merged.pop("PI_CODING_AGENT_SESSION_DIR", None)
         (temp / "config/dish").mkdir(parents=True, exist_ok=True)
@@ -181,7 +201,18 @@ def check_first_use():
 def check_unavailable():
     """Sem pacote do Pi: a tela diz o motivo e oferece o terminal."""
     with Harness("sem-pacote", {"DISH_PI_PACKAGE": "/nonexistent/pi-package"}) as h:
-        h.wait_text(["pacote", "Verificar de novo", "Abrir o Pi num terminal"])
+        h.wait_text(["pacote", "Informe o executável do Pi", "Verificar de novo",
+                     "Abrir o Pi num terminal"])
+        # O OCR às vezes lê o acento do botão como outra vogal; a âncora curta
+        # não depende disso.
+        assert h.find_label("Escolher"), "sem botão para escolher o executável"
+
+
+def check_npm_global():
+    """Catálogo carrega com o Pi fora dos layouts fixos (npm global)."""
+    with Harness("npm-global", {}, npm_global=True) as h:
+        h.wait_text(["openai", "credencial salva", "anthropic", "4 provedores"])
+        print("providers smoke ok: Pi de npm global fora dos layouts fixos", flush=True)
 
 
 def check_login_and_logout():
@@ -259,6 +290,7 @@ def check_provider_refreshes_open_conversation():
 check_catalog()
 check_first_use()
 check_unavailable()
+check_npm_global()
 check_login_and_logout()
 check_provider_refreshes_open_conversation()
-print("Providers smoke passed: catálogo, primeiro uso, falha honesta, login, remoção e atualização da conversa")
+print("Providers smoke passed: catálogo, npm global, primeiro uso, falha honesta, login, remoção e atualização da conversa")
