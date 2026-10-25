@@ -1,20 +1,18 @@
 #!/usr/bin/env bash
-# Roda testes de UI em Xvfb com uma nova tentativa limitada.
+# Roda cada smoke uma única vez em Xvfb.
 #
-# Os testes dependem de OCR e de tempo de pintura num servidor sem GPU: um
-# frame perdido não deve reprovar uma mudança. Uma falha determinística falha
-# nas duas tentativas, e aí o CI quebra de verdade.
+# O retry antigo escondia flakiness e dobrava o tempo de um teste que falhava.
+# O determinismo agora vem das observações de paint e do próprio teste; uma
+# falha aqui é uma falha real e deve aparecer no primeiro frame.
 set -u
 
 status=0
 for test in "$@"; do
+    echo "::group::$test"
     if ! xvfb-run -a -s '-screen 0 1280x960x24' python3 "$test"; then
-        echo "::warning::$test falhou; tentando mais uma vez"
-        sleep 5
-        if ! xvfb-run -a -s '-screen 0 1280x960x24' python3 "$test"; then
-            echo "::error::$test falhou duas vezes"
-            status=1
-        fi
+        echo "::error::$test falhou"
+        status=1
     fi
+    echo "::endgroup::"
 done
 exit "$status"
