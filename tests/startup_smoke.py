@@ -58,6 +58,10 @@ printf '#!/bin/sh\\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@
     def click_text(label):
         # Fonts and line wrapping vary between local desktops and clean CI.
         # Find the button's text instead of assuming its vertical position.
+        # OCR may drop spaces and read a lone "o" as zero ("Abrir 0 Dish").
+        def normalized(value):
+            return "".join(value.lower().split()).replace("0", "o")
+
         def locate():
             subprocess.run(["import", "-window", str(window), screenshot], check=True)
             rows = subprocess.check_output(
@@ -69,9 +73,8 @@ printf '#!/bin/sh\\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@
                 if len(fields) == 12 and fields[11].strip():
                     lines.setdefault(tuple(fields[1:5]), []).append(fields)
             for words in lines.values():
-                # Espaços podem sumir no OCR ("Abrir o Dish" vira "Abriro Dish").
-                text = "".join(word[11] for word in words).lower().replace(" ", "")
-                if label.lower().replace(" ", "") in text:
+                text = normalized("".join(word[11] for word in words))
+                if normalized(label) in text:
                     left = min(int(word[6]) for word in words)
                     right = max(int(word[6]) + int(word[8]) for word in words)
                     first = words[0]
