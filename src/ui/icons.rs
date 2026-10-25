@@ -29,6 +29,8 @@ pub enum Icon {
     Dots,
     Settings,
     Minimize,
+    Maximize,
+    Restore,
     Close,
     Trash,
     Pin,
@@ -304,6 +306,24 @@ fn build(icon: Icon, stroke: f32, scale: f32, origin: Point<Pixels>) -> Option<P
         Icon::Minimize => {
             b.move_to(to(3., 8.));
             b.line_to(to(13., 8.));
+        }
+        Icon::Maximize => {
+            b.move_to(to(3.5, 3.5));
+            b.line_to(to(12.5, 3.5));
+            b.line_to(to(12.5, 12.5));
+            b.line_to(to(3.5, 12.5));
+            b.close();
+        }
+        Icon::Restore => {
+            b.move_to(to(5.5, 3.5));
+            b.line_to(to(12.5, 3.5));
+            b.line_to(to(12.5, 10.5));
+            b.line_to(to(10.5, 10.5));
+            b.move_to(to(3.5, 5.5));
+            b.line_to(to(10.5, 5.5));
+            b.line_to(to(10.5, 12.5));
+            b.line_to(to(3.5, 12.5));
+            b.close();
         }
         Icon::Close => {
             b.move_to(to(4.2, 4.2));

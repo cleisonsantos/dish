@@ -487,7 +487,7 @@ pub fn opening_session_view(cwd: &std::path::Path, title: Option<&str>) -> State
 }
 
 /// Barra de título separada do conteúdo, apenas onde não há moldura nativa.
-pub(crate) fn client_titlebar() -> Stateful<Div> {
+pub(crate) fn client_titlebar(window: &Window) -> Stateful<Div> {
     div()
         .id("window-titlebar")
         .flex()
@@ -504,18 +504,24 @@ pub(crate) fn client_titlebar() -> Stateful<Div> {
                 .flex_1()
                 .h(px(theme::S5))
                 .cursor(CursorStyle::Arrow)
-                .on_mouse_down(MouseButton::Left, |_event, window, _cx| {
-                    window.start_window_move();
+                // O Windows trata esta área como HTCAPTION: arrastar,
+                // duplo-clique para maximizar/restaurar e menu do sistema vêm
+                // do SO. No Linux o compositor precisa do pedido explícito.
+                .window_control_area(WindowControlArea::Drag)
+                .when(!cfg!(target_os = "windows"), |el| {
+                    el.on_mouse_down(MouseButton::Left, |_event, window, _cx| {
+                        window.start_window_move();
+                    })
                 }),
         )
-        .child(window_controls())
+        .child(window_controls(window))
 }
 
-/// Minimizar e fechar, desenhados pelo próprio app quando o compositor não
-/// fornece a moldura. O fechamento passa pela mesma ação do `ctrl-q`, para
+/// Minimizar, maximizar/restaurar e fechar, desenhados pelo próprio app quando
+/// não há moldura nativa. O fechamento passa pela mesma ação do `ctrl-q`, para
 /// respeitar a confirmação de conversa em execução.
-fn window_controls() -> Div {
-    let button = |id: &'static str, glyph: Icon| {
+fn window_controls(window: &Window) -> Div {
+    let button = |id: &'static str, glyph: Icon, area: WindowControlArea| {
         div()
             .id(id)
             .flex_none()
@@ -525,6 +531,7 @@ fn window_controls() -> Div {
             .size(px(24.))
             .rounded(theme::r_control())
             .cursor_pointer()
+            .window_control_area(area)
             .hover(|style| style.bg(theme::hover()))
             .child(icon(glyph, 13., theme::dim()))
     };
@@ -536,15 +543,31 @@ fn window_controls() -> Div {
         .gap(px(theme::S1))
         .flex_none()
         .child(
-            button("window-minimize", Icon::Minimize).on_click(
+            button("window-minimize", Icon::Minimize, WindowControlArea::Min).on_click(
                 |_: &ClickEvent, window: &mut Window, _cx: &mut App| window.minimize_window(),
             ),
         )
-        .child(button("window-close", Icon::Close).on_click(
-            |_: &ClickEvent, window: &mut Window, cx: &mut App| {
-                window.dispatch_action(Box::new(CloseWindow), cx)
-            },
-        ))
+        .child(
+            button(
+                "window-maximize",
+                if window.is_maximized() {
+                    Icon::Restore
+                } else {
+                    Icon::Maximize
+                },
+                WindowControlArea::Max,
+            )
+            .on_click(|_: &ClickEvent, window: &mut Window, _cx: &mut App| {
+                window.zoom_window()
+            }),
+        )
+        .child(
+            button("window-close", Icon::Close, WindowControlArea::Close).on_click(
+                |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                    window.dispatch_action(Box::new(CloseWindow), cx)
+                },
+            ),
+        )
 }
 
 /// Estado em um único ponto: ícone + texto, nunca só cor.
