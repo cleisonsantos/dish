@@ -168,7 +168,9 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
         time.sleep(0.4)
         assert "Atalhos de teclado" in capture()
         click(window, 30, 400)
-        assert "Configura" not in capture(), "Outside click did not close"
+        # Mesmo close() animado do Esc: sem GPU o modal ainda aparece por alguns
+        # frames, então espera-se sumir em vez de comparar uma captura única.
+        wait_for(lambda: "Configura" not in capture(), "Outside click did not close", timeout=20)
         press("Return")
         wait_for(lambda: commands("prompt"), "Composer focus was not restored")
         assert commands("prompt")[-1]["command"]["message"] == "draft"
