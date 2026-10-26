@@ -17,6 +17,7 @@ with tempfile.TemporaryDirectory(prefix="dish-startup-") as temporary:
     log_path = temp / "events.jsonl"
     install_log = temp / "install-called"
     terminal_log = temp / "terminal-called"
+    node_log = temp / "node-called"
 
     def script(name, content):
         path = bin_dir / name
@@ -24,7 +25,9 @@ with tempfile.TemporaryDirectory(prefix="dish-startup-") as temporary:
         path.chmod(0o700)
         return path
 
-    script("node", "printf 'v22.19.0'")
+    # O verificador do caminho npm roda `node --version` em segundo plano; o
+    # fixture registra cada chamada para o teste esperar a verificação sem OCR.
+    script("node", f'printf "v22.19.0"; printf "node\\n" >> "{node_log}"')
     script("x-terminal-emulator", f'''printf '%s\\n' "$@" > "{terminal_log}"''')
     script("npm", f'''if [ "$1" = --version ]; then printf '10.0.0'; exit 0; fi
 test "$1" = install && test "$3" = --ignore-scripts || exit 2
@@ -175,15 +178,31 @@ printf '#!/bin/sh\\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@
         window = find_window()
         prepare_window(window)
         time.sleep(2)
-        # Segundo passo do assistente: a alternativa sem terminal.
-        click_text("Come")
+        # Segundo passo do assistente: a alternativa sem terminal. O foco
+        # inicial fica no botão primário; Tab + Return aciona "Começar" sem
+        # depender de OCR do rótulo, como no fluxo oficial acima.
+        press("Tab")
+        press("Return")
         wait_for(lambda: screen_has("Verificar o Pi"), "Pi verification did not render again")
         click_text("Instalar o Pi")
         wait_for(lambda: screen_has("Instalar via npm"), "npm path was not offered")
         click_text("Instalar via npm")
         wait_for(lambda: screen_has("Verificar o Node"), "Node step did not render")
         assert not install_log.exists(), "npm path installed before Node consent"
-        wait_for(lambda: screen_has("e npm encontrados"), "Node check did not finish")
+        # O botão de consentimento (`setup-install`, startup.rs) só é desenhado
+        # quando `node_ready()` é verdadeiro, mas o rótulo "Instalar via npm" é
+        # idêntico ao do passo Install por OCR — esperar pela string pode
+        # passar antes da troca de tela. A verificação roda `node --version`
+        # duas vezes (installation::prerequisites e node_version), e a segunda
+        # só acontece depois de Node 22.19+ e npm passarem; logo em seguida
+        # `check_node` grava a versão e a tela ganha o botão. Nenhum outro passo
+        # chama Node, então duas chamadas no log não podem vir do passo anterior.
+        def node_calls():
+            if not node_log.exists():
+                return 0
+            return len(node_log.read_text().splitlines())
+
+        wait_for(lambda: node_calls() >= 2, "Node check did not finish")
         click_text("Instalar via npm")
         wait_for(lambda: install_log.exists(), "Consent did not start fake installation")
         wait_for(lambda: screen_has("Pronto"), "Installation did not reach the end state")
