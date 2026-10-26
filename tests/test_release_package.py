@@ -1,6 +1,7 @@
 """Unit and installation tests for the Linux release tooling; no network or sudo."""
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import re
@@ -12,6 +13,7 @@ import tempfile
 import tarfile
 import unittest
 from unittest.mock import patch
+import urllib.error
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("package_linux", ROOT / "scripts/package-linux.py")
@@ -23,6 +25,8 @@ deb_spec.loader.exec_module(deb)
 win_spec = importlib.util.spec_from_file_location("package_windows", ROOT / "scripts/package-windows.py")
 windows = importlib.util.module_from_spec(win_spec)
 win_spec.loader.exec_module(windows)
+# `package-linux.py` já colocou scripts/ em sys.path ao ser importado acima.
+import license_bundle  # noqa: E402
 
 
 class ReleaseToolTests(unittest.TestCase):
@@ -365,6 +369,148 @@ class WindowsPackagingTests(unittest.TestCase):
             text = (ROOT / "scripts" / script).read_text()
             self.assertIn("license_bundle", text, script)
         self.assertTrue((ROOT / "scripts/license_bundle.py").is_file())
+
+
+class _DownloadResponse:
+    """Resposta mínima de `urlopen`; nenhum destes testes toca a rede."""
+
+    def __init__(self, body: bytes):
+        self.body = body
+
+    def read(self) -> bytes:
+        return self.body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+
+def http_error(url: str, code: int, headers: dict | None = None) -> urllib.error.HTTPError:
+    # BytesIO evita o arquivo temporário que o HTTPError criaria com fp=None.
+    return urllib.error.HTTPError(url, code, f"HTTP {code}", headers or {}, io.BytesIO(b""))
+
+
+class LicenseDownloadTests(unittest.TestCase):
+    URL = "https://raw.githubusercontent.com/rust-lang/rust/" + "a" * 40 + "/LICENSE-MIT"
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.cache = Path(temp.name)
+
+    def test_transient_429_is_retried_until_success(self):
+        sleeps = []
+        responses = [http_error(self.URL, 429, {"Retry-After": "0"}), _DownloadResponse(b"license text")]
+        with patch("urllib.request.urlopen", side_effect=responses) as urlopen:
+            data = license_bundle.download(self.URL, cache_dir=self.cache, sleep=sleeps.append)
+        self.assertEqual(data, b"license text")
+        self.assertEqual(urlopen.call_count, 2)
+        # Retry-After: 0 manda esperar zero; o teste não pode dormir de verdade.
+        self.assertEqual(sleeps, [])
+
+    def test_client_errors_fail_on_the_first_attempt(self):
+        for code in (403, 404):
+            with self.subTest(code=code):
+                with patch("urllib.request.urlopen", side_effect=http_error(self.URL, code)) as urlopen:
+                    with self.assertRaises(urllib.error.HTTPError) as caught:
+                        license_bundle.download(self.URL, cache_dir=self.cache,
+                                                sleep=lambda seconds: self.fail(f"slept {seconds}s"))
+                self.assertEqual(caught.exception.code, code)
+                self.assertEqual(urlopen.call_count, 1)
+
+    def test_exhausted_retries_raise_runtime_error_with_url(self):
+        sleeps = []
+        with patch("urllib.request.urlopen", side_effect=http_error(self.URL, 503)) as urlopen:
+            with self.assertRaises(RuntimeError) as caught:
+                license_bundle.download(self.URL, cache_dir=self.cache, attempts=3,
+                                        base_delay=0, sleep=sleeps.append)
+        self.assertIn(self.URL, str(caught.exception))
+        self.assertIn("3 attempts", str(caught.exception))
+        self.assertIn("HTTP 503", str(caught.exception))
+        self.assertEqual(urlopen.call_count, 3)
+        self.assertEqual(sleeps, [])
+
+    def test_retry_after_is_honoured_and_capped(self):
+        cases = [("7", 7.0), ("3600", license_bundle.RETRY_AFTER_CAP)]
+        for header, expected in cases:
+            with self.subTest(header=header):
+                sleeps = []
+                url = f"{self.URL}?retry-after={header}"
+                responses = [http_error(url, 429, {"Retry-After": header}), _DownloadResponse(b"ok")]
+                with patch("urllib.request.urlopen", side_effect=responses):
+                    license_bundle.download(url, cache_dir=self.cache, sleep=sleeps.append)
+                self.assertEqual(sleeps, [expected])
+
+    def test_missing_retry_after_uses_bounded_exponential_backoff(self):
+        sleeps = []
+        responses = [http_error(self.URL, 502), http_error(self.URL, 503), _DownloadResponse(b"ok")]
+        with patch("urllib.request.urlopen", side_effect=responses):
+            data = license_bundle.download(self.URL, cache_dir=self.cache, base_delay=0.25,
+                                           sleep=sleeps.append)
+        self.assertEqual(data, b"ok")
+        self.assertEqual(len(sleeps), 2)
+        self.assertGreaterEqual(sleeps[0], 0.25)
+        self.assertLessEqual(sleeps[0], 0.375)
+        self.assertGreaterEqual(sleeps[1], 0.5)
+        self.assertLessEqual(sleeps[1], 0.75)
+
+    def test_url_and_timeout_errors_are_retried(self):
+        responses = [urllib.error.URLError("connection reset"), TimeoutError("timed out"),
+                     _DownloadResponse(b"recovered")]
+        with patch("urllib.request.urlopen", side_effect=responses) as urlopen:
+            data = license_bundle.download(self.URL, cache_dir=self.cache, base_delay=0,
+                                           sleep=lambda seconds: None)
+        self.assertEqual(data, b"recovered")
+        self.assertEqual(urlopen.call_count, 3)
+
+    def test_cache_avoids_a_second_network_call(self):
+        with patch("urllib.request.urlopen", return_value=_DownloadResponse(b"cached text")) as urlopen:
+            first = license_bundle.download(self.URL, cache_dir=self.cache)
+            second = license_bundle.download(self.URL, cache_dir=self.cache)
+        self.assertEqual((first, second), (b"cached text", b"cached text"))
+        self.assertEqual(urlopen.call_count, 1)
+        hashed = hashlib.sha256(self.URL.encode("utf-8")).hexdigest()
+        self.assertEqual((self.cache / f"{hashed}.bin").read_bytes(), b"cached text")
+
+    def test_empty_cache_entry_is_not_treated_as_valid(self):
+        hashed = hashlib.sha256(self.URL.encode("utf-8")).hexdigest()
+        cached = self.cache / f"{hashed}.bin"
+        cached.write_bytes(b"")
+        with patch("urllib.request.urlopen", return_value=_DownloadResponse(b"fresh text")) as urlopen:
+            data = license_bundle.download(self.URL, cache_dir=self.cache)
+        self.assertEqual(data, b"fresh text")
+        self.assertEqual(urlopen.call_count, 1)
+        self.assertEqual(cached.read_bytes(), b"fresh text")
+
+    def test_toolchain_licenses_records_the_downloaded_bytes(self):
+        commit = "b" * 40
+        payloads = {"LICENSE-APACHE": b"apache text", "LICENSE-MIT": b"mit text",
+                    "COPYRIGHT": b"copyright text"}
+        sysroot = self.cache / "sysroot"
+        documentation = sysroot / "share/doc/rust"
+        (documentation / "licenses").mkdir(parents=True)
+        (documentation / "COPYRIGHT-library.html").write_text("library notices", encoding="utf-8")
+        (documentation / "licenses/MIT.txt").write_text("mit", encoding="utf-8")
+
+        def fake_check_output(args, **kwargs):
+            return f"release: 1.90.0\ncommit-hash: {commit}\n" if args[1] == "-vV" else str(sysroot)
+
+        def fake_download(url, **kwargs):
+            return payloads[url.rsplit("/", 1)[-1]]
+
+        destination = self.cache / "out"
+        with patch.object(license_bundle.subprocess, "check_output", side_effect=fake_check_output), \
+                patch.object(license_bundle, "download", side_effect=fake_download):
+            license_bundle.toolchain_licenses(destination)
+        provenance = json.loads((destination / "rust-toolchain/provenance.json").read_text(encoding="utf-8"))
+        self.assertEqual(provenance["rustc"], "1.90.0")
+        downloaded = [entry for entry in provenance["files"] if entry["file"] in payloads]
+        self.assertEqual(len(downloaded), 3)
+        for entry in downloaded:
+            self.assertIn(commit, entry["url"])
+            self.assertEqual(entry["sha256"], hashlib.sha256(payloads[entry["file"]]).hexdigest())
 
 
 @unittest.skipUnless(shutil.which("dpkg-deb") and shutil.which("dpkg-query") and shutil.which("readelf"),

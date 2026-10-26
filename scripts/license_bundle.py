@@ -9,11 +9,15 @@ the three releases carry the same obligations.
 """
 import hashlib
 import json
+import os
 from pathlib import Path
+import random
 import re
 import shutil
 import subprocess
+import time
 import tomllib
+import urllib.error
 import urllib.request
 
 LICENSE_NAME = re.compile(r"^(licen[sc]e|copying|copyright|notice)([._-].*|$)", re.I)
@@ -147,6 +151,103 @@ def collect_licenses(metadata, destination: Path, root: Path) -> int:
     return len(packages)
 
 
+# Status transitórios que valem uma nova tentativa. 403/404 e afins são erros
+# reais (arquivo ou commit que não existe) e falham na primeira tentativa.
+RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+DOWNLOAD_ATTEMPTS = 5
+RETRY_AFTER_CAP = 60.0
+
+
+def license_cache_dir() -> Path:
+    """Cache local dos downloads, fora do repositório versionado."""
+    return Path(os.environ.get("DISH_LICENSE_CACHE", Path.home() / ".cache/dish/licenses"))
+
+
+def _cache_path(cache_dir: Path, url: str) -> Path:
+    return cache_dir / f"{hashlib.sha256(url.encode('utf-8')).hexdigest()}.bin"
+
+
+def _valid_cache(path: Path) -> bool:
+    """Cache vazio é download interrompido, não uma cópia válida."""
+    return path.is_file() and path.stat().st_size > 0
+
+
+def _retry_after(error: urllib.error.HTTPError) -> float | None:
+    value = error.headers.get("Retry-After") if error.headers else None
+    if value is None:
+        return None
+    try:
+        return max(0.0, float(int(value.strip())))
+    except (AttributeError, ValueError):
+        return None
+
+
+def _retry_delay(attempt: int, retry_after: float | None, base_delay: float, cap: float) -> float:
+    if retry_after is not None:
+        return min(retry_after, cap)
+    delay = min(base_delay * (2 ** attempt), cap)
+    if not delay:
+        return 0.0
+    # Jitter evita que runners que falharam juntos voltem juntos (thundering herd).
+    return min(delay + random.uniform(0, delay / 2), cap)
+
+
+def download(url: str, *, attempts: int = DOWNLOAD_ATTEMPTS, timeout: float = 60,
+             cache_dir: Path | None = None, base_delay: float = 1.0,
+             retry_after_cap: float = RETRY_AFTER_CAP, sleep=None) -> bytes:
+    """Baixa `url` com retry exponencial e cache local por URL.
+
+    Reusar o cache não enfraquece a proveniência: `toolchain_licenses` grava no
+    `provenance.json` o sha256 do conteúdo que efetivamente entrou no bundle, e
+    a URL já carrega o commit pinado do compilador. Sem cache e sem download, o
+    build falha de propósito - bundle de licenças incompleto não deve ser
+    publicado.
+    """
+    if attempts < 1:
+        raise ValueError("attempts must be >= 1")
+    if sleep is None:
+        sleep = time.sleep
+    cache = _cache_path(cache_dir or license_cache_dir(), url)
+    if _valid_cache(cache):
+        return cache.read_bytes()
+    last_error = "unknown error"
+    for attempt in range(attempts):
+        retry_after = None
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as response:
+                data = response.read()
+        except urllib.error.HTTPError as error:
+            # HTTPError carrega um fp (a resposta); fechar devolve o socket mesmo
+            # quando o erro é propagado para o chamador.
+            try:
+                if error.code not in RETRYABLE_STATUS:
+                    raise
+                last_error = f"HTTP {error.code}"
+                retry_after = _retry_after(error)
+            finally:
+                error.close()
+        except (urllib.error.URLError, TimeoutError) as error:
+            last_error = str(getattr(error, "reason", error))
+        else:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            temporary = cache.with_name(f"{cache.name}.{os.getpid()}.tmp")
+            try:
+                temporary.write_bytes(data)
+                temporary.replace(cache)
+            finally:
+                temporary.unlink(missing_ok=True)
+            return data
+        if attempt + 1 < attempts:
+            delay = _retry_delay(attempt, retry_after, base_delay, retry_after_cap)
+            if delay > 0:
+                sleep(delay)
+    if _valid_cache(cache):
+        return cache.read_bytes()
+    raise RuntimeError(
+        f"Network failure downloading {url} after {attempts} attempts ({last_error}); "
+        "no cached copy available - this is not a missing license")
+
+
 def toolchain_licenses(destination: Path) -> None:
     """Rust toolchain and standard-library notices for the installed compiler."""
     def run(*args):
@@ -162,8 +263,7 @@ def toolchain_licenses(destination: Path) -> None:
     # Exact toolchain commit, never a moving branch. No remote code is executed.
     for name in ["LICENSE-APACHE", "LICENSE-MIT", "COPYRIGHT"]:
         url = f"https://raw.githubusercontent.com/rust-lang/rust/{commit}/{name}"
-        with urllib.request.urlopen(url, timeout=60) as response:
-            data = response.read()
+        data = download(url)
         (folder / name).write_bytes(data)
         sources.append({"file": name, "url": url, "sha256": hashlib.sha256(data).hexdigest()})
     documentation = Path(run("rustc", "--print", "sysroot").strip()) / "share/doc/rust"
