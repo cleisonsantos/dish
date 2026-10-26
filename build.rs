@@ -14,6 +14,9 @@ fn embed_resources() {
     let mut resource = winresource::WindowsResource::new();
     resource.set_icon("assets/dish-icon.ico");
     resource.set("ProductName", "Dish");
+    resource.set("CompanyName", "Cleison Santos");
+    resource.set("FileVersion", env!("CARGO_PKG_VERSION"));
+    resource.set("ProductVersion", env!("CARGO_PKG_VERSION"));
     resource.set("FileDescription", "Dish - desktop interface for the Pi coding agent");
     resource.set("LegalCopyright", "Apache-2.0");
     resource.set("OriginalFilename", "dish.exe");
