@@ -58,7 +58,10 @@ printf '#!/bin/sh\\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@
             stdout=log, stderr=log)
         return process, log
 
-    def click_text_once(label):
+    FAST_SCALE = 200
+    RETRY_SCALE = 400
+
+    def click_text_once(label, scale=FAST_SCALE, adaptive=False):
         # One OCR pass: True when the button was found and clicked.
         # Fonts and line wrapping vary between local desktops and clean CI:
         # find the button's text instead of assuming its vertical position.
@@ -67,14 +70,22 @@ printf '#!/bin/sh\\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@
             return "".join(value.lower().split()).replace("0", "o")
 
         # The primary button's single line can be skipped by page
-        # segmentation at native size; 200% keeps it readable. Coordinates
-        # below are scaled back down before the click.
+        # segmentation at native size; 200% keeps it readable. `scale` is
+        # the capture zoom in percent; coordinates below are scaled back
+        # down by the same factor before the click.
         subprocess.run(
-            ["import", "-window", str(window), "-resize", "200%", screenshot],
+            ["import", "-window", str(window), "-resize", f"{scale}%", screenshot],
             check=True)
+        command = ["tesseract", screenshot, "stdout", "--psm", "6"]
+        if adaptive:
+            # Sauvola binarizes each region locally; the outlined primary
+            # button's thin glyphs fall below the global Otsu threshold.
+            # Options must precede the "tsv" config file or tesseract
+            # ignores them.
+            command += ["-c", "thresholding_method=2"]
+        command += ["tsv"]
         rows = subprocess.check_output(
-            ["tesseract", screenshot, "stdout", "--psm", "6", "tsv"],
-            stderr=subprocess.DEVNULL).decode().splitlines()[1:]
+            command, stderr=subprocess.DEVNULL).decode().splitlines()[1:]
         lines = {}
         for row in rows:
             fields = row.split("\t")
@@ -95,15 +106,24 @@ printf '#!/bin/sh\\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@
         if best is None:
             return False
         subset = best[1]
-        left = min(int(word[6]) for word in subset) // 2
-        right = max(int(word[6]) + int(word[8]) for word in subset) // 2
+        factor = scale // 100
+        left = min(int(word[6]) for word in subset) // factor
+        right = max(int(word[6]) + int(word[8]) for word in subset) // factor
         first = subset[0]
         click(window, (left + right) // 2,
-              (int(first[7]) + int(first[9]) // 2) // 2)
+              (int(first[7]) + int(first[9]) // 2) // factor)
         return True
 
     def click_text(label):
-        wait_for(lambda: click_text_once(label), f"Button not found: {label}")
+        # The primary button is outlined (transparent fill, thin glyphs),
+        # which tesseract drops at 200% on the CI font rendering; a missed
+        # fast pass retries the capture at 400% with Sauvola local
+        # thresholding before giving up. The 200% pass stays first so the
+        # common path costs one capture.
+        wait_for(
+            lambda: click_text_once(label)
+            or click_text_once(label, RETRY_SCALE, adaptive=True),
+            f"Button not found: {label}")
 
     # O assistente também segue a aparência; o visual verificado é o escuro.
     (temp / "config/dish").mkdir(parents=True, exist_ok=True)
@@ -222,7 +242,9 @@ printf '#!/bin/sh\\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@
         # teste clica no que o estado real ditar.
         def click_done():
             for label in ("Abrir o Dish", "Voltar ao Dish"):
-                if click_text_once(label):
+                # Same 200% → 400% Sauvola fallback as click_text: the
+                # outlined primary button is the one tesseract loses at 200%.
+                if click_text_once(label) or click_text_once(label, RETRY_SCALE, adaptive=True):
                     print(f"Done button label used: {label}", flush=True)
                     return True
             return False
