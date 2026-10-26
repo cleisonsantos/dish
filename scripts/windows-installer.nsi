@@ -93,13 +93,12 @@ Function PiCheckPage
   Pop $0
 
   ${If} $PiFound == "0"
-    ${NSD_CreateLabel} 0 30u 100% 40u "O Pi não foi encontrado neste computador.$\r$\nVocê pode instalá-lo agora com o instalador oficial (uma janela do PowerShell será aberta) ou deixar para o assistente do Dish na primeira execução."
+    ${NSD_CreateLabel} 0 30u 100% 40u "O Pi não foi encontrado neste computador.$\r$\nVocê pode baixar e revisar o instalador oficial no editor. Depois, o PowerShell pedirá confirmação explícita antes de executar. Você também pode deixar para depois."
     Pop $0
-    ${NSD_CreateCheckbox} 0 76u 100% 12u "Executar o instalador oficial do Pi agora"
+    ${NSD_CreateCheckbox} 0 76u 100% 12u "Baixar e revisar o instalador oficial do Pi"
     Pop $PiCheckbox
-    ; Marcado por padrão: sem Pi o Dish não faz nada, e o assistente já mostra
-    ; o que será executado. Quem não quiser, desmarca.
-    ${NSD_Check} $PiCheckbox
+    ; Download e execução exigem escolhas explícitas.
+    ${NSD_Uncheck} $PiCheckbox
   ${Else}
     ${NSD_CreateLabel} 0 30u 100% 24u "Pi encontrado neste computador."
     Pop $0
@@ -148,7 +147,7 @@ Function FinishLeave
   ${If} $RunPiInstaller == ${BST_CHECKED}
     ; Instalador oficial do Pi, como no assistente do Linux: nada é escondido
     ; da pessoa e o Dish não reimplementa a instalação.
-    ExecShell "open" "powershell.exe" "-NoProfile -ExecutionPolicy Bypass -Command $\"irm https://pi.dev/install.ps1 | iex$\""
+    ExecShell "open" "powershell.exe" '-NoProfile -File "$INSTDIR\install-pi-windows.ps1"'
   ${EndIf}
   ${If} $RunDish == ${BST_CHECKED}
     ExecShell "open" "$INSTDIR\${APP_EXE}"
@@ -167,6 +166,7 @@ Section "Dish" SEC_MAIN
   ; que o .tar.gz/.deb do Linux carrega — issue #63.
   File /r "${SRCDIR}\dist\windows-payload\licenses"
   File "${SRCDIR}\dist\windows-payload\BUILD.json"
+  File "${SRCDIR}\scripts\install-pi-windows.ps1"
 
   WriteUninstaller "$INSTDIR\uninstall.exe"
   WriteRegStr HKCU "Software\Dish" "InstallDir" "$INSTDIR"
@@ -205,6 +205,7 @@ Section "Uninstall"
   Delete "$INSTDIR\LICENSE"
   Delete "$INSTDIR\THIRD_PARTY_NOTICES.md"
   Delete "$INSTDIR\BUILD.json"
+  Delete "$INSTDIR\install-pi-windows.ps1"
   Delete "$INSTDIR\uninstall.exe"
   RMDir /r "$INSTDIR\licenses"
   RMDir "$INSTDIR"

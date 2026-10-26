@@ -316,15 +316,49 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertFalse(data.startswith(b"\xef\xbb\xbf\xef\xbb\xbf"))
         self.assertFalse(data.decode("utf-8-sig").startswith("\ufeff"))
 
-    def test_installer_pre_checks_pi_and_holds_dish_back(self):
+    def test_installer_requires_pi_opt_in_and_holds_dish_back(self):
         nsi = (ROOT / "scripts/windows-installer.nsi").read_text(encoding="utf-8")
-        # Sem Pi, a instalação já vem marcada; e o Dish não abre junto com o
-        # instalador do Pi (evita duas instalações ao mesmo tempo).
-        self.assertIn("${NSD_Check} $PiCheckbox", nsi)
+        # Download requires opt-in; execution requires a second confirmation.
+        self.assertIn("${NSD_Uncheck} $PiCheckbox", nsi)
+        self.assertNotIn("${NSD_Check} $PiCheckbox", nsi)
+        self.assertNotIn("ExecutionPolicy", nsi)
+        self.assertNotIn("| iex", nsi)
+        self.assertIn('File "${SRCDIR}\\scripts\\install-pi-windows.ps1"', nsi)
+        self.assertIn('-NoProfile -File "$INSTDIR\\install-pi-windows.ps1"', nsi)
         self.assertIn("ExecShell \"open\" \"$INSTDIR\\${APP_EXE}\"", nsi)
         # O "Executar o Dish" fica desmarcado, mas nunca desabilitado.
         self.assertIn("${NSD_Uncheck} $DishCheckbox", nsi)
         self.assertNotIn("EnableWindow $DishCheckbox", nsi)
+
+    def test_windows_download_is_reviewed_before_explicit_execution(self):
+        script = (ROOT / "scripts/install-pi-windows.ps1").read_text()
+        stages = ["Invoke-WebRequest", "Get-FileHash", "Get-AuthenticodeSignature",
+                  "Start-Process", "-cne 'INSTALAR'", "-ne $hash",
+                  "& powershell.exe -NoProfile -File $script"]
+        offsets = [script.index(stage) for stage in stages]
+        self.assertEqual(offsets, sorted(offsets))
+        self.assertIn("-Wait", script)
+        for unsafe in ["ExecutionPolicy", "Invoke-Expression", "| iex", "Unblock-File"]:
+            self.assertNotIn(unsafe, script)
+        installation = (ROOT / "src/installation.rs").read_text()
+        self.assertIn('include_str!("../scripts/install-pi-windows.ps1")', installation)
+
+    def test_signing_happens_before_packaging_and_before_upload(self):
+        workflow = (ROOT / ".github/workflows/windows.yml").read_text()
+        stages = ["sign-windows.ps1 -Path 'target/release/dish.exe'",
+                  "python3 scripts/package-windows.py",
+                  "sign-windows.ps1 -Path 'dist/*-windows-x86_64-setup.exe'",
+                  "name: Save Windows executable"]
+        offsets = [workflow.index(stage) for stage in stages]
+        self.assertEqual(offsets, sorted(offsets))
+        script = (ROOT / "scripts/sign-windows.ps1").read_text()
+        self.assertIn("verify /pa /v", script)
+        self.assertIn("/fd SHA256 /tr", script)
+        self.assertIn("/td SHA256", script)
+        self.assertLess(script.index("verify /pa /v"), script.index("Get-FileHash"))
+        self.assertIn("Signing secrets absent", script)
+        self.assertIn("finally", script)
+        self.assertIn("-DeleteKey", script)
 
     def test_shared_bundle_module_is_used_by_both_packagers(self):
         for script in ["package-linux.py", "package-windows.py"]:
