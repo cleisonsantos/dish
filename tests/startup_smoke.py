@@ -58,50 +58,52 @@ printf '#!/bin/sh\\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@
             stdout=log, stderr=log)
         return process, log
 
-    def click_text(label):
-        # Fonts and line wrapping vary between local desktops and clean CI.
-        # Find the button's text instead of assuming its vertical position.
+    def click_text_once(label):
+        # One OCR pass: True when the button was found and clicked.
+        # Fonts and line wrapping vary between local desktops and clean CI:
+        # find the button's text instead of assuming its vertical position.
         # OCR may drop spaces and read a lone "o" as zero ("Abrir 0 Dish").
         def normalized(value):
             return "".join(value.lower().split()).replace("0", "o")
 
-        def locate():
-            # The primary button's single line can be skipped by page
-            # segmentation at native size; 200% keeps it readable. Coordinates
-            # below are scaled back down before the click.
-            subprocess.run(
-                ["import", "-window", str(window), "-resize", "200%", screenshot],
-                check=True)
-            rows = subprocess.check_output(
-                ["tesseract", screenshot, "stdout", "--psm", "6", "tsv"],
-                stderr=subprocess.DEVNULL).decode().splitlines()[1:]
-            lines = {}
-            for row in rows:
-                fields = row.split("\t")
-                if len(fields) == 12 and fields[11].strip():
-                    lines.setdefault(tuple(fields[1:5]), []).append(fields)
-            needle = normalized(label)
-            best = None
-            for words in lines.values():
-                # Two actions can share one OCR line. Match the contiguous
-                # words for this label instead of clicking the line's middle.
-                ordered = sorted(words, key=lambda word: int(word[6]))
-                for start in range(len(ordered)):
-                    for end in range(start + 1, len(ordered) + 1):
-                        subset = ordered[start:end]
-                        text = normalized("".join(word[11] for word in subset))
-                        if needle in text and (best is None or len(text) < best[0]):
-                            best = (len(text), subset)
-            if best is None:
-                return False
-            subset = best[1]
-            left = min(int(word[6]) for word in subset) // 2
-            right = max(int(word[6]) + int(word[8]) for word in subset) // 2
-            first = subset[0]
-            click(window, (left + right) // 2,
-                  (int(first[7]) + int(first[9]) // 2) // 2)
-            return True
-        wait_for(locate, f"Button not found: {label}")
+        # The primary button's single line can be skipped by page
+        # segmentation at native size; 200% keeps it readable. Coordinates
+        # below are scaled back down before the click.
+        subprocess.run(
+            ["import", "-window", str(window), "-resize", "200%", screenshot],
+            check=True)
+        rows = subprocess.check_output(
+            ["tesseract", screenshot, "stdout", "--psm", "6", "tsv"],
+            stderr=subprocess.DEVNULL).decode().splitlines()[1:]
+        lines = {}
+        for row in rows:
+            fields = row.split("\t")
+            if len(fields) == 12 and fields[11].strip():
+                lines.setdefault(tuple(fields[1:5]), []).append(fields)
+        needle = normalized(label)
+        best = None
+        for words in lines.values():
+            # Two actions can share one OCR line. Match the contiguous
+            # words for this label instead of clicking the line's middle.
+            ordered = sorted(words, key=lambda word: int(word[6]))
+            for start in range(len(ordered)):
+                for end in range(start + 1, len(ordered) + 1):
+                    subset = ordered[start:end]
+                    text = normalized("".join(word[11] for word in subset))
+                    if needle in text and (best is None or len(text) < best[0]):
+                        best = (len(text), subset)
+        if best is None:
+            return False
+        subset = best[1]
+        left = min(int(word[6]) for word in subset) // 2
+        right = max(int(word[6]) + int(word[8]) for word in subset) // 2
+        first = subset[0]
+        click(window, (left + right) // 2,
+              (int(first[7]) + int(first[9]) // 2) // 2)
+        return True
+
+    def click_text(label):
+        wait_for(lambda: click_text_once(label), f"Button not found: {label}")
 
     # O assistente também segue a aparência; o visual verificado é o escuro.
     (temp / "config/dish").mkdir(parents=True, exist_ok=True)
@@ -212,7 +214,19 @@ printf '#!/bin/sh\\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@
         click_text("Continuar")
         wait_for(lambda: screen_has("Pronto"), "Pi found did not return to the end state")
         # A instalação leva ao passo Pronto; abrir o Dish confirma a escolha.
-        click_text("Abrir o Dish")
+        # O rótulo do botão primário do passo Done depende de o workspace já
+        # existir atrás do assistente: "Abrir o Dish" no primeiro uso e
+        # "Voltar ao Dish" quando a conexão em segundo plano já criou o
+        # workspace (startup.rs: open_label = if reopened). Os dois fazem a
+        # mesma coisa — fechar o assistente e entrar no workspace — então o
+        # teste clica no que o estado real ditar.
+        def click_done():
+            for label in ("Abrir o Dish", "Voltar ao Dish"):
+                if click_text_once(label):
+                    print(f"Done button label used: {label}", flush=True)
+                    return True
+            return False
+        wait_for(click_done, "Done button not found")
         wait_for(lambda: any(e.get("command", {}).get("type") == "get_messages" for e in events()),
                  "Installed Pi did not initialize")
         preferences = temp / "config/dish/state.json"
