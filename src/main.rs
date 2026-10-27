@@ -19,6 +19,7 @@ mod fs_security;
 mod editor;
 mod settings;
 mod installation;
+mod pi_update;
 mod providers;
 mod provider_login;
 mod startup;
