@@ -17,6 +17,7 @@ with tempfile.TemporaryDirectory(prefix="dish-startup-") as temporary:
     log_path = temp / "events.jsonl"
     install_log = temp / "install-called"
     terminal_log = temp / "terminal-called"
+    node_log = temp / "node-called"
 
     def script(name, content):
         path = bin_dir / name
@@ -24,7 +25,9 @@ with tempfile.TemporaryDirectory(prefix="dish-startup-") as temporary:
         path.chmod(0o700)
         return path
 
-    script("node", "printf 'v22.19.0'")
+    # O verificador do caminho npm roda `node --version` em segundo plano; o
+    # fixture registra cada chamada para o teste esperar a verificação sem OCR.
+    script("node", f'printf "v22.19.0"; printf "node\\n" >> "{node_log}"')
     script("x-terminal-emulator", f'''printf '%s\\n' "$@" > "{terminal_log}"''')
     script("npm", f'''if [ "$1" = --version ]; then printf '10.0.0'; exit 0; fi
 test "$1" = install && test "$3" = --ignore-scripts || exit 2
@@ -55,33 +58,72 @@ printf '#!/bin/sh\\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@
             stdout=log, stderr=log)
         return process, log
 
-    def click_text(label):
-        # Fonts and line wrapping vary between local desktops and clean CI.
-        # Find the button's text instead of assuming its vertical position.
+    FAST_SCALE = 200
+    RETRY_SCALE = 400
+
+    def click_text_once(label, scale=FAST_SCALE, adaptive=False):
+        # One OCR pass: True when the button was found and clicked.
+        # Fonts and line wrapping vary between local desktops and clean CI:
+        # find the button's text instead of assuming its vertical position.
         # OCR may drop spaces and read a lone "o" as zero ("Abrir 0 Dish").
         def normalized(value):
             return "".join(value.lower().split()).replace("0", "o")
 
-        def locate():
-            subprocess.run(["import", "-window", str(window), screenshot], check=True)
-            rows = subprocess.check_output(
-                ["tesseract", screenshot, "stdout", "--psm", "6", "tsv"],
-                stderr=subprocess.DEVNULL).decode().splitlines()[1:]
-            lines = {}
-            for row in rows:
-                fields = row.split("\t")
-                if len(fields) == 12 and fields[11].strip():
-                    lines.setdefault(tuple(fields[1:5]), []).append(fields)
-            for words in lines.values():
-                text = normalized("".join(word[11] for word in words))
-                if normalized(label) in text:
-                    left = min(int(word[6]) for word in words)
-                    right = max(int(word[6]) + int(word[8]) for word in words)
-                    first = words[0]
-                    click(window, (left + right) // 2, int(first[7]) + int(first[9]) // 2)
-                    return True
+        # The primary button's single line can be skipped by page
+        # segmentation at native size; 200% keeps it readable. `scale` is
+        # the capture zoom in percent; coordinates below are scaled back
+        # down by the same factor before the click.
+        subprocess.run(
+            ["import", "-window", str(window), "-resize", f"{scale}%", screenshot],
+            check=True)
+        command = ["tesseract", screenshot, "stdout", "--psm", "6"]
+        if adaptive:
+            # Sauvola binarizes each region locally; the outlined primary
+            # button's thin glyphs fall below the global Otsu threshold.
+            # Options must precede the "tsv" config file or tesseract
+            # ignores them.
+            command += ["-c", "thresholding_method=2"]
+        command += ["tsv"]
+        rows = subprocess.check_output(
+            command, stderr=subprocess.DEVNULL).decode().splitlines()[1:]
+        lines = {}
+        for row in rows:
+            fields = row.split("\t")
+            if len(fields) == 12 and fields[11].strip():
+                lines.setdefault(tuple(fields[1:5]), []).append(fields)
+        needle = normalized(label)
+        best = None
+        for words in lines.values():
+            # Two actions can share one OCR line. Match the contiguous
+            # words for this label instead of clicking the line's middle.
+            ordered = sorted(words, key=lambda word: int(word[6]))
+            for start in range(len(ordered)):
+                for end in range(start + 1, len(ordered) + 1):
+                    subset = ordered[start:end]
+                    text = normalized("".join(word[11] for word in subset))
+                    if needle in text and (best is None or len(text) < best[0]):
+                        best = (len(text), subset)
+        if best is None:
             return False
-        wait_for(locate, f"Button not found: {label}")
+        subset = best[1]
+        factor = scale // 100
+        left = min(int(word[6]) for word in subset) // factor
+        right = max(int(word[6]) + int(word[8]) for word in subset) // factor
+        first = subset[0]
+        click(window, (left + right) // 2,
+              (int(first[7]) + int(first[9]) // 2) // factor)
+        return True
+
+    def click_text(label):
+        # The primary button is outlined (transparent fill, thin glyphs),
+        # which tesseract drops at 200% on the CI font rendering; a missed
+        # fast pass retries the capture at 400% with Sauvola local
+        # thresholding before giving up. The 200% pass stays first so the
+        # common path costs one capture.
+        wait_for(
+            lambda: click_text_once(label)
+            or click_text_once(label, RETRY_SCALE, adaptive=True),
+            f"Button not found: {label}")
 
     # O assistente também segue a aparência; o visual verificado é o escuro.
     (temp / "config/dish").mkdir(parents=True, exist_ok=True)
@@ -99,9 +141,51 @@ printf '#!/bin/sh\\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@
         assert not install_log.exists(), "Installation ran without consent"
         assert not terminal_log.exists(), "Official installer ran without consent"
         screenshot = tempfile.mktemp(prefix="dish-setup-", suffix=".png")
-        # O assistente mostra o resultado da verificação antes de qualquer ação.
+
+        def screen_text():
+            subprocess.run(
+                ["import", "-window", str(window), "-resize", "200%", screenshot],
+                check=True)
+            return subprocess.check_output(
+                ["tesseract", screenshot, "stdout", "--psm", "6"],
+                stderr=subprocess.DEVNULL).decode()
+
+        def screen_has(label):
+            # OCR may drop spaces or read a lone "o" as zero, as in click_text.
+            def normalized(value):
+                return "".join(value.lower().split()).replace("0", "o")
+
+            return normalized(label) in normalized(screen_text())
+
+        # Primeiro passo: boas-vindas, sem instalar nada. Esc fecha limpo.
+        # O primeiro frame pode não estar pintado no runner; a condição é a
+        # mesma (a tela de boas-vindas tem que aparecer), só passa a esperar.
+        wait_for(lambda: screen_has("Bem-vindo"), "Welcome screen did not render")
+        press("Escape")
+        wait_for(lambda: process.poll() is not None, "Escape did not close setup cleanly")
+        process.wait(timeout=5)
+        log.close()
+        process, log = launch()
+        wait_for(lambda: find_window(), "Setup window not recreated after escape")
+        window = find_window()
+        prepare_window(window)
+        time.sleep(1)
+
+        # Segundo passo: verificação do Pi e escolha do caminho de instalação.
+        press("Tab")
+        press("Return")
+        wait_for(lambda: screen_has("Verificar o Pi"), "Pi verification did not render")
         click_text("Instalar o Pi")
-        subprocess.run(["import", "-window", str(window), screenshot], check=True)
+        wait_for(lambda: screen_has("Instalar via npm"),
+                 "Install step did not render")
+        install_page = screen_text()
+        assert "install.sh" in install_page, install_page
+        # Voltar percorre o fluxo linear sem perder a verificação encontrada.
+        click_text("Voltar")
+        wait_for(lambda: screen_has("Verificar o Pi"), "Voltar did not return to Pi check")
+        click_text("Instalar o Pi")
+        wait_for(lambda: screen_has("Instalar via npm"),
+                 "Install step did not return after Voltar")
         print(f"Setup screenshot: {screenshot}", flush=True)
         # Official consent launches only a fake terminal, never a remote script.
         click_text("Aceitar e abrir instalador oficial")
@@ -118,12 +202,55 @@ printf '#!/bin/sh\\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@
         window = find_window()
         prepare_window(window)
         time.sleep(2)
-        # Segundo passo do assistente: a alternativa sem terminal.
+        # Segundo passo do assistente: a alternativa sem terminal. O foco
+        # inicial fica no botão primário; Tab + Return aciona "Começar" sem
+        # depender de OCR do rótulo, como no fluxo oficial acima.
+        press("Tab")
+        press("Return")
+        wait_for(lambda: screen_has("Verificar o Pi"), "Pi verification did not render again")
         click_text("Instalar o Pi")
+        wait_for(lambda: screen_has("Instalar via npm"), "npm path was not offered")
+        click_text("Instalar via npm")
+        wait_for(lambda: screen_has("Verificar o Node"), "Node step did not render")
+        assert not install_log.exists(), "npm path installed before Node consent"
+        # O botão de consentimento (`setup-install`, startup.rs) só é desenhado
+        # quando `node_ready()` é verdadeiro, mas o rótulo "Instalar via npm" é
+        # idêntico ao do passo Install por OCR — esperar pela string pode
+        # passar antes da troca de tela. A verificação roda `node --version`
+        # duas vezes (installation::prerequisites e node_version), e a segunda
+        # só acontece depois de Node 22.19+ e npm passarem; logo em seguida
+        # `check_node` grava a versão e a tela ganha o botão. Nenhum outro passo
+        # chama Node, então duas chamadas no log não podem vir do passo anterior.
+        def node_calls():
+            if not node_log.exists():
+                return 0
+            return len(node_log.read_text().splitlines())
+
+        wait_for(lambda: node_calls() >= 2, "Node check did not finish")
         click_text("Instalar via npm")
         wait_for(lambda: install_log.exists(), "Consent did not start fake installation")
+        wait_for(lambda: screen_has("Pronto"), "Installation did not reach the end state")
+        # Voltar depois do fim e continuar volta ao mesmo estado pronto.
+        click_text("Voltar")
+        wait_for(lambda: screen_has("Verificar o Pi"), "Voltar did not leave the end state")
+        click_text("Continuar")
+        wait_for(lambda: screen_has("Pronto"), "Pi found did not return to the end state")
         # A instalação leva ao passo Pronto; abrir o Dish confirma a escolha.
-        click_text("Abrir o Dish")
+        # O rótulo do botão primário do passo Done depende de o workspace já
+        # existir atrás do assistente: "Abrir o Dish" no primeiro uso e
+        # "Voltar ao Dish" quando a conexão em segundo plano já criou o
+        # workspace (startup.rs: open_label = if reopened). Os dois fazem a
+        # mesma coisa — fechar o assistente e entrar no workspace — então o
+        # teste clica no que o estado real ditar.
+        def click_done():
+            for label in ("Abrir o Dish", "Voltar ao Dish"):
+                # Same 200% → 400% Sauvola fallback as click_text: the
+                # outlined primary button is the one tesseract loses at 200%.
+                if click_text_once(label) or click_text_once(label, RETRY_SCALE, adaptive=True):
+                    print(f"Done button label used: {label}", flush=True)
+                    return True
+            return False
+        wait_for(click_done, "Done button not found")
         wait_for(lambda: any(e.get("command", {}).get("type") == "get_messages" for e in events()),
                  "Installed Pi did not initialize")
         preferences = temp / "config/dish/state.json"
@@ -137,6 +264,21 @@ printf '#!/bin/sh\\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@
         wait_for(lambda: sum(e.get("command", {}).get("type") == "get_messages" for e in events()) > initial_count,
                  "Installed Pi was not discovered after restart")
         assert install_log.read_text().splitlines() == ["installed"], "Restart reinstalled Pi"
+        wait_for(lambda: find_window(), "Workspace window not recreated")
+        window = find_window()
+        prepare_window(window)
+        time.sleep(1)
+        # O assistente pode ser reaberto em Configurações → Sobre / Pi; Esc
+        # volta ao workspace já aberto em vez de encerrar o Dish.
+        press("F1")
+        wait_for(lambda: screen_has("Configura"), "Settings did not open")
+        click_text("Sobre")
+        wait_for(lambda: screen_has("Reabrir o assistente"), "About page did not render")
+        click_text("Reabrir o assistente")
+        wait_for(lambda: screen_has("Bem-vindo ao Dish"), "Wizard did not reopen")
+        press("Escape")
+        wait_for(lambda: not screen_has("Bem-vindo ao Dish"), "Escape did not close the wizard")
+        assert process.poll() is None, "Cancelling the wizard closed the workspace"
         print("Startup installation smoke passed")
     except Exception:
         print((temp / "dish.log").read_text())

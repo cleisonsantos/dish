@@ -19,6 +19,14 @@ mod search;
 
 actions!(dish_workspace, [FindCurrent, FindProject, ExitSearch, NextMatch, PreviousMatch, AcceptMatch, ToggleSessions, NextConversation, PreviousConversation, CloseConversation, SearchSessions, FocusPrompt, NavUp, NavDown, NavAccept, NavCollapse, NavExpand, CycleSessionFilter]);
 
+/// Eventos que precisam subir até a raiz do onboarding.
+#[derive(Clone, Copy)]
+pub enum WorkspaceEvent {
+    ReopenSetup,
+}
+
+impl EventEmitter<WorkspaceEvent> for Workspace {}
+
 #[derive(Clone)]
 struct OpeningSession {
     cwd: PathBuf,
@@ -585,6 +593,14 @@ impl Workspace {
                             });
                         })
                         .detach();
+                    }
+                    SettingsEvent::OpenPiSetup => {
+                        // A tela de configurações não pode ficar por cima do
+                        // assistente; o workspace continua vivo por trás dele.
+                        if let Some(settings) = &this.settings {
+                            settings.update(cx, |settings, cx| settings.suspend(cx));
+                        }
+                        cx.emit(WorkspaceEvent::ReopenSetup);
                     }
                     SettingsEvent::Closed => {}
                 }

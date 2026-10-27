@@ -22,6 +22,8 @@ pub enum SettingsEvent {
     ShowAllModels,
     /// Trocar o executável do Pi escolhido.
     ChoosePi,
+    /// Reabrir o assistente de primeiro uso (Configurações → Sobre / Pi).
+    OpenPiSetup,
     /// Uma credencial de provedor foi adicionada ou removida no Pi.
     ///
     /// As conversas abertas precisam reler a lista de modelos: o processo do Pi
@@ -1230,6 +1232,9 @@ impl Render for Settings {
                 .child(note("Pi mantém as sessões e credenciais. O Dish não executa um serviço em segundo plano."))
                 .child(control("settings-pi-choose", "Escolher executável do Pi", cx.listener(
                     |_, _, _, cx| cx.emit(SettingsEvent::ChoosePi),
+                )))
+                .child(control("settings-pi-setup", "Reabrir o assistente do Pi", cx.listener(
+                    |_, _, _, cx| cx.emit(SettingsEvent::OpenPiSetup),
                 )))
                 .child(control("settings-docs", "Documentação oficial do Pi", |_, _, cx| cx.open_url("https://github.com/earendil-works/pi"))).into_any_element(),
         };
