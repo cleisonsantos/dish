@@ -276,6 +276,15 @@ pub struct Workspace {
     preferences: crate::preferences::Preferences,
     notifications: NotificationQueue,
     notification_focus: BTreeMap<String, (FocusHandle, FocusHandle)>,
+    /// Last version reported by the selected Pi, if it answered `--version`.
+    pi_installed: Option<String>,
+    /// Last version published in the npm registry, if a check succeeded.
+    pi_latest: Option<String>,
+    pi_checking: bool,
+    /// Manual result shown in Sobre / Pi; automatic failures stay in the log.
+    pi_notice: Option<String>,
+    /// Invalidates completion monitors from older installer launches.
+    pi_install_generation: u64,
     /// Aviso da linha de comando (pasta inexistente), mostrado no rail.
     notice: Option<String>,
     settings: Option<Entity<crate::settings::Settings>>,
@@ -320,6 +329,289 @@ impl Workspace {
         if std::fs::read_to_string(&ack).ok().as_deref() != Some(ids.as_str()) {
             let _ = std::fs::write(ack, ids);
         }
+    }
+
+    fn pi_status(&self) -> crate::settings::PiStatus {
+        crate::settings::PiStatus {
+            installed: self.pi_installed.clone(),
+            latest: self.pi_latest.clone(),
+            last_check: self.preferences.last_pi_update_check,
+            checking: self.pi_checking,
+            notice: self.pi_notice.clone(),
+            auto_check: self.preferences.pi_auto_check,
+            auto_install: self.preferences.pi_auto_install,
+        }
+    }
+
+    fn sync_pi_settings(&self, cx: &mut Context<Self>) {
+        let Some(settings) = &self.settings else { return; };
+        let status = self.pi_status();
+        settings.update(cx, |settings, cx| settings.set_pi_status(status, cx));
+    }
+
+    fn enqueue_pi_available(&mut self, available: crate::pi_update::Available, cx: &mut Context<Self>) {
+        let weak = cx.entity().downgrade();
+        self.enqueue_notification(Notification {
+            id: available.id,
+            title: available.title,
+            detail: available.detail,
+            action_label: Some("Atualizar o Pi".into()),
+            action: Some(std::rc::Rc::new(move |_, cx| {
+                let _ = weak.update(cx, |workspace, cx| workspace.request_pi_update(false, cx));
+            })),
+        }, cx);
+    }
+
+    /// Reserve the daily attempt before going to the network. Failures also
+    /// count, so an offline machine does not retry in a loop.
+    fn maybe_check_pi_updates(&mut self, cx: &mut Context<Self>) {
+        if !crate::pi_update::check_due(
+            self.preferences.last_pi_update_check,
+            crate::pi_update::now_unix(),
+            self.preferences.pi_auto_check,
+        ) {
+            return;
+        }
+        self.check_pi_updates(true, cx);
+    }
+
+    /// Daily Dish release check: at most one attempt per day, notification
+    /// only. Separately gated from the Pi update check above.
+    fn maybe_check_dish_update(&mut self, cx: &mut Context<Self>) {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .map(|time| time.as_secs() as i64).unwrap_or_default();
+        if let Some(check) = crate::update::Check::automatic(&mut self.preferences, now) {
+            crate::preferences::save(self.preferences.clone());
+            cx.spawn(async move |this, cx| {
+                let outcome = cx.background_executor().spawn(async move { check.run() }).await;
+                if let Some(outcome) = outcome {
+                    let _ = this.update(cx, |workspace, cx| {
+                        workspace.preferences.last_update_etag = outcome.etag;
+                        crate::preferences::save(workspace.preferences.clone());
+                        if let Some(available) = outcome.notification {
+                            workspace.enqueue_notification(available.notification(), cx);
+                        }
+                    });
+                }
+            }).detach();
+        }
+    }
+
+    fn check_pi_updates(&mut self, automatic: bool, cx: &mut Context<Self>) {
+        if self.pi_checking {
+            return;
+        }
+        self.pi_checking = true;
+        self.pi_notice = None;
+        self.preferences.last_pi_update_check = Some(crate::pi_update::now_unix());
+        crate::preferences::save(self.preferences.clone());
+        self.sync_pi_settings(cx);
+        let program = crate::installation::program();
+        cx.spawn(async move |this, cx| {
+            let (installed, latest) = cx
+                .background_executor()
+                .spawn(async move {
+                    let installed = crate::pi_update::installed_version(&program);
+                    let latest = crate::pi_update::fetch_latest().ok();
+                    (installed, latest)
+                })
+                .await;
+            let _ = this.update(cx, |workspace, cx| {
+                workspace.pi_checking = false;
+                workspace.pi_installed = installed;
+                match latest {
+                    Some(latest) => {
+                        workspace.pi_latest = Some(latest.clone());
+                        if let Some(available) = crate::pi_update::available(
+                            workspace.pi_installed.as_deref(),
+                            &latest,
+                        ) {
+                            workspace.pi_notice = Some(format!(
+                                "Pi {} disponível. A instalação abre o instalador oficial num terminal.",
+                                available.version
+                            ));
+                            if automatic && workspace.preferences.pi_auto_install {
+                                workspace.request_pi_update(true, cx);
+                            } else {
+                                workspace.enqueue_pi_available(available, cx);
+                            }
+                        } else {
+                            workspace.pi_notice = Some(match workspace.pi_installed.as_deref() {
+                                Some(installed) if installed == latest => format!(
+                                    "Você está na versão mais recente do Pi ({installed})."
+                                ),
+                                Some(installed) => format!(
+                                    "O Pi instalado ({installed}) não é anterior à versão publicada ({latest})."
+                                ),
+                                None => format!(
+                                    "Última versão publicada do Pi: {latest}. Versão instalada desconhecida."
+                                ),
+                            });
+                        }
+                    }
+                    None => {
+                        crate::pi_update::log_check_failed(automatic);
+                        if !automatic {
+                            workspace.pi_notice = Some(
+                                "Não foi possível verificar agora. Tente novamente.".into(),
+                            );
+                        }
+                    }
+                }
+                workspace.sync_pi_settings(cx);
+            });
+        })
+        .detach();
+    }
+
+    fn request_pi_update(&mut self, automatic: bool, cx: &mut Context<Self>) {
+        let busy = self
+            .conversations
+            .iter()
+            .any(|conversation| conversation.state.read(cx).is_executing());
+        if busy {
+            let message = "Aguarde a resposta terminar para atualizar o Pi.";
+            crate::logging::warn(format_args!("Dish: Pi installer deferred while streaming"));
+            self.pi_notice = Some(message.into());
+            if automatic {
+                if let Some(available) = crate::pi_update::available(
+                    self.pi_installed.as_deref(),
+                    self.pi_latest.as_deref().unwrap_or_default(),
+                ) {
+                    self.enqueue_pi_available(available, cx);
+                }
+            } else {
+                let state = self.conversations[self.active].state.clone();
+                state.update(cx, |state, cx| {
+                    state.push_toast(message.into(), crate::state::Tone::Warning, cx);
+                });
+            }
+            self.sync_pi_settings(cx);
+            return;
+        }
+        let before = self.pi_installed.clone();
+        crate::pi_update::log_install_start(before.as_deref(), automatic);
+        match crate::pi_update::launch_installer() {
+            Ok(()) => {
+                self.pi_notice = Some(
+                    "Instalador oficial do Pi aberto no terminal. O Dish avisa quando a versão mudar."
+                        .into(),
+                );
+                if automatic {
+                    if let Some(latest) = self.pi_latest.clone() {
+                        self.enqueue_notification(Notification {
+                            id: format!("pi-update-started-{latest}"),
+                            title: format!("Instalando Pi {latest}"),
+                            detail: "O instalador oficial foi aberto no terminal. A versão atual será confirmada ao terminar."
+                                .into(),
+                            action_label: None,
+                            action: None,
+                        }, cx);
+                    }
+                } else {
+                    let state = self.conversations[self.active].state.clone();
+                    state.update(cx, |state, cx| {
+                        state.push_toast(
+                            "Instalador do Pi aberto no terminal.".into(),
+                            crate::state::Tone::Info,
+                            cx,
+                        );
+                    });
+                }
+                self.sync_pi_settings(cx);
+                self.monitor_pi_install(before, cx);
+            }
+            Err(error) => {
+                let message = format!(
+                    "Não foi possível abrir o instalador do Pi: {error:#}. Use o instalador oficial do Pi em um terminal."
+                );
+                crate::logging::warn(format_args!("Dish: Pi installer unavailable: {error:#}"));
+                self.pi_notice = Some(message.clone());
+                if automatic {
+                    self.enqueue_notification(Notification {
+                        id: format!("pi-update-error-{}", self.pi_latest.as_deref().unwrap_or("pi")),
+                        title: "Não foi possível atualizar o Pi".into(),
+                        detail: message,
+                        action_label: None,
+                        action: None,
+                    }, cx);
+                } else {
+                    let state = self.conversations[self.active].state.clone();
+                    state.update(cx, |state, cx| {
+                        state.push_toast(message, crate::state::Tone::Error, cx);
+                    });
+                }
+                self.sync_pi_settings(cx);
+            }
+        }
+    }
+
+    /// The official installer runs in a visible terminal, so its exit is not
+    /// tied to an RPC process. Poll the selected executable and report the
+    /// version change instead of claiming success when the terminal opens.
+    fn monitor_pi_install(&mut self, before: Option<String>, cx: &mut Context<Self>) {
+        self.pi_install_generation = self.pi_install_generation.wrapping_add(1);
+        let generation = self.pi_install_generation;
+        let program = crate::installation::program();
+        cx.spawn(async move |this, cx| {
+            let mut baseline = before;
+            for _ in 0..60 {
+                cx.background_executor().timer(Duration::from_secs(10)).await;
+                let program = program.clone();
+                let found = cx
+                    .background_executor()
+                    .spawn(async move { crate::pi_update::installed_version(&program) })
+                    .await;
+                let Some(found) = found else { continue; };
+                if baseline.is_none() {
+                    // The version may not have been loaded when the button was
+                    // pressed. Keep the first answer as the baseline instead of
+                    // reporting a false update after a cancelled installer.
+                    baseline = Some(found);
+                    continue;
+                }
+                if Some(found.as_str()) == baseline.as_deref() {
+                    continue;
+                }
+                let previous = baseline.clone();
+                let detected = found;
+                let _ = this.update(cx, move |workspace, cx| {
+                    if workspace.pi_install_generation != generation {
+                        return;
+                    }
+                    crate::pi_update::log_install_result(previous.as_deref(), Some(&detected));
+                    workspace.pi_installed = Some(detected.clone());
+                    let message = format!(
+                        "Pi atualizado: {} → {detected}.",
+                        crate::pi_update::display_version(previous.as_deref())
+                    );
+                    workspace.pi_notice = Some(message.clone());
+                    workspace.enqueue_notification(Notification {
+                        id: format!("pi-updated-{detected}"),
+                        title: format!("Pi atualizado para {detected}"),
+                        detail: format!(
+                            "Versão anterior: {}. Novas conversas usarão o novo executável.",
+                            crate::pi_update::display_version(previous.as_deref())
+                        ),
+                        action_label: None,
+                        action: None,
+                    }, cx);
+                    workspace.sync_pi_settings(cx);
+                });
+                return;
+            }
+            let previous = baseline.clone();
+            let _ = this.update(cx, move |workspace, _| {
+                if workspace.pi_install_generation != generation {
+                    return;
+                }
+                crate::pi_update::log_install_result(
+                    previous.as_deref(),
+                    workspace.pi_installed.as_deref(),
+                );
+            });
+        })
+        .detach();
     }
 
     fn notification_cards(&self, cx: &Context<Self>) -> Option<AnyElement> {
@@ -514,6 +806,11 @@ impl Workspace {
             preferences,
             notifications: NotificationQueue::default(),
             notification_focus: BTreeMap::new(),
+            pi_installed: None,
+            pi_latest: None,
+            pi_checking: false,
+            pi_notice: None,
+            pi_install_generation: 0,
             notice,
             settings: None,
             settings_models: Vec::new(),
@@ -543,23 +840,20 @@ impl Workspace {
             .unwrap_or(true)
         });
         self.refresh(cx);
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-            .map(|time| time.as_secs() as i64).unwrap_or_default();
-        if let Some(check) = crate::update::Check::automatic(&mut self.preferences, now) {
-            crate::preferences::save(self.preferences.clone());
-            cx.spawn(async move |this, cx| {
-                let outcome = cx.background_executor().spawn(async move { check.run() }).await;
-                if let Some(outcome) = outcome {
-                    let _ = this.update(cx, |workspace, cx| {
-                        workspace.preferences.last_update_etag = outcome.etag;
-                        crate::preferences::save(workspace.preferences.clone());
-                        if let Some(available) = outcome.notification {
-                            workspace.enqueue_notification(available.notification(), cx);
-                        }
-                    });
-                }
-            }).detach();
-        }
+        self.maybe_check_pi_updates(cx);
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor()
+                .timer(Duration::from_secs(60 * 60))
+                .await;
+            if this
+                .update(cx, |workspace, cx| workspace.maybe_check_pi_updates(cx))
+                .is_err()
+            {
+                break;
+            }
+        })
+        .detach();
+        self.maybe_check_dish_update(cx);
         // Explicit test hook: a JSON array at DISH_TEST_NOTIFY is polled while
         // the app runs, so a smoke can enqueue during an active Pi stream.
         if let Some(path) = std::env::var_os("DISH_TEST_NOTIFY").map(PathBuf::from) {
@@ -596,6 +890,18 @@ impl Workspace {
                 match event {
                     SettingsEvent::Preference(name, value) => {
                         if *name == "navigation" { this.visible = *value; this.nav_user_choice = true; }
+                        if *name == "pi_auto_check" {
+                            this.preferences.pi_auto_check = *value;
+                            crate::preferences::save(this.preferences.clone());
+                            if *value { this.maybe_check_pi_updates(cx); }
+                        }
+                        if *name == "pi_auto_install" {
+                            this.preferences.pi_auto_install = *value;
+                            crate::preferences::save(this.preferences.clone());
+                        }
+                        if matches!(*name, "pi_auto_check" | "pi_auto_install") {
+                            this.sync_pi_settings(cx);
+                        }
                         if *name == "reduce_motion" {
                             this.preferences.reduce_motion = Some(*value);
                             cx.set_reduce_motion(*value);
@@ -751,6 +1057,8 @@ impl Workspace {
                         }
                         cx.emit(WorkspaceEvent::ReopenSetup);
                     }
+                    SettingsEvent::RequestPiCheck => this.check_pi_updates(false, cx),
+                    SettingsEvent::RequestPiUpdate => this.request_pi_update(false, cx),
                     SettingsEvent::Closed => {}
                 }
                 cx.notify();
@@ -758,6 +1066,7 @@ impl Workspace {
             self.settings = Some(settings);
         }
         let state = self.conversations[self.active].state.read(cx);
+        let pi = self.pi_status();
         let view = crate::settings::SettingsView {
             options: [state.sidebar, self.visible, state.show_thinking, state.generated_titles],
             appearance: self.preferences.appearance,
@@ -768,6 +1077,7 @@ impl Workspace {
                 .map(|model| (model.provider.clone(), model.id.clone()))
                 .collect(),
             hidden: self.preferences.hidden_models.clone(),
+            pi,
         };
         self.conversations[self.active].state.update(cx, |state, _| {
             state.visible = false;

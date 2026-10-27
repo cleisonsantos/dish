@@ -40,6 +40,15 @@ pub struct Preferences {
     pub theme: Option<String>,
     /// Stable notification ids the user has dismissed.
     pub dismissed_notifications: BTreeSet<String>,
+    /// At most one automatic Pi update check per day. Off by default: Dish is
+    /// not Pi's package manager.
+    pub pi_auto_check: bool,
+    /// Only meaningful when `pi_auto_check` is on. Explicit opt-in to running
+    /// the official installer after a check finds a newer version.
+    pub pi_auto_install: bool,
+    /// Unix seconds of the last Pi update attempt, including failures.
+    pub last_pi_update_check: Option<i64>,
+    /// Unix seconds of the last Dish release check, including failures.
     pub last_update_check: Option<i64>,
     pub last_update_etag: Option<String>,
     pub update_channel: Option<crate::update::UpdateChannel>,
@@ -138,6 +147,9 @@ mod tests {
         assert_eq!(preferences.theme, None);
         assert_eq!(preferences.reduce_motion, None, "preserve platform motion setting");
         assert!(preferences.dismissed_notifications.is_empty());
+        assert!(!preferences.pi_auto_check, "automatic Pi checks are opt-in");
+        assert!(!preferences.pi_auto_install, "automatic Pi installs are opt-in");
+        assert_eq!(preferences.last_pi_update_check, None);
         assert_eq!(preferences.last_update_check, None);
         assert_eq!(preferences.last_update_etag, None);
         assert_eq!(preferences.update_channel, None);
@@ -202,6 +214,9 @@ mod tests {
             reduce_motion: Some(true),
             theme: Some("user:meu-tema".to_string()),
             dismissed_notifications: ["sample".to_string()].into(),
+            pi_auto_check: true,
+            pi_auto_install: false,
+            last_pi_update_check: Some(1_700_000_000),
             last_update_check: Some(1_800_000_000),
             last_update_etag: Some("\"test-etag\"".to_string()),
             update_channel: Some(crate::update::UpdateChannel::Prerelease),
