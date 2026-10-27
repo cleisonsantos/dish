@@ -258,6 +258,50 @@ class Harness:
             time.sleep(0.4)
         raise AssertionError(f"{self.name}: {needle!r} continuou na tela")
 
+    def field_ocr_above(self, label, psm):
+        """OCR do campo de resposta, logo acima do aviso `label`.
+
+        O campo não tem identidade de paint, então o aviso seguinte ancora a
+        faixa: mesma coluna, uma linha de texto acima. A ampliação só ajuda o
+        tesseract a separar as máscaras pequenas do fundo escuro.
+        """
+        anchor = find_word(self.window, label)
+        assert anchor, f"{self.name}: não achei a âncora {label!r}:\n{self.capture()}"
+        x, y, _, _ = anchor
+        attributes = XWindowAttributes()
+        assert x11.XGetWindowAttributes(display, self.window, ctypes.byref(attributes))
+        left = max(0, x - 2)
+        width = max(1, attributes.width - left)
+        crop = f"{width}x50+{left}+{max(0, y - 66)}"
+        with tempfile.TemporaryDirectory(prefix="dish-mask-") as directory:
+            image = str(Path(directory) / "field.png")
+            subprocess.run(["import", "-window", str(self.window), "-crop", crop,
+                            "-resize", "400%", image],
+                           check=True, stderr=subprocess.DEVNULL)
+            return subprocess.check_output(["tesseract", image, "stdout", "--psm", psm],
+                                           stderr=subprocess.DEVNULL).decode()
+
+    def assert_masked_answer(self, label, key):
+        """O campo mostra máscaras e não deixa o valor real ser lido pelo OCR."""
+        length = len(key)
+        wanted = normalized(key)
+        distinctive = normalized("nao-deve-aparecer")
+        last = ""
+        for _ in range(6):
+            for psm in ("8", "13"):
+                last = self.field_ocr_above(label, psm)
+                readback = normalized(last)
+                assert wanted not in readback, (
+                    f"{self.name}: o valor real apareceu no campo; OCR: {last!r}")
+                assert distinctive not in readback, (
+                    f"{self.name}: parte do valor real apareceu no campo; OCR: {last!r}")
+                for run in re.findall(r"[.\*°•]+", last):
+                    if len(run) == length and len(set(run)) == 1:
+                        return
+            time.sleep(0.4)
+        raise AssertionError(
+            f"{self.name}: máscara de {length} caracteres não apareceu; OCR do campo: {last!r}")
+
     def close_settings(self):
         """Fecha as Configurações e espera o foco voltar para a conversa.
 
@@ -317,11 +361,14 @@ def check_login_and_logout():
         h.wait_text(["Como entrar em anthropic", "Anthropic API key"])
         h.click("Usar")
         h.wait_text(["Cole a chave de API da Anthropic"])
-        type_text("sk-ant-chave-de-teste")
-        time.sleep(0.3)
+        key = "sk-test-nao-deve-aparecer-123"
+        type_text(key)
+        # O valor existe no buffer (vai no envio) mas não pode ser desenhado.
+        h.assert_absent(key)
+        h.assert_masked_answer("Exemplo", key)
         h.click("Enviar")
         # O valor sai da tela ao ser enviado: nada dele fica renderizado.
-        h.assert_absent("chave-de-teste")
+        h.assert_absent(key)
         h.wait_text(["Provedor anthropic conectado"])
         h.click("Voltar à lista")
         # A lista é relida do Pi: a credencial agora aparece como salva.

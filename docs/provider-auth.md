@@ -406,11 +406,11 @@ cancelar.
 
 ## Limites conhecidos
 
-- **O campo da resposta não é mascarado.** O editor do Dish não tem modo
-  `password`, então a chave aparece enquanto é digitada — como acontece no
-  `/login` do terminal. Em compensação ela não é copiada para o estado, não
-  entra em registro, não volta pelo protocolo e o campo é limpo no instante do
-  envio.
+- **O campo de segredo é mascarado, sem botão de revelar.** Perguntas
+  `secret` desenham `•` por caractere; o valor real fica só no buffer e vai no
+  envio. Não há `reveal` nesta etapa. Em compensação ela não é copiada para o
+  estado, não entra em registro, não volta pelo protocolo e o campo é limpo no
+  instante do envio.
 - **`getDeviceId` não é enviado.** Alguns fluxos (o host id da OpenAI) aceitam
   um identificador estável da instalação; o Dish ainda não cria nem guarda um,
   para não introduzir um identificador persistente sem decisão explícita.

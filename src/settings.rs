@@ -614,7 +614,7 @@ impl Settings {
                     ask: None,
                     notices: Vec::new(),
                 });
-                self.answer.update(cx, |editor, cx| editor.clear(cx));
+                self.reset_answer(false, cx);
                 cx.notify();
                 cx.spawn(async move |this, cx| {
                     while let Ok(message) = events.recv().await {
@@ -647,10 +647,11 @@ impl Settings {
         use crate::provider_login::Message;
         match message {
             Message::Ask(ask) => {
+                let secret = ask.kind == crate::provider_login::AskKind::Secret;
                 if let Some(LoginStep::Running { ask: slot, .. }) = self.login.as_mut() {
                     *slot = Some(ask);
                 }
-                self.answer.update(cx, |editor, cx| editor.clear(cx));
+                self.reset_answer(secret, cx);
                 self.answer_focus = true;
             }
             Message::Notice(notice) => {
@@ -690,6 +691,15 @@ impl Settings {
         }
     }
 
+    /// Limpa o campo de resposta e ajusta a máscara ao tipo da pergunta atual.
+    /// O valor em si nunca é guardado aqui; só o modo de exibição.
+    fn reset_answer(&mut self, masked: bool, cx: &mut Context<Self>) {
+        self.answer.update(cx, |editor, cx| {
+            editor.set_masked(masked, cx);
+            editor.clear(cx);
+        });
+    }
+
     /// Envia a resposta de uma pergunta. `None` usa o que está no campo.
     ///
     /// O valor sai daqui direto para o Pi: não é copiado para o estado, para as
@@ -713,7 +723,7 @@ impl Settings {
             cx.notify();
             return;
         }
-        self.answer.update(cx, |editor, cx| editor.clear(cx));
+        self.reset_answer(false, cx);
         if let Some(LoginStep::Running { ask, .. }) = self.login.as_mut() {
             *ask = None;
         }
@@ -727,7 +737,7 @@ impl Settings {
         }
         // Descartar a sessão mata o processo filho (ver `Drop`).
         self.session = None;
-        self.answer.update(cx, |editor, cx| editor.clear(cx));
+        self.reset_answer(false, cx);
         // Cancelar volta para a lista: a seção não fecha nem fica presa.
         self.login = None;
         cx.notify();
@@ -768,7 +778,7 @@ impl Settings {
         self.session = None;
         self.login = None;
         self.confirming_logout = None;
-        self.answer.update(cx, |editor, cx| editor.clear(cx));
+        self.reset_answer(false, cx);
         // Reabrir a tela relê o estado: a credencial pode ter mudado no Pi.
         self.providers = ProvidersView::Idle;
         cx.notify();
