@@ -158,9 +158,10 @@ printf '#!/bin/sh\\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@
             return normalized(label) in normalized(screen_text())
 
         # Primeiro passo: boas-vindas, sem instalar nada. Esc fecha limpo.
-        # O primeiro frame pode não estar pintado no runner; a condição é a
-        # mesma (a tela de boas-vindas tem que aparecer), só passa a esperar.
-        wait_for(lambda: screen_has("Bem-vindo"), "Welcome screen did not render")
+        # O primeiro frame num runner frio demora: binário grande, llvmpipe e
+        # cache de página vazio. A condição é a mesma (a tela de boas-vindas
+        # tem que aparecer); só o primeiro paint ganha paciência.
+        wait_for(lambda: screen_has("Bem-vindo"), "Welcome screen did not render", timeout=60)
         press("Escape")
         wait_for(lambda: process.poll() is not None, "Escape did not close setup cleanly")
         process.wait(timeout=5)
