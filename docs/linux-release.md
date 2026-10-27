@@ -1,6 +1,6 @@
-# Dish — Linux x86_64 preview
+# Dish — Linux x86_64 beta
 
-Dish is a desktop client for the Pi coding agent. This is pre-release software:
+Dish is a desktop client for the Pi coding agent. This is beta software:
 keep backups of projects and review agent actions. The app icon is provisional.
 
 ## Requirements
