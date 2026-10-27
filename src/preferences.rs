@@ -48,6 +48,10 @@ pub struct Preferences {
     pub pi_auto_install: bool,
     /// Unix seconds of the last Pi update attempt, including failures.
     pub last_pi_update_check: Option<i64>,
+    /// Unix seconds of the last Dish release check, including failures.
+    pub last_update_check: Option<i64>,
+    pub last_update_etag: Option<String>,
+    pub update_channel: Option<crate::update::UpdateChannel>,
 }
 
 fn env_path(name: &str) -> Option<PathBuf> {
@@ -146,6 +150,9 @@ mod tests {
         assert!(!preferences.pi_auto_check, "automatic Pi checks are opt-in");
         assert!(!preferences.pi_auto_install, "automatic Pi installs are opt-in");
         assert_eq!(preferences.last_pi_update_check, None);
+        assert_eq!(preferences.last_update_check, None);
+        assert_eq!(preferences.last_update_etag, None);
+        assert_eq!(preferences.update_channel, None);
     }
 
     #[test]
@@ -210,6 +217,9 @@ mod tests {
             pi_auto_check: true,
             pi_auto_install: false,
             last_pi_update_check: Some(1_700_000_000),
+            last_update_check: Some(1_800_000_000),
+            last_update_etag: Some("\"test-etag\"".to_string()),
+            update_channel: Some(crate::update::UpdateChannel::Prerelease),
         };
         let bytes = serde_json::to_vec(&preferences).unwrap();
         assert_eq!(serde_json::from_slice::<Preferences>(&bytes).unwrap(), preferences);

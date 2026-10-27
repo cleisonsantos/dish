@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "version": "0.1.0",
+  "tag": "v0.1.0",
+  "channel": "stable",
+  "published_at": "2026-10-26T12:00:00Z",
+  "notes_url": "https://github.com/cleisonsantos/dish/releases/tag/v0.1.0",
+  "target": "x86_64-unknown-linux-gnu",
+  "minimum_glibc": "2.39",
+  "assets": [
+    {
+      "kind": "portable-linux-x86_64",
+      "name": "dish-0.1.0-linux-x86_64.tar.gz",
+      "size": 123,
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "url": "https://github.com/cleisonsantos/dish/releases/download/v0.1.0/dish-0.1.0-linux-x86_64.tar.gz"
+    }
+  ]
+}

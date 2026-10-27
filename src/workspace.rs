@@ -371,6 +371,28 @@ impl Workspace {
         self.check_pi_updates(true, cx);
     }
 
+    /// Daily Dish release check: at most one attempt per day, notification
+    /// only. Separately gated from the Pi update check above.
+    fn maybe_check_dish_update(&mut self, cx: &mut Context<Self>) {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .map(|time| time.as_secs() as i64).unwrap_or_default();
+        if let Some(check) = crate::update::Check::automatic(&mut self.preferences, now) {
+            crate::preferences::save(self.preferences.clone());
+            cx.spawn(async move |this, cx| {
+                let outcome = cx.background_executor().spawn(async move { check.run() }).await;
+                if let Some(outcome) = outcome {
+                    let _ = this.update(cx, |workspace, cx| {
+                        workspace.preferences.last_update_etag = outcome.etag;
+                        crate::preferences::save(workspace.preferences.clone());
+                        if let Some(available) = outcome.notification {
+                            workspace.enqueue_notification(available.notification(), cx);
+                        }
+                    });
+                }
+            }).detach();
+        }
+    }
+
     fn check_pi_updates(&mut self, automatic: bool, cx: &mut Context<Self>) {
         if self.pi_checking {
             return;
@@ -821,6 +843,7 @@ impl Workspace {
             }
         })
         .detach();
+        self.maybe_check_dish_update(cx);
         // Explicit test hook: a JSON array at DISH_TEST_NOTIFY is polled while
         // the app runs, so a smoke can enqueue during an active Pi stream.
         if let Some(path) = std::env::var_os("DISH_TEST_NOTIFY").map(PathBuf::from) {

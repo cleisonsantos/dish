@@ -1310,55 +1310,68 @@ impl Render for Settings {
                 }
                 let auto_check = self.pi.auto_check;
                 let auto_install = self.pi.auto_install;
-                let mut page = column().child(page_title("Dish"))
-                    .child(note(&format!("Versão do Dish: {}", env!("CARGO_PKG_VERSION"))))
+                // A página Sobre precisa caber sem rolagem na janela padrão:
+                // cada explicação fica em uma linha e cada comando secundário
+                // mantém a sua própria linha.
+                let mut page = column()
+                    .child(page_title("Dish"))
+                    .child(note(&format!("Versão do Dish: {}", crate::version::display_version())))
                     // Os pares de valor分离tens: rótulo em uma linha, path na
                     // seguinte — caminhos longos não roubam a leitura do rótulo.
                     .child(about_pair("Pi selecionado", &crate::installation::program()))
-                    .child(about_pair("Versão do Pi", &installed))
-                    .child(about_pair("Última verificação do Pi", &last_check))
-                    .child(note("Pi mantém as sessões e credenciais. O Dish não executa um serviço em segundo plano e não altera arquivos do Pi."));
+                    .child(div().flex().flex_row().flex_wrap().gap(px(theme::S5))
+                        .child(about_pair("Versão do Pi", &installed))
+                        .child(about_pair("Última verificação do Pi", &last_check)))
+                    .child(note("Pi mantém as sessões e as credenciais; o Dish não altera os arquivos do Pi."));
                 page = page
-                    .child(div().id("settings-pi-auto-check-row").flex().flex_row().items_center()
-                        .gap(px(12.)).px(px(12.)).py(px(8.)).rounded(theme::r_control())
-                        .bg(theme::surface_2()).border_1().border_color(theme::line_soft())
-                        .cursor_pointer()
-                        .hover(|style| style.bg(theme::hover()).border_color(theme::line()))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.pi.auto_check = !auto_check;
-                            cx.emit(SettingsEvent::Preference("pi_auto_check", !auto_check));
-                            cx.notify();
-                        }))
-                        .child(div().flex_1().min_w(px(0.)).text_size(px(theme::TEXT_SM))
-                            .text_color(theme::dim()).child("Verificar automaticamente"))
-                        .child(switch("settings-pi-auto-check",
-                            if auto_check { SwitchState::On } else { SwitchState::Off },
-                            cx.listener(move |this, _, _, cx| {
+                    .child(div().flex().flex_col().gap(px(theme::S1))
+                        .child(div().id("settings-pi-auto-check-row").flex().flex_col().gap(px(theme::S1))
+                            .px(px(12.)).py(px(8.)).rounded(theme::r_control())
+                            .bg(theme::surface_2()).border_1().border_color(theme::line_soft())
+                            .cursor_pointer()
+                            .hover(|style| style.bg(theme::hover()).border_color(theme::line()))
+                            .on_click(cx.listener(move |this, _, _, cx| {
                                 this.pi.auto_check = !auto_check;
                                 cx.emit(SettingsEvent::Preference("pi_auto_check", !auto_check));
                                 cx.notify();
-                            }))))
-                    .child(note("Desligado por padrão. Quando ligado, o Dish consulta o registro npm do Pi no máximo uma vez por dia; falhas ficam só no log."))
-                    .child(div().id("settings-pi-auto-install-row").flex().flex_row().items_center()
-                        .gap(px(12.)).px(px(12.)).py(px(8.)).rounded(theme::r_control())
-                        .bg(theme::surface_2()).border_1().border_color(theme::line_soft())
-                        .cursor_pointer()
-                        .hover(|style| style.bg(theme::hover()).border_color(theme::line()))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.pi.auto_install = !auto_install;
-                            cx.emit(SettingsEvent::Preference("pi_auto_install", !auto_install));
-                            cx.notify();
-                        }))
-                        .child(div().flex_1().min_w(px(0.)).text_size(px(theme::TEXT_SM))
-                            .text_color(theme::dim()).child("Instalar automaticamente"))
-                        .child(switch("settings-pi-auto-install",
-                            if auto_install { SwitchState::On } else { SwitchState::Off },
-                            cx.listener(move |this, _, _, cx| {
+                            }))
+                            .child(div().text_size(px(theme::TEXT_SM))
+                                .text_color(theme::text()).child("Verificar automaticamente"))
+                            .child(div().flex().flex_row().items_center().gap(px(12.))
+                                .child(div().flex_1().min_w(px(0.)).text_size(px(theme::TEXT_XS))
+                                    .text_color(theme::dim())
+                                    .child("Desligado por padrão; consulta o npm do Pi uma vez por dia e falhas ficam no log."))
+                                .child(switch("settings-pi-auto-check",
+                                    if auto_check { SwitchState::On } else { SwitchState::Off },
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.pi.auto_check = !auto_check;
+                                        cx.emit(SettingsEvent::Preference("pi_auto_check", !auto_check));
+                                        cx.notify();
+                                    }))))))
+                    .child(div().flex().flex_col().gap(px(theme::S1))
+                        .child(div().id("settings-pi-auto-install-row").flex().flex_col().gap(px(theme::S1))
+                            .px(px(12.)).py(px(8.)).rounded(theme::r_control())
+                            .bg(theme::surface_2()).border_1().border_color(theme::line_soft())
+                            .cursor_pointer()
+                            .hover(|style| style.bg(theme::hover()).border_color(theme::line()))
+                            .on_click(cx.listener(move |this, _, _, cx| {
                                 this.pi.auto_install = !auto_install;
                                 cx.emit(SettingsEvent::Preference("pi_auto_install", !auto_install));
                                 cx.notify();
-                            }))))
-                    .child(note("Só vale depois de uma verificação automática e nunca instala em silêncio: o instalador oficial abre num terminal e o Dish avisa ao terminar."))
+                            }))
+                            .child(div().text_size(px(theme::TEXT_SM))
+                                .text_color(theme::text()).child("Instalar automaticamente"))
+                            .child(div().flex().flex_row().items_center().gap(px(12.))
+                                .child(div().flex_1().min_w(px(0.)).text_size(px(theme::TEXT_XS))
+                                    .text_color(theme::dim())
+                                    .child("Nunca instala em silêncio: o instalador oficial abre num terminal e avisa ao terminar."))
+                                .child(switch("settings-pi-auto-install",
+                                    if auto_install { SwitchState::On } else { SwitchState::Off },
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.pi.auto_install = !auto_install;
+                                        cx.emit(SettingsEvent::Preference("pi_auto_install", !auto_install));
+                                        cx.notify();
+                                    }))))))
                     .child(actions_row(vec![
                         control("settings-pi-update", "Atualizar o Pi", cx.listener(
                             |_, _, _, cx| cx.emit(SettingsEvent::RequestPiUpdate),
