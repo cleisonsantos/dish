@@ -29,7 +29,7 @@ def sha256(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def build_environment():
+def build_environment(version=None):
     env = os.environ.copy()
     flags = env.get("CARGO_ENCODED_RUSTFLAGS")
     flags = flags.split("\x1f") if flags else shlex.split(env.get("RUSTFLAGS", ""))
@@ -43,6 +43,8 @@ def build_environment():
     env.pop("RUSTFLAGS", None)
     env["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(flags)
     env["CARGO_PROFILE_RELEASE_STRIP"] = "symbols"
+    if version is not None:
+        env["DISH_RELEASE_VERSION"] = version
     return env
 
 
@@ -74,6 +76,22 @@ def toolchain_licenses(destination):
     license_bundle.toolchain_licenses(destination)
 
 
+def build_release(version, skip_build):
+    binary = ROOT / "target" / TARGET / "release/dish"
+    stamp = binary.with_name("dish.release.json")
+    if not skip_build:
+        subprocess.run(["cargo", "build", "--release", "--locked", "--target", TARGET],
+                       cwd=ROOT, env=build_environment(version), check=True)
+        stamp.write_text(json.dumps({"version": version, "sha256": sha256(binary)}) + "\n", encoding="utf-8")
+    try:
+        identity = json.loads(stamp.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise RuntimeError("Release build identity missing; rebuild without --skip-build") from error
+    if identity != {"version": version, "sha256": sha256(binary)}:
+        raise RuntimeError("Release build identity differs; rebuild without --skip-build")
+    return binary
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", help="Archive label, e.g. 0.1.0-alpha.1 (must match Cargo's base version)")
@@ -85,9 +103,7 @@ def main():
     version = args.version or base
     if not re.fullmatch(re.escape(base) + r"(?:-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?", version):
         parser.error("Archive version must match Cargo.toml, optionally with a prerelease suffix")
-    if not args.skip_build:
-        subprocess.run(["cargo", "build", "--release", "--locked", "--target", TARGET], cwd=ROOT, env=build_environment(), check=True)
-    binary = ROOT / "target" / TARGET / "release/dish"
+    binary = build_release(version, args.skip_build)
     glibc = verify_binary(binary)
     metadata = json.loads(run("cargo", "metadata", "--locked", "--offline", "--filter-platform", TARGET, "--format-version", "1"))
     name = f"dish-{version}-linux-x86_64"
