@@ -278,6 +278,56 @@ impl ModelInfo {
 
 }
 
+/// Modelos que este processo do Pi não deveria (ou deveria) ter.
+///
+/// `missing` é um provedor recém-conectado que o snapshot de startup ainda não
+/// conhece. `extra` é o contrário: a conversa ainda lista um provedor cuja
+/// credencial o adaptador já não reporta. Ambos tornam o snapshot desatualizado.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct CatalogMismatch {
+    missing: Vec<String>,
+    extra: Vec<String>,
+}
+
+fn catalog_mismatch(
+    catalog: &crate::providers::ProviderCatalog,
+    models: &[ModelInfo],
+) -> CatalogMismatch {
+    let available: BTreeSet<&str> = models.iter()
+        .map(|model| model.provider.as_str())
+        .filter(|provider| !provider.is_empty())
+        .collect();
+    let missing = catalog.configured.iter()
+        .filter(|provider| !available.contains(provider.as_str()))
+        .cloned()
+        .collect();
+    // Só compara provedores que o adaptador conhece. Um modelo sintético ou de
+    // uma extensão fora do catálogo não é prova de snapshot velho.
+    let extra = available.iter()
+        .filter(|provider| catalog.known.contains(**provider)
+            && !catalog.configured.contains(**provider))
+        .map(|provider| (*provider).to_string())
+        .collect();
+    CatalogMismatch { missing, extra }
+}
+
+fn catalog_warning(mismatch: &CatalogMismatch) -> Option<String> {
+    let missing = mismatch.missing.join(", ");
+    let extra = mismatch.extra.join(", ");
+    match (missing.is_empty(), extra.is_empty()) {
+        (true, true) => None,
+        (false, true) => Some(format!(
+            "Catálogo desta conversa desatualizado: o Pi deste processo ainda não reconhece os modelos de {missing}. Reabra esta conversa para ele recalcular o catálogo."
+        )),
+        (true, false) => Some(format!(
+            "Catálogo desta conversa desatualizado: ainda lista modelos de {extra}, mas a credencial não está configurada. Reabra esta conversa para o Pi recalcular o catálogo."
+        )),
+        (false, false) => Some(format!(
+            "Catálogo desta conversa desatualizado: o Pi ainda não reconhece os modelos de {missing}; e a conversa ainda lista {extra}, cuja credencial não está configurada. Reabra esta conversa para o Pi recalcular o catálogo."
+        )),
+    }
+}
+
 #[derive(Clone)]
 pub struct CommandInfo {
     pub name: String,
@@ -294,10 +344,32 @@ pub struct Toast {
     pub tone: Tone,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BannerAction {
+    ReopenConversation,
+}
+
 #[derive(Clone)]
 pub struct Banner {
     pub text: String,
     pub tone: Tone,
+    pub action: Option<BannerAction>,
+}
+
+/// Pedidos que a conversa não consegue executar sozinha, porque dependem de
+/// reiniciar o processo do Pi no workspace.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AppStateEvent {
+    ReopenConversation,
+}
+
+/// Uma leitura de catálogo pedida depois de uma mudança de credencial.
+///
+/// O id amarra a resposta à pergunta certa: uma lista que já estava a caminho
+/// não pode ser confundida com a comparação nova.
+struct CatalogCheck {
+    request_id: String,
+    catalog: crate::providers::ProviderCatalog,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -433,6 +505,11 @@ pub struct AppState {
 
     pub toasts: Vec<Toast>,
     pub banner: Option<Banner>,
+    /// Leitura de catálogo pendente cuja resposta será comparada com o estado
+    /// de provedores reportado pelo adaptador.
+    catalog_check: Option<CatalogCheck>,
+    /// Um reinício desta conversa está em andamento.
+    pub reopening: bool,
     pub modal: Option<Modal>,
     /// Linha destacada nos diálogos de seleção de extensões.
     modal_index: usize,
@@ -461,6 +538,8 @@ pub struct AppState {
     /// A prompt supplied on the command line, sent once the session is up.
     initial_prompt: Option<String>,
 }
+
+impl EventEmitter<AppStateEvent> for AppState {}
 
 pub struct AppEditors {
     pub composer: Entity<Editor>,
@@ -562,6 +641,8 @@ impl AppState {
             help_open: false,
             toasts: Vec::new(),
             banner: None,
+            catalog_check: None,
+            reopening: false,
             modal: None,
             modal_index: 0,
             modal_scroll: ScrollHandle::new(),
@@ -820,6 +901,7 @@ impl AppState {
                         self.banner = Some(Banner {
                             text: error,
                             tone: if aborted { Tone::Warning } else { Tone::Error },
+                            action: None,
                         });
                         if let Some(note) = turn_end_note(message, self.run_error_in_transcript) {
                             pushed = Some(self.push_message(note));
@@ -871,6 +953,7 @@ impl AppState {
                 self.banner = Some(Banner {
                     text: format!("Compactando o contexto ({reason})…"),
                     tone: Tone::Info,
+                    action: None,
                 });
                 self.activity = Some("Compactando…".into());
                 self.session.is_compacting = true;
@@ -918,6 +1001,7 @@ impl AppState {
                 self.banner = Some(Banner {
                     text: format!("Tentando novamente ({attempt}/{max}) — {message}"),
                     tone: Tone::Warning,
+                    action: None,
                 });
                 None
             }
@@ -933,6 +1017,7 @@ impl AppState {
                     self.banner = Some(Banner {
                         text: format!("A solicitação falhou: {error}"),
                         tone: Tone::Error,
+                        action: None,
                     });
                 }
                 None
@@ -941,6 +1026,7 @@ impl AppState {
                 self.banner = Some(Banner {
                     text: "Tentando resumir novamente…".into(),
                     tone: Tone::Warning,
+                    action: None,
                 });
                 None
             }
@@ -1026,6 +1112,7 @@ impl AppState {
                 self.banner = Some(Banner {
                     text: format!("{}: {error}", response.command),
                     tone: Tone::Error,
+                    action: None,
                 });
             }
             if response.command == "bash" {
@@ -1123,6 +1210,22 @@ impl AppState {
                     .and_then(Value::as_array)
                     .map(|models| models.iter().filter_map(ModelInfo::from_value).collect())
                     .unwrap_or_default();
+                let check = self.catalog_check.as_ref()
+                    .filter(|check| Some(check.request_id.as_str()) == response.id.as_deref())
+                    .map(|check| check.catalog.clone());
+                if check.is_some() {
+                    self.catalog_check = None;
+                }
+                if let Some(catalog) = check {
+                    let mismatch = catalog_mismatch(&catalog, &self.models);
+                    if let Some(text) = catalog_warning(&mismatch) {
+                        self.banner = Some(Banner {
+                            text,
+                            tone: Tone::Warning,
+                            action: Some(BannerAction::ReopenConversation),
+                        });
+                    }
+                }
                 None
             }
             "get_available_thinking_levels" => {
@@ -2261,6 +2364,7 @@ impl AppState {
                 self.banner = Some(Banner {
                     text: "Compactando o contexto…".into(),
                     tone: Tone::Info,
+                    action: None,
                 });
                 true
             }
@@ -2774,6 +2878,44 @@ impl AppState {
         self.is_executing() || (!self.disconnected && self.modal.is_some())
     }
 
+    /// Por que a conversa não pode ser reaberta agora, ou `None` quando pode.
+    ///
+    /// Reabrir reinicia o processo do Pi desta conversa. Se houver execução,
+    /// fila ou diálogo pendente, interromper seria pior do que esperar; a ação
+    /// fica desabilitada e a interface mostra este motivo.
+    pub fn reopen_block_reason(&self) -> Option<&'static str> {
+        if self.is_executing() {
+            Some("Aguarde a execução terminar para reabrir.")
+        } else if !self.steering_queue.is_empty() || !self.follow_up_queue.is_empty() {
+            Some("Aguarde a fila de mensagens esvaziar para reabrir.")
+        } else if self.modal.is_some() {
+            Some("Conclua o diálogo aberto para reabrir.")
+        } else {
+            None
+        }
+    }
+
+    pub fn can_reopen_conversation(&self) -> bool {
+        !self.reopening && self.reopen_block_reason().is_none()
+    }
+
+    /// Pede ao workspace para reiniciar o processo do Pi com a mesma sessão.
+    ///
+    /// O rascunho pertence ao Dish (o editor é reaproveitado), então ele não
+    /// atravessa o processo do Pi e não é tocado aqui.
+    pub fn request_reopen_conversation(&mut self, cx: &mut Context<Self>) {
+        if self.reopening {
+            return;
+        }
+        if let Some(reason) = self.reopen_block_reason() {
+            self.push_toast(reason.to_string(), Tone::Warning, cx);
+            return;
+        }
+        self.reopening = true;
+        cx.emit(AppStateEvent::ReopenConversation);
+        cx.notify();
+    }
+
     pub fn compact(&mut self, cx: &mut Context<Self>) {
         let result = self.client.call("compact", Value::Null);
         if self.send_rpc(result, cx).is_none() {
@@ -2782,18 +2924,49 @@ impl AppState {
         self.banner = Some(Banner {
             text: "Compactando o contexto…".into(),
             tone: Tone::Info,
+            action: None,
         });
     }
 
     /// Relê os modelos e os níveis de esforço deste processo do Pi.
     ///
     /// Uma credencial de provedor pode mudar nas Configurações enquanto esta
-    /// conversa está aberta; o Pi não emite um evento de catálogo, então a lista
-    /// é pedida de novo em vez de exigir reiniciar a conversa. Só as listas são
-    /// trocadas: rascunho, histórico e streaming não são tocados.
+    /// conversa está aberta. Só as listas são trocadas: rascunho, histórico e
+    /// streaming não são tocados.
+    ///
+    /// Isto **não** conserta um snapshot velho: o processo do Pi calcula a
+    /// lista no startup e `get_available_models` devolve sempre esse snapshot
+    /// (medido no Pi 1.4.0, ver `docs/provider-auth.md`). O conserto definitivo
+    /// é do Pi — um comando RPC de reavaliação do catálogo. Enquanto ele não
+    /// existe, a única correção real é reabrir a conversa.
     pub fn refresh_catalog(&mut self, cx: &mut Context<Self>) {
+        self.read_catalog(None, cx);
+    }
+
+    /// Relê o catálogo e, quando a resposta chegar, compara-o com as
+    /// credenciais que o adaptador reporta para avisar sobre um snapshot velho.
+    pub fn refresh_catalog_after_provider_change(
+        &mut self,
+        catalog: crate::providers::ProviderCatalog,
+        cx: &mut Context<Self>,
+    ) {
+        self.read_catalog(Some(catalog), cx);
+    }
+
+    fn read_catalog(
+        &mut self,
+        expected: Option<crate::providers::ProviderCatalog>,
+        cx: &mut Context<Self>,
+    ) {
         let models = self.client.call("get_available_models", Value::Null);
-        self.send_rpc(models, cx);
+        if let Some(catalog) = expected {
+            self.catalog_check = self.send_rpc(models, cx).map(|request_id| CatalogCheck {
+                request_id,
+                catalog,
+            });
+        } else {
+            self.send_rpc(models, cx);
+        }
         self.request_model_sync(crate::model_sync::Request::State, cx);
         cx.notify();
     }
@@ -3725,6 +3898,75 @@ mod turn_end_tests {
         let message = json!({"stopReason":"error", "errorMessage":"falhou"});
         assert!(turn_end_note(&message, true).is_none());
         assert!(turn_end_note(&message, false).is_some());
+    }
+}
+
+#[cfg(test)]
+mod provider_catalog_tests {
+    use super::{catalog_mismatch, catalog_warning, ModelInfo};
+    use crate::providers::ProviderCatalog;
+    use std::collections::BTreeSet;
+
+    fn catalog(configured: &[&str], known: &[&str]) -> ProviderCatalog {
+        ProviderCatalog {
+            configured: configured.iter().map(|id| (*id).to_string()).collect::<BTreeSet<_>>(),
+            known: known.iter().map(|id| (*id).to_string()).collect::<BTreeSet<_>>(),
+        }
+    }
+
+    fn model(provider: &str) -> ModelInfo {
+        ModelInfo {
+            provider: provider.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_newly_connected_provider_is_reported_as_missing() {
+        // O caso medido: o processo do Pi já estava de pé quando anthropic foi
+        // conectado; a lista continua só com deepseek.
+        let mismatch = catalog_mismatch(
+            &catalog(&["anthropic", "deepseek"], &["anthropic", "deepseek"]),
+            &[model("deepseek")],
+        );
+        assert_eq!(mismatch.missing, vec!["anthropic".to_string()]);
+        assert!(mismatch.extra.is_empty());
+        let warning = catalog_warning(&mismatch).expect("aviso honesto");
+        assert!(warning.contains("anthropic"), "{warning}");
+        assert!(warning.contains("Reabra esta conversa"), "{warning}");
+    }
+
+    #[test]
+    fn a_removed_credential_is_reported_as_extra() {
+        let mismatch = catalog_mismatch(
+            &catalog(&[], &["deepseek"]),
+            &[model("deepseek")],
+        );
+        assert!(mismatch.missing.is_empty());
+        assert_eq!(mismatch.extra, vec!["deepseek".to_string()]);
+        assert!(catalog_warning(&mismatch).expect("aviso").contains("deepseek"));
+    }
+
+    #[test]
+    fn an_unknown_model_provider_does_not_invent_a_stale_catalog() {
+        // O Pi sintético expõe `test`, que o adaptador não conhece. Isso não
+        // prova que o snapshot está velho, então não pode virar aviso.
+        let mismatch = catalog_mismatch(
+            &catalog(&["anthropic"], &["anthropic", "openai"]),
+            &[model("test"), model("anthropic")],
+        );
+        assert!(mismatch.missing.is_empty(), "{mismatch:?}");
+        assert!(mismatch.extra.is_empty(), "{mismatch:?}");
+        assert_eq!(catalog_warning(&mismatch), None);
+    }
+
+    #[test]
+    fn a_matching_catalog_has_no_warning() {
+        let mismatch = catalog_mismatch(
+            &catalog(&["deepseek"], &["deepseek", "anthropic"]),
+            &[model("deepseek")],
+        );
+        assert_eq!(catalog_warning(&mismatch), None);
     }
 }
 

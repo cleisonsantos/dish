@@ -8,7 +8,7 @@ use gpui::*;
 use crate::editor::Editor;
 use crate::rpc::{PiClient, PiConfig};
 use crate::sessions::{self, SessionInfo};
-use crate::state::AppState;
+use crate::state::{AppState, AppStateEvent};
 use crate::theme;
 use crate::notifications::{Notification, NotificationQueue};
 
@@ -46,6 +46,7 @@ struct Conversation {
     state: Entity<AppState>,
     path: Option<PathBuf>,
     _subscription: Subscription,
+    _events: Subscription,
     seen_completed_runs: u64,
     unread_completion: bool,
 }
@@ -258,6 +259,9 @@ pub struct Workspace {
     confirm_close: bool,
     close_target: Option<EntityId>,
     pending: Option<(OpeningSession, PiClient)>,
+    /// Conversas cujo processo do Pi está sendo reiniciado por "Reabrir esta
+    /// conversa"; impede duas reinicializações para a mesma sessão.
+    reopening: BTreeSet<EntityId>,
     confirm_focus: FocusHandle,
     /// Campo de busca da navegação.
     query: Entity<Editor>,
@@ -452,11 +456,16 @@ impl Workspace {
             }
         }
         let subscription = cx.observe(&state, |_, _, cx| cx.notify());
+        let conversation_id = state.entity_id();
+        let events = cx.subscribe(&state, move |workspace, _, event, cx| {
+            workspace.handle_state_event(conversation_id, event, cx);
+        });
         Self {
             conversations: vec![Conversation {
                 state,
                 path: initial_path.map(|path| path.canonicalize().unwrap_or(path)),
                 _subscription: subscription,
+                _events: events,
                 seen_completed_runs: 0,
                 unread_completion: false,
             }],
@@ -494,6 +503,7 @@ impl Workspace {
             close_target: None,
             pending: None,
             confirm_focus: cx.focus_handle(),
+            reopening: BTreeSet::new(),
             query,
             filter: preferences.session_filter,
             nav_hovered: false,
@@ -663,14 +673,20 @@ impl Workspace {
                             });
                         }
                     }
-                    SettingsEvent::ProvidersChanged => {
+                    SettingsEvent::ProvidersChanged { catalog } => {
                         // A credencial mudou no Pi. Cada conversa tem o próprio
-                        // processo e a própria lista; reler não toca em rascunho
-                        // nem em streaming.
+                        // processo e o próprio snapshot; reler não toca em
+                        // rascunho nem em streaming. Com o catálogo conhecido,
+                        // a conversa compara a lista real com o que o adaptador
+                        // reporta e avisa se o snapshot do processo ficou velho.
                         for conversation in &this.conversations {
-                            conversation
-                                .state
-                                .update(cx, |state, cx| state.refresh_catalog(cx));
+                            conversation.state.update(cx, |state, cx| match catalog {
+                                Some(catalog) => state.refresh_catalog_after_provider_change(
+                                    catalog.clone(),
+                                    cx,
+                                ),
+                                None => state.refresh_catalog(cx),
+                            });
                         }
                     }
                     SettingsEvent::ChoosePi => {
@@ -1012,6 +1028,124 @@ impl Workspace {
         state.update(cx, |state, cx| {
             state.push_toast(message, crate::state::Tone::Info, cx);
         });
+    }
+
+    fn handle_state_event(&mut self, id: EntityId, event: &AppStateEvent, cx: &mut Context<Self>) {
+        if matches!(event, AppStateEvent::ReopenConversation) {
+            self.reopen_conversation(id, cx);
+        }
+    }
+
+    /// Reinicia o processo do Pi desta conversa com a mesma sessão.
+    ///
+    /// O snapshot de modelos é calculado no startup do Pi; quando uma
+    /// credencial muda depois disso, `get_available_models` continua velho.
+    /// Até o Pi oferecer um comando RPC de reavaliação do catálogo, reabrir é o
+    /// único conserto real. O editor (e portanto o rascunho) é reaproveitado:
+    /// ele é do Dish, não do processo.
+    fn reopen_conversation(&mut self, id: EntityId, cx: &mut Context<Self>) {
+        if !self.reopening.insert(id) {
+            return;
+        }
+        let Some(index) = self.conversations.iter()
+            .position(|conversation| conversation.state.entity_id() == id) else {
+            self.reopening.remove(&id);
+            return;
+        };
+        let state = self.conversations[index].state.clone();
+        if let Some(reason) = state.read(cx).reopen_block_reason() {
+            self.reopening.remove(&id);
+            state.update(cx, |state, cx| {
+                state.reopening = false;
+                state.push_toast(reason.to_string(), crate::state::Tone::Warning, cx);
+                cx.notify();
+            });
+            return;
+        }
+        let path = self.conversations[index].path.clone()
+            .or_else(|| state.read(cx).session.file.as_ref().map(PathBuf::from));
+        let Some(path) = path else {
+            self.reopening.remove(&id);
+            state.update(cx, |state, cx| {
+                state.reopening = false;
+                state.push_toast(
+                    "Esta conversa ainda não tem uma sessão salva para reabrir.".into(),
+                    crate::state::Tone::Warning,
+                    cx,
+                );
+                cx.notify();
+            });
+            return;
+        };
+        let (client, cwd, editors, title, title_override, hidden_models, sidebar,
+            inspector_initialized, show_thinking, generated_titles) = {
+            let state = state.read(cx);
+            (state.client.clone(), state.cwd.clone(), crate::state::AppEditors {
+                composer: state.editor.clone(),
+                modal: state.modal_editor.clone(),
+                model_search: state.model_search.clone(),
+                help_search: state.help_search.clone(),
+            }, Some(state.display_title()), state.title_override.clone(),
+                state.hidden_models.clone(), state.sidebar, state.inspector_initialized,
+                state.show_thinking, state.generated_titles)
+        };
+        let mut flags = self.flags.clone();
+        flags.extend(["--session".into(), path.to_string_lossy().into_owned()]);
+        let config = PiConfig::new(cwd.clone()).with_args(flags);
+        client.request_shutdown();
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_executor().spawn(async move {
+                client.shutdown_and_wait()
+                    .map_err(|error| format!("Não foi possível encerrar o Pi antigo: {error}"))?;
+                PiClient::spawn(&config)
+                    .map_err(|error| format!("Não foi possível reabrir a sessão: {error:#}"))
+            }).await;
+            let _ = this.update(cx, |workspace, cx| {
+                workspace.reopening.remove(&id);
+                let Some(index) = workspace.conversations.iter()
+                    .position(|conversation| conversation.state.entity_id() == id) else {
+                    return;
+                };
+                match result {
+                    Err(error) => {
+                        workspace.conversations[index].state.update(cx, |state, cx| {
+                            state.reopening = false;
+                            state.push_toast(error, crate::state::Tone::Error, cx);
+                            cx.notify();
+                        });
+                    }
+                    Ok(client) => {
+                        let state = cx.new(|cx| AppState::new(cwd, client, editors, None, cx));
+                        state.update(cx, |state, cx| {
+                            state.restoring_session = true;
+                            state.initial_title = title;
+                            state.title_override = title_override;
+                            state.hidden_models = hidden_models;
+                            state.sidebar = sidebar;
+                            state.inspector_initialized = inspector_initialized;
+                            state.show_thinking = show_thinking;
+                            state.generated_titles = generated_titles;
+                            state.reopening = false;
+                            state.composer_focus_pending = true;
+                            state.start(cx);
+                        });
+                        let subscription = cx.observe(&state, |_, _, cx| cx.notify());
+                        let conversation_id = state.entity_id();
+                        let events = cx.subscribe(&state, move |workspace, _, event, cx| {
+                            workspace.handle_state_event(conversation_id, event, cx);
+                        });
+                        let conversation = &mut workspace.conversations[index];
+                        conversation.path = conversation.path.clone().or(Some(path));
+                        conversation.state = state;
+                        conversation._subscription = subscription;
+                        conversation._events = events;
+                        conversation.seen_completed_runs = 0;
+                        conversation.unread_completion = false;
+                    }
+                }
+                cx.notify();
+            });
+        }).detach();
     }
 
     fn spawn_conversation(
@@ -1798,6 +1932,10 @@ impl Render for Workspace {
                 state.start(cx);
             });
             let subscription = cx.observe(&state, |_, _, cx| cx.notify());
+            let conversation_id = state.entity_id();
+            let events = cx.subscribe(&state, move |workspace, _, event, cx| {
+                workspace.handle_state_event(conversation_id, event, cx);
+            });
             if let Some(path) = &path {
                 let (saved, live) = promote_session_row(&mut self.row_order, path, self.conversations.len());
                 if let Some(anchor) = self.nav_anchors.remove(&saved) {
@@ -1808,6 +1946,7 @@ impl Render for Workspace {
                 state,
                 path,
                 _subscription: subscription,
+                _events: events,
                 seen_completed_runs: 0,
                 unread_completion: false,
             });
