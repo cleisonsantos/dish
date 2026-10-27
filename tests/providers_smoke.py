@@ -282,25 +282,47 @@ class Harness:
                                            stderr=subprocess.DEVNULL).decode()
 
     def assert_masked_answer(self, label, key):
-        """O campo mostra máscaras e não deixa o valor real ser lido pelo OCR."""
-        length = len(key)
+        """O campo mostra máscaras e não deixa o valor real ser lido pelo OCR.
+
+        A prova da máscara é uma sequência de 10 ou mais símbolos de máscara, e
+        não a contagem exata: no CI o tesseract às vezes lê as máscaras como
+        letras. Uma única preparação fixa (recorte do campo, cinza, 4x) e no
+        máximo duas passadas de OCR: a primeira sem restrição, onde a chave real
+        seria legível, e a segunda, psm 7 com uma lista fixa de símbolos de
+        máscara, só quando a primeira não achou máscara nenhuma.
+        """
         wanted = normalized(key)
         distinctive = normalized("nao-deve-aparecer")
-        last = ""
-        for _ in range(6):
-            for psm in ("8", "13"):
-                last = self.field_ocr_above(label, psm)
-                readback = normalized(last)
+        masked = re.compile(r"[•.*°·oO0](?:\s*[•.*°·oO0]){9,}")
+        anchor = find_word(self.window, label)
+        assert anchor, f"{self.name}: não achei a âncora {label!r}:\n{self.capture()}"
+        x, y, _, _ = anchor
+        attributes = XWindowAttributes()
+        assert x11.XGetWindowAttributes(display, self.window, ctypes.byref(attributes))
+        left = max(0, x - 2)
+        width = max(1, attributes.width - left)
+        crop = f"{width}x50+{left}+{max(0, y - 66)}"
+        texts = []
+        with tempfile.TemporaryDirectory(prefix="dish-mask-") as directory:
+            image = str(Path(directory) / "field.png")
+            subprocess.run(["import", "-window", str(self.window), "-crop", crop,
+                            "-colorspace", "Gray", "-resize", "400%", image],
+                           check=True, stderr=subprocess.DEVNULL)
+            for psm, extra in (("6", []),
+                               ("7", ["-c", "tessedit_char_whitelist=•.*°·oO0"])):
+                text = subprocess.check_output(
+                    ["tesseract", image, "stdout", "--psm", psm, *extra],
+                    stderr=subprocess.DEVNULL).decode()
+                readback = normalized(text)
                 assert wanted not in readback, (
-                    f"{self.name}: o valor real apareceu no campo; OCR: {last!r}")
+                    f"{self.name}: o valor real apareceu no campo; OCR: {text!r}")
                 assert distinctive not in readback, (
-                    f"{self.name}: parte do valor real apareceu no campo; OCR: {last!r}")
-                for run in re.findall(r"[.\*°•]+", last):
-                    if len(run) == length and len(set(run)) == 1:
-                        return
-            time.sleep(0.4)
+                    f"{self.name}: parte do valor real apareceu no campo; OCR: {text!r}")
+                if masked.search(text):
+                    return
+                texts.append(text)
         raise AssertionError(
-            f"{self.name}: máscara de {length} caracteres não apareceu; OCR do campo: {last!r}")
+            f"{self.name}: nenhuma sequência de 10 máscaras apareceu; OCR do campo: {texts!r}")
 
     def close_settings(self):
         """Fecha as Configurações e espera o foco voltar para a conversa.
