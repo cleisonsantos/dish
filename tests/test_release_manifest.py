@@ -3,7 +3,11 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -113,6 +117,91 @@ class ManifestTests(unittest.TestCase):
         self.deb.symlink_to(real)
         with self.assertRaisesRegex(ValueError, "Missing or invalid"):
             self.generate()
+
+
+@unittest.skipUnless(shutil.which("minisign"), "minisign CLI is required to test signing")
+class ManifestSigningTests(unittest.TestCase):
+    version = "0.1.0-alpha.6"
+    tag = "v" + version
+    published = "2026-10-26T12:00:00Z"
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="dish-manifest-sign-")
+        self.addCleanup(self.temporary.cleanup)
+        root = Path(self.temporary.name)
+        self.directory = root / "assets"
+        self.directory.mkdir()
+        self.keys = root / "keys"
+        self.keys.mkdir()
+        portable = self.directory / f"dish-{self.version}-linux-x86_64.tar.gz"
+        deb = self.directory / f"dish-pi_{self.version}_amd64.deb"
+        build = json.dumps({"version": self.version, "target": generator.TARGET,
+                            "minimum_glibc": "2.39"}).encode()
+        with tarfile.open(portable, "w:gz") as archive:
+            entry = tarfile.TarInfo(f"dish-{self.version}-linux-x86_64/BUILD.json")
+            entry.size = len(build)
+            archive.addfile(entry, io.BytesIO(build))
+        deb.write_bytes(b"fake deb: the generator hashes it, never installs it")
+        for path in (portable, deb):
+            path.with_name(path.name + ".sha256").write_text(
+                f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n")
+        # Test-only key pair in the temporary directory; never copied to the repo.
+        self.private = self.keys / "test.key"
+        self.public = self.keys / "test.pub"
+        subprocess.run([shutil.which("minisign"), "-G", "-W", "-s", str(self.private),
+                        "-p", str(self.public)], check=True, capture_output=True, text=True)
+        self.secret = self.private.read_text(encoding="utf-8")
+
+    def run_generator(self, *arguments, environment_key=None):
+        environment = os.environ.copy()
+        environment.pop(generator.SECRET_ENVIRONMENT, None)
+        if environment_key is not None:
+            environment[generator.SECRET_ENVIRONMENT] = environment_key
+        return subprocess.run(
+            [sys.executable, str(ROOT / "scripts/package-manifest.py"),
+             str(self.directory), "--tag", self.tag, "--published-at", self.published,
+             *arguments], capture_output=True, text=True, env=environment)
+
+    def verify(self):
+        return subprocess.run(
+            [shutil.which("minisign"), "-V", "-p", str(self.public),
+             "-m", str(self.directory / "latest.json"),
+             "-x", str(self.directory / "latest.json.minisig")],
+            capture_output=True, text=True)
+
+    def test_environment_key_signs_exact_manifest_and_minisign_verifies(self):
+        result = self.run_generator("--sign", environment_key=self.secret)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        manifest = self.directory / "latest.json"
+        signature = self.directory / "latest.json.minisig"
+        self.assertTrue(manifest.is_file())
+        self.assertTrue(signature.is_file())
+        verification = self.verify()
+        self.assertEqual(verification.returncode, 0, verification.stderr)
+        manifest.write_bytes(manifest.read_bytes() + b" ")
+        self.assertNotEqual(self.verify().returncode, 0, "signature must cover exact bytes")
+
+    def test_secret_key_file_path_signs_and_verifies(self):
+        result = self.run_generator("--secret-key-file", str(self.private))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        verification = self.verify()
+        self.assertEqual(verification.returncode, 0, verification.stderr)
+
+    def test_missing_key_refuses_to_create_a_manifest(self):
+        for arguments in [(), ("--sign",)]:
+            with self.subTest(arguments=arguments):
+                result = self.run_generator(*arguments)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("refusing to generate an unsigned release manifest", result.stderr)
+                self.assertFalse((self.directory / "latest.json").exists())
+                self.assertFalse((self.directory / "latest.json.minisig").exists())
+
+    def test_invalid_key_removes_the_unsigned_manifest(self):
+        result = self.run_generator("--sign", environment_key="not a minisign key\n")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("minisign failed to sign latest.json", result.stderr)
+        self.assertFalse((self.directory / "latest.json").exists())
+        self.assertFalse((self.directory / "latest.json.minisig").exists())
 
 
 if __name__ == "__main__":

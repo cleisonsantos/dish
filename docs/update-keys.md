@@ -6,13 +6,19 @@ O contrato é o da Seção 4 de [update-design.md](update-design.md): schema 1,
 Não há campo de assinatura no JSON. A assinatura destacada cobre os bytes
 exatos de `latest.json`, incluindo espaços e a newline final.
 
-Não existe chave de produção neste repositório. O cliente em `src/update.rs`
-usa `ureq` 3.5 com rustls e `minisign-verify` 0.3. A constante
-`UPDATE_PUBLIC_KEY` contém `PRODUCTION_KEY_NOT_PROVISIONED`: esse placeholder
-recusa toda assinatura. O dono deve substituí-lo pela linha base64 da chave
-pública gerada com `minisign -G` antes de publicar o cliente. Não há variável
-de ambiente nem opção para trocar a chave ou ignorar a assinatura em runtime.
-Não publique um cliente aceitando a chave de teste como chave de produção.
+A chave pública de produção está embutida no cliente em `src/update.rs`, na
+constante `UPDATE_PUBLIC_KEY`, como a linha base64 (sem `untrusted comment`)
+gerada por `minisign -G`:
+
+```text
+RWTtGSFer94FZx9C2/b1vt6P5eS9t7J3n1xxO9yGSnrS2uTSreg0QgyG
+```
+
+O cliente usa `ureq` 3.5 com rustls e `minisign-verify` 0.3. A chave privada
+correspondente nunca está no repositório, no archive ou no binário. Não há
+variável de ambiente nem opção para trocar a chave ou ignorar a assinatura em
+runtime; trocar a chave exige recompilar o cliente. Não publique um cliente
+aceitando a chave de teste como chave de produção.
 
 As fixtures em `tests/fixtures/update/` contêm uma chave Ed25519 privada de
 teste em PEM (`test-private.pem`, deliberadamente pública), sua pública no
@@ -20,9 +26,10 @@ formato minisign e manifestos com assinaturas destacadas minisign modernas
 (`ED`, pré-hash BLAKE2b-512). `generate.py` regenera os mesmos bytes usando
 Python `cryptography`; esse pacote não é necessário para `cargo test`.
 O teste Rust verifica as fixtures pela biblioteca real, com `allow_legacy=false`.
-O executável minisign não está instalado nesta sandbox; a interoperabilidade
-com o CLI deve ser conferida no checklist de publicação acima de qualquer
-release real. A chave de teste nunca é referenciada no caminho de produção.
+O CLI `minisign` é usado pelos testes de assinatura do gerador quando está
+disponível; sem ele, esses testes são pulados. A interoperabilidade com o CLI
+também deve ser conferida no checklist de publicação acima de qualquer release
+real. A chave de teste nunca é referenciada no caminho de produção.
 
 ## Gerar e custodiar a chave real
 
@@ -37,21 +44,32 @@ minisign -G \
 
 A privada é protegida por senha por padrão. Guarde a privada e sua cópia de
 segurança cifrada fora do repositório, do archive e do binário. Nunca registre
-a senha ou o conteúdo da privada em logs. A pública pode ser distribuída e deve
-ser embutida como constante no cliente; isso exige recompilar antes do primeiro
-release que consuma manifestos assinados. O comentário junto à constante deve
-explicar que o dono a substitui pela pública gerada com `minisign -G`.
+a senha ou o conteúdo da privada em logs. A pública pode ser distribuída; a
+chave de produção já está embutida em `UPDATE_PUBLIC_KEY`, e mudá-la exige
+recompilar o cliente.
 
 Para automação, o secret deve se chamar **`MINISIGN_SECRET_KEY`**, no environment
 protegido **`release`** do GitHub Actions, com revisor obrigatório. Não use a
-chave privada de teste. Se a política do dono permitir assinatura sem interação
-no CI, gere o par com `minisign -G -W` em vez do comando acima: `-W` deixa a
-privada sem senha e sua proteção passa a depender da custódia do secret.
-Não remova a senha da chave offline para automatizar sem essa decisão.
+chave privada de teste. Suba o conteúdo da privada sem imprimi-lo:
 
-O job de publicação recebe a privada pelo secret, escreve um arquivo temporário
-com permissões restritas em `$RUNNER_TEMP`, assina, verifica com a pública do
-cliente e remove o temporário ao terminar. Só esse job precisa de
+```sh
+gh secret set MINISIGN_SECRET_KEY --repo cleisonsantos/dish --env release \
+  < "$HOME/.config/dish-release-keys/dish.key"
+```
+
+Se a política do dono permitir assinatura sem interação no CI, gere o par com
+`minisign -G -W` em vez do comando acima: `-W` deixa a privada sem senha e sua
+proteção passa a depender da custódia do secret. Não remova a senha da chave
+offline para automatizar sem essa decisão.
+
+O gerador lê o conteúdo de `MINISIGN_SECRET_KEY` em runtime ou o caminho local
+passado com `--secret-key-file`. Ele grava a privada em arquivo temporário com
+permissão `0600`, assina os bytes exatos de `latest.json`, grava
+`latest.json.minisig` ao lado e apaga o temporário. Sem chave, o comando falha
+antes de criar o manifesto: em modo de release nunca existe `latest.json` sem
+assinatura. O job de publicação recebe a privada pelo secret, assina e remove o
+temporário ao terminar; a verificação com a pública do cliente é feita pelo
+comando abaixo ou por uma etapa explícita do job. Só esse job precisa de
 `contents: write`; os demais mantêm `contents: read`. Se faltar secret ou a
 assinatura não verificar, a publicação deve falhar. Não foi criado um workflow
 parcial que pudesse publicar sem essa cadeia completa.
@@ -60,14 +78,19 @@ parcial que pudesse publicar sem essa cadeia completa.
 
 Depois de construir e anexar os assets Linux, baixe para um diretório vazio os
 arquivos `.tar.gz`, `.deb` e seus dois `.sha256` daquele release. O gerador
-não reconstrói binários, não instala nada e não publica nada:
+não reconstrói binários, não instala nada e não publica nada. Ele sempre assina
+em modo de release e recusa gerar o manifesto se a chave não estiver presente:
 
 ```sh
+# Offline: a privada fica no disco, fora do checkout.
 python3 scripts/package-manifest.py /tmp/dish-release-assets \
-  --tag v0.1.0-alpha.6 --published-at 2026-10-26T12:00:00Z
-minisign -S -s "$HOME/.config/dish-release-keys/dish.key" \
-  -m /tmp/dish-release-assets/latest.json \
-  -x /tmp/dish-release-assets/latest.json.minisig
+  --tag v0.1.0-alpha.6 --published-at 2026-10-26T12:00:00Z \
+  --sign --secret-key-file "$HOME/.config/dish-release-keys/dish.key"
+
+# CI: MINISIGN_SECRET_KEY já vem do secret do environment release.
+python3 scripts/package-manifest.py /tmp/dish-release-assets \
+  --tag v0.1.0-alpha.6 --published-at 2026-10-26T12:00:00Z --sign
+
 minisign -V -p "$HOME/.config/dish-release-keys/dish.pub" \
   -m /tmp/dish-release-assets/latest.json \
   -x /tmp/dish-release-assets/latest.json.minisig

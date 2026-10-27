@@ -478,6 +478,18 @@ fn signed_fixtures_verify_without_network_and_tampering_fails() {
 }
 
 #[test]
+fn production_public_key_is_a_real_minisign_key() {
+    assert_ne!(UPDATE_PUBLIC_KEY, "PRODUCTION_KEY_NOT_PROVISIONED");
+    let production = minisign_verify::PublicKey::from_base64(UPDATE_PUBLIC_KEY)
+        .expect("UPDATE_PUBLIC_KEY must decode as a minisign public key");
+    let fixture = minisign_verify::PublicKey::from_base64(KEY.trim()).unwrap();
+    assert_ne!(
+        production, fixture,
+        "the production key must not be a test fixture"
+    );
+}
+
+#[test]
 fn daily_cadence_and_jitter_boundaries_without_network() {
     let mut last = None;
     assert!(reserve_attempt(&mut last, 100_000, 42));
