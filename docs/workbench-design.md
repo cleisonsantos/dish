@@ -105,6 +105,19 @@ Transições de entrada param de pedir quadros ao terminar.
 `reduce_motion`. Sem escolha explícita, preserva a preferência do GPUI. Nesse
 modo, transições mostram o estado final e indicadores ficam estáticos.
 
+## Notificações globais
+
+`src/notifications.rs` mantém uma fila FIFO de notificações identificadas por id.
+O componente no `Workspace` mostra até duas por vez, acima da conversa, e
+aguarda o fim de qualquer streaming antes de exibir a fila. Cada chamada fornece
+título, detalhe e, se houver, rótulo e callback da ação primária. A dispensa
+grava o id em `dismissed_notifications` no `state.json`.
+
+Para o smoke, `DISH_TEST_NOTIFY` aponta para um arquivo JSON com uma lista de
+`{"id":"...","title":"...","detail":"..."}`. O app lê a lista enquanto
+está aberto e grava os ids lidos no arquivo irmão com extensão `.ack`. Essa
+entrada é exclusiva dos testes; não adiciona controles à interface.
+
 ## Validação
 
 ```sh
