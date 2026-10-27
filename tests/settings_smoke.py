@@ -1,8 +1,33 @@
 """Xvfb UI test: only synthetic Pi and isolated configuration."""
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import threading
+import unicodedata
 helper_path = Path(__file__).with_name("desktop_smoke.py")
 helpers = helper_path.read_text().split('with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:')[0]
 exec(compile(helpers, str(helper_path), "exec"))
+
+
+class RegistryHandler(BaseHTTPRequestHandler):
+    """Local npm-metadata stub: never reaches the real registry during a smoke."""
+
+    def do_GET(self):
+        body = json.dumps({
+            "name": "@earendil-works/pi-coding-agent",
+            "version": "0.84.5",
+        }).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_args):
+        pass
+
+
+registry = ThreadingHTTPServer(("127.0.0.1", 0), RegistryHandler)
+threading.Thread(target=registry.serve_forever, daemon=True).start()
 
 with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
     temp = Path(temporary)
@@ -14,7 +39,8 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
     session.write_text(json.dumps({"type": "session", "cwd": str(temp), "id": "settings-test"}) + "\n")
     env = dict(os.environ, DISH_PI_BIN=str(wrapper), PI_CODING_AGENT_DIR=str(temp / "agent"),
                XDG_CONFIG_HOME=str(temp / "config"), XDG_DATA_HOME=str(temp / "data"),
-               DISH_FAKE_PI_LOG=str(log_path), XDG_SESSION_TYPE="x11")
+               DISH_FAKE_PI_LOG=str(log_path), XDG_SESSION_TYPE="x11",
+               DISH_PI_REGISTRY_URL=f"http://127.0.0.1:{registry.server_port}/latest")
     env.pop("WAYLAND_DISPLAY", None)
     env.pop("PI_CODING_AGENT_SESSION_DIR", None)
     log = open(temp / "dish.log", "w")
@@ -143,6 +169,29 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
         wait_for(open_about, "About page did not render")
         preferences = temp / "config/dish/state.json"
 
+        def folded_ocr():
+            return "".join(
+                character for character in unicodedata.normalize("NFKD", capture().lower())
+                if not unicodedata.combining(character)
+            )
+
+        def pi_update_row_ready():
+            compact = "".join(folded_ocr().split())
+            return "verificaragora" in compact and "instalarautomaticamente" in compact
+
+        wait_for(pi_update_row_ready, "Pi update row did not render")
+        click_label("Verificar agora")
+        wait_for(lambda: "dispon" in folded_ocr(),
+                 "Manual Pi check did not show the registry version", timeout=20)
+        wait_for(lambda: json.loads(preferences.read_text()).get("last_pi_update_check"),
+                 "Manual Pi check was not persisted")
+        click_label("Verificar automaticamente")
+        wait_for(lambda: json.loads(preferences.read_text()).get("pi_auto_check") is True,
+                 "Automatic Pi check switch was not persisted")
+        click_label("Verificar automaticamente")
+        wait_for(lambda: json.loads(preferences.read_text()).get("pi_auto_check") is False,
+                 "Automatic Pi check switch did not turn off")
+
         def open_app():
             click_label("Aplicativo")
             return "Painel de detalhes" in capture()
@@ -205,6 +254,7 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
         process.terminate()
         process.wait(timeout=5)
         log.close()
+        registry.shutdown()
         for pid in {entry["pid"] for entry in events()}:
             try: os.kill(pid, 15)
             except ProcessLookupError: pass

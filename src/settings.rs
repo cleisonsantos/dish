@@ -24,6 +24,10 @@ pub enum SettingsEvent {
     ChoosePi,
     /// Reabrir o assistente de primeiro uso (Configurações → Sobre / Pi).
     OpenPiSetup,
+    /// Consultar o registro npm do Pi agora (ação manual, ignora a cadência).
+    RequestPiCheck,
+    /// Abrir o instalador oficial do Pi (ação manual).
+    RequestPiUpdate,
     /// Uma credencial de provedor foi adicionada ou removida no Pi.
     ///
     /// As conversas abertas precisam reler a lista de modelos: o processo do Pi
@@ -93,6 +97,10 @@ pub struct Settings {
     answer_focus: bool,
     /// Provedor esperando confirmação de remoção.
     confirming_logout: Option<String>,
+    /// Versão do Pi e opções de atualização mostradas em Sobre / Pi.
+    pi: PiStatus,
+    /// Consulta de versão em andamento (não é a checagem de rede).
+    pi_version_loading: bool,
 }
 
 /// O que a tela de configurações precisa mostrar quando abre.
@@ -105,6 +113,20 @@ pub struct SettingsView {
     /// `(provider, id)` de cada modelo que o Pi reportou.
     pub models: Vec<(String, String)>,
     pub hidden: BTreeSet<String>,
+    pub pi: PiStatus,
+}
+
+/// Estado apresentado na seção Sobre / Pi. A versão instalada é consultada com
+/// o próprio executável; quando falha, a interface diz "desconhecida".
+#[derive(Clone, Default)]
+pub struct PiStatus {
+    pub installed: Option<String>,
+    pub latest: Option<String>,
+    pub last_check: Option<i64>,
+    pub checking: bool,
+    pub notice: Option<String>,
+    pub auto_check: bool,
+    pub auto_install: bool,
 }
 
 impl Settings {
@@ -127,6 +149,8 @@ impl Settings {
             answer,
             answer_focus: false,
             confirming_logout: None,
+            pi: PiStatus::default(),
+            pi_version_loading: false,
         }
     }
 
@@ -145,10 +169,40 @@ impl Settings {
         self.theme = view.theme;
         self.models = view.models;
         self.hidden = view.hidden;
+        self.pi = view.pi;
         self.focus.focus(window, cx);
         if section == Section::Keys { self.search.read(cx).focus_handle.clone().focus(window, cx); } else { self.focus.focus(window, cx); }
         self.provider_notice = None;
         if section == Section::Providers { self.refresh_providers(cx); }
+        if section == Section::About { self.refresh_pi_version(cx); }
+        cx.notify();
+    }
+
+    /// Atualiza os dados de Pi vindos de quem executa a checagem de rede.
+    pub fn set_pi_status(&mut self, status: PiStatus, cx: &mut Context<Self>) {
+        self.pi = status;
+        cx.notify();
+    }
+
+    /// Pergunta a versão ao executável do Pi, fora da thread da interface.
+    pub fn refresh_pi_version(&mut self, cx: &mut Context<Self>) {
+        if self.pi_version_loading {
+            return;
+        }
+        self.pi_version_loading = true;
+        let program = crate::installation::program();
+        cx.spawn(async move |this, cx| {
+            let version = cx
+                .background_executor()
+                .spawn(async move { crate::pi_update::installed_version(&program) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.pi.installed = version;
+                this.pi_version_loading = false;
+                cx.notify();
+            });
+        })
+        .detach();
         cx.notify();
     }
 
@@ -936,6 +990,7 @@ impl Render for Settings {
                 if section == Section::Keys { this.search.read(cx).focus_handle.clone().focus(window, cx); }
                 else { this.focus.focus(window, cx); }
                 if section == Section::Providers { this.refresh_providers(cx); }
+                if section == Section::About { this.refresh_pi_version(cx); }
                 cx.notify();
             })).when(self.section == section, |el| el
                 // A escolha na esquerda é neutra: o accent é do raciocínio,
@@ -1224,19 +1279,121 @@ impl Render for Settings {
                 if count == 0 { page = page.child(note("Nenhum atalho encontrado.")); }
                 page.into_any_element()
             }
-            Section::About => column().child(page_title("Dish"))
-                .child(note(&format!("Versão do Dish: {}", crate::version::display_version())))
-                // Os pares de valor分离tens: rótulo em uma linha, path na
-                // seguinte — caminhos longos não roubam a leitura do rótulo.
-                .child(about_pair("Pi selecionado", &crate::installation::program()))
-                .child(note("Pi mantém as sessões e credenciais. O Dish não executa um serviço em segundo plano."))
-                .child(control("settings-pi-choose", "Escolher executável do Pi", cx.listener(
+            Section::About => {
+                let installed = if self.pi_version_loading && self.pi.installed.is_none() {
+                    "consultando…".to_string()
+                } else {
+                    crate::pi_update::display_version(self.pi.installed.as_deref())
+                };
+                let last_check = crate::pi_update::format_last_check(self.pi.last_check);
+                let mut status = self.pi.notice.clone().unwrap_or_default();
+                if status.is_empty() {
+                    status = if self.pi.checking {
+                        "Verificando atualizações do Pi…".to_string()
+                    } else {
+                        match (self.pi.installed.as_deref(), self.pi.latest.as_deref()) {
+                            (Some(installed), Some(latest))
+                                if crate::pi_update::is_newer(installed, latest) =>
+                            {
+                                format!("Pi {latest} disponível (instalado: {installed}).")
+                            }
+                            (Some(installed), Some(latest)) if installed == latest => {
+                                format!("Você está na versão mais recente do Pi ({installed}).")
+                            }
+                            (None, Some(latest)) => format!(
+                                "Última versão publicada do Pi: {latest}. Versão instalada desconhecida."
+                            ),
+                            (_, Some(latest)) => format!("Última versão publicada do Pi: {latest}."),
+                            _ => String::new(),
+                        }
+                    };
+                }
+                let auto_check = self.pi.auto_check;
+                let auto_install = self.pi.auto_install;
+                // A página Sobre precisa caber sem rolagem na janela padrão:
+                // cada explicação fica em uma linha e cada comando secundário
+                // mantém a sua própria linha.
+                let mut page = column()
+                    .child(page_title("Dish"))
+                    .child(note(&format!("Versão do Dish: {}", crate::version::display_version())))
+                    // Os pares de valor分离tens: rótulo em uma linha, path na
+                    // seguinte — caminhos longos não roubam a leitura do rótulo.
+                    .child(about_pair("Pi selecionado", &crate::installation::program()))
+                    .child(div().flex().flex_row().flex_wrap().gap(px(theme::S5))
+                        .child(about_pair("Versão do Pi", &installed))
+                        .child(about_pair("Última verificação do Pi", &last_check)))
+                    .child(note("Pi mantém as sessões e as credenciais; o Dish não altera os arquivos do Pi."));
+                page = page
+                    .child(div().flex().flex_col().gap(px(theme::S1))
+                        .child(div().id("settings-pi-auto-check-row").flex().flex_col().gap(px(theme::S1))
+                            .px(px(12.)).py(px(8.)).rounded(theme::r_control())
+                            .bg(theme::surface_2()).border_1().border_color(theme::line_soft())
+                            .cursor_pointer()
+                            .hover(|style| style.bg(theme::hover()).border_color(theme::line()))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.pi.auto_check = !auto_check;
+                                cx.emit(SettingsEvent::Preference("pi_auto_check", !auto_check));
+                                cx.notify();
+                            }))
+                            .child(div().text_size(px(theme::TEXT_SM))
+                                .text_color(theme::text()).child("Verificar automaticamente"))
+                            .child(div().flex().flex_row().items_center().gap(px(12.))
+                                .child(div().flex_1().min_w(px(0.)).text_size(px(theme::TEXT_XS))
+                                    .text_color(theme::dim())
+                                    .child("Desligado por padrão; consulta o npm do Pi uma vez por dia e falhas ficam no log."))
+                                .child(switch("settings-pi-auto-check",
+                                    if auto_check { SwitchState::On } else { SwitchState::Off },
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.pi.auto_check = !auto_check;
+                                        cx.emit(SettingsEvent::Preference("pi_auto_check", !auto_check));
+                                        cx.notify();
+                                    }))))))
+                    .child(div().flex().flex_col().gap(px(theme::S1))
+                        .child(div().id("settings-pi-auto-install-row").flex().flex_col().gap(px(theme::S1))
+                            .px(px(12.)).py(px(8.)).rounded(theme::r_control())
+                            .bg(theme::surface_2()).border_1().border_color(theme::line_soft())
+                            .cursor_pointer()
+                            .hover(|style| style.bg(theme::hover()).border_color(theme::line()))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.pi.auto_install = !auto_install;
+                                cx.emit(SettingsEvent::Preference("pi_auto_install", !auto_install));
+                                cx.notify();
+                            }))
+                            .child(div().text_size(px(theme::TEXT_SM))
+                                .text_color(theme::text()).child("Instalar automaticamente"))
+                            .child(div().flex().flex_row().items_center().gap(px(12.))
+                                .child(div().flex_1().min_w(px(0.)).text_size(px(theme::TEXT_XS))
+                                    .text_color(theme::dim())
+                                    .child("Nunca instala em silêncio: o instalador oficial abre num terminal e avisa ao terminar."))
+                                .child(switch("settings-pi-auto-install",
+                                    if auto_install { SwitchState::On } else { SwitchState::Off },
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.pi.auto_install = !auto_install;
+                                        cx.emit(SettingsEvent::Preference("pi_auto_install", !auto_install));
+                                        cx.notify();
+                                    }))))))
+                    .child(actions_row(vec![
+                        control("settings-pi-update", "Atualizar o Pi", cx.listener(
+                            |_, _, _, cx| cx.emit(SettingsEvent::RequestPiUpdate),
+                        )),
+                        control("settings-pi-check", "Verificar agora", cx.listener(
+                            |_, _, _, cx| cx.emit(SettingsEvent::RequestPiCheck),
+                        )),
+                    ]));
+                if !status.is_empty() {
+                    page = page.child(note(&status));
+                }
+                if !crate::pi_update::installer_supported() {
+                    page = page.child(note("Neste sistema, o Dish não abre o instalador oficial do Pi. Atualize pelo instalador do Pi em https://pi.dev."));
+                }
+                page.child(control("settings-pi-choose", "Escolher executável do Pi", cx.listener(
                     |_, _, _, cx| cx.emit(SettingsEvent::ChoosePi),
                 )))
                 .child(control("settings-pi-setup", "Reabrir o assistente do Pi", cx.listener(
                     |_, _, _, cx| cx.emit(SettingsEvent::OpenPiSetup),
                 )))
-                .child(control("settings-docs", "Documentação oficial do Pi", |_, _, cx| cx.open_url("https://github.com/earendil-works/pi"))).into_any_element(),
+                .child(control("settings-docs", "Documentação oficial do Pi", |_, _, cx| cx.open_url("https://github.com/earendil-works/pi"))).into_any_element()
+            }
         };
         let card = column().id("settings-card").w(px(width)).h(px(height.min(700.)))
             .p(px(theme::S5)).rounded(theme::r_surface()).border_1().border_color(theme::line_strong())
