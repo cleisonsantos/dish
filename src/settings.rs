@@ -1,4 +1,5 @@
 use crate::{editor::{self, Editor}, theme::{self, AppearanceMode}};
+use crate::ui::test_probe::TestProbe;
 use gpui::{prelude::*, *};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -563,7 +564,12 @@ impl Settings {
                         _ => "",
                     };
                     page = page.child(
-                        div().id("providers-answer").p(px(8.)).rounded(theme::r_technical())
+                        div().id("providers-answer")
+                            .test_probe(|| "providers-answer".into(), || serde_json::json!({
+                                "masked": self.answer.read(cx).masked,
+                                "length": self.answer.read(cx).text(cx).chars().count(),
+                            }))
+                            .p(px(8.)).rounded(theme::r_technical())
                             .bg(theme::inset()).border_1().border_color(theme::line_soft())
                             .child(self.answer.clone()),
                     );
