@@ -1,11 +1,18 @@
 """Xvfb UI test da seção Provedores: catálogo, estado, primeiro uso e login.
 
-Só Pi sintético e o SDK de fixture. Não usa a credencial real, não abre rede e
-não depende de um Pi instalado — `DISH_PI_PACKAGE` aponta para
-`tests/fixtures/fake-pi-sdk`, que responde um catálogo conhecido e guarda
-credenciais em memória.
+Os casos comuns usam só Pi sintético e o SDK de fixture: não tocam na credencial
+real, não abrem rede e não dependem de um Pi instalado — `DISH_PI_PACKAGE`
+aponta para `tests/fixtures/fake-pi-sdk`, que responde um catálogo conhecido e
+guarda credenciais em memória.
+
+O último caso usa o `pi` real do PATH, mas sempre com `PI_CODING_AGENT_DIR`
+isolado e chaves falsas. Ele reproduz o snapshot de modelos calculado no
+startup: conectar um provedor depois disso não muda `get_available_models`, e a
+única correção é reabrir a conversa. Se o `pi` real não estiver instalado, esse
+caso é anunciado como ignorado; os casos sintéticos continuam obrigatórios.
 """
 import re
+import select
 import shutil
 import unicodedata
 from pathlib import Path
@@ -27,11 +34,41 @@ def normalized(text):
 class Harness:
     """Abre o Dish, a seção Provedores e oferece as ações que os casos usam."""
 
-    def __init__(self, name, env, npm_global=False):
+    def __init__(self, name, env, npm_global=False, real_pi=False):
         self.name = name
+        self.real_pi = real_pi
         self.directory = tempfile.TemporaryDirectory(prefix=f"dish-providers-{name}-")
         temp = Path(self.directory.name)
-        if npm_global:
+        if real_pi:
+            program = shutil.which("pi")
+            assert program, "o caso real exige `pi` no PATH"
+            wrapper = Path(program)
+            # Fixture isolada: nada disto é o ~/.pi/agent de ninguém.
+            agent = temp / "agent"
+            agent.mkdir()
+            (agent / "auth.json").write_text(json.dumps({
+                "deepseek": {"type": "api_key", "key": "sk-dish-provider-smoke-fake"},
+            }))
+            session = agent / "sessions" / "providers-real" / f"{name}.jsonl"
+            session.parent.mkdir(parents=True)
+            now = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+            stamp = int(time.time() * 1000)
+            session.write_text("\n".join(json.dumps(entry) for entry in [
+                {"type": "session", "version": 3, "id": f"providers-real-{name}",
+                 "timestamp": now, "cwd": str(temp)},
+                {"type": "message", "id": "real-user-1", "parentId": None,
+                 "timestamp": now, "message": {"role": "user", "timestamp": stamp,
+                 "content": [{"type": "text", "text": "pergunta anterior"}]}},
+                {"type": "message", "id": "real-assistant-1", "parentId": "real-user-1",
+                 "timestamp": now, "message": {"role": "assistant", "timestamp": stamp + 1,
+                 "provider": "deepseek", "model": "deepseek-v4-pro", "stopReason": "stop",
+                 "content": [{"type": "text", "text": "resposta anterior"}],
+                 "usage": {"input": 1, "output": 1, "cacheRead": 0, "cacheWrite": 0,
+                           "totalTokens": 2,
+                           "cost": {"input": 0, "output": 0, "cacheRead": 0,
+                                    "cacheWrite": 0, "total": 0}}}},
+            ]) + "\n")
+        elif npm_global:
             # Instalação npm global fora dos dois layouts fixos: o pacote fica
             # em <prefixo>/lib/node_modules e bin/pi é um link para dentro dele.
             prefix = temp / "npm-global"
@@ -51,13 +88,19 @@ class Harness:
             wrapper.write_text(f'#!/bin/sh\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@"\n')
             wrapper.chmod(0o700)
         self.log_path = temp / "events.jsonl"
-        session = temp / "session.jsonl"
-        session.write_text(json.dumps({"type": "session", "cwd": str(temp), "id": f"providers-{name}"}) + "\n")
-        merged = dict(os.environ, DISH_PI_BIN=str(wrapper), PI_CODING_AGENT_DIR=str(temp / "agent"),
+        if not real_pi:
+            session = temp / "session.jsonl"
+            session.write_text(json.dumps({"type": "session", "cwd": str(temp), "id": f"providers-{name}"}) + "\n")
+        merged = dict(os.environ, DISH_PI_BIN=str(wrapper),
+                      PI_CODING_AGENT_DIR=str(temp / "agent"),
                       XDG_CONFIG_HOME=str(temp / "config"), XDG_DATA_HOME=str(temp / "data"),
                       XDG_CACHE_HOME=str(temp / "cache"),
                       DISH_FAKE_PI_LOG=str(self.log_path), XDG_SESSION_TYPE="x11")
         merged.update(env)
+        if real_pi:
+            # Chave falsa + diretório isolado; sem tráfego de rede do Pi.
+            merged["PI_OFFLINE"] = "1"
+            merged.pop("DISH_PI_PACKAGE", None)
         if npm_global:
             merged["HOME"] = str(temp / "home")
             merged.pop("DISH_PI_PACKAGE", None)
@@ -73,10 +116,19 @@ class Harness:
 
     def __enter__(self):
         self.window = None
-        wait_for(lambda: find_window(), "Window not created")
+        wait_for(lambda: find_window(), "Window not created", timeout=30)
         self.window = find_window()
-        wait_for(lambda: any(entry.get("command", {}).get("type") == "get_messages" for entry in self.events()),
-                 f"{self.name}: sessão sintética não inicializou", timeout=20)
+        if self.real_pi:
+            # O primeiro frame do Xvfb pode não ter sido exposto ainda; sem um
+            # pedido de expose o OCR lê uma imagem vazia até a primeira tecla.
+            prepare_window(self.window)
+            self.wait_text(["pergunta anterior", "resposta anterior"],
+                           timeout=30)
+            wait_for(lambda: find_word(self.window, "deepseek"),
+                     f"{self.name}: catálogo inicial real não carregou", timeout=30)
+        else:
+            wait_for(lambda: any(entry.get("command", {}).get("type") == "get_messages" for entry in self.events()),
+                     f"{self.name}: sessão sintética não inicializou", timeout=20)
         x11.XSetInputFocus(display, self.window, 1, 0)
         x11.XFlush(display)
         time.sleep(1)
@@ -132,6 +184,47 @@ class Harness:
         position = self.find_label(label)
         assert position, f"{self.name}: não achei {label!r} na tela:\n{self.capture()}"
         click(self.window, position[0], position[1])
+
+    def click_row_action(self, provider, label):
+        """Clica no botão da linha do provedor, não no primeiro botão da tela.
+
+        A lista real tem 42 provedores; o primeiro "Conectar" visível é
+        amazon-bedrock, não anthropic. O OCR localiza a linha pelo id e o botão
+        pela mesma altura.
+        """
+        provider_wanted = normalized(provider)
+        label_wanted = normalized(label)
+        for _ in range(12):
+            subprocess.run(["import", "-window", str(self.window), self.screenshot], check=True)
+            rows = subprocess.check_output(["tesseract", self.screenshot, "stdout", "--psm", "6", "tsv"],
+                                           stderr=subprocess.DEVNULL).decode().splitlines()[1:]
+            words = []
+            for row in rows:
+                fields = row.split("\t")
+                if len(fields) != 12:
+                    continue
+                text = normalized(fields[11])
+                if not text:
+                    continue
+                x, y = int(fields[6]), int(fields[7])
+                width, height = int(fields[8]), int(fields[9])
+                words.append((text, x, y, width, height))
+            anchors = [word for word in words
+                       if word[0].startswith(provider_wanted) or provider_wanted.startswith(word[0])]
+            actions = [word for word in words
+                       if len(word[0]) >= 4
+                       and (word[0].startswith(label_wanted) or label_wanted.startswith(word[0]))]
+            for anchor in anchors:
+                anchor_y = anchor[2] + anchor[4] / 2
+                same_row = [action for action in actions
+                            if abs((action[2] + action[4] / 2) - anchor_y) <= max(12, anchor[4])]
+                if same_row:
+                    action = min(same_row, key=lambda word: word[1])
+                    click(self.window, action[1] + action[3] // 2, action[2] + action[4] // 2)
+                    return
+            time.sleep(0.4)
+        raise AssertionError(
+            f"{self.name}: não achei {label!r} na linha de {provider!r}:\n{self.capture()}")
 
     def ocr_large(self):
         """OCR do mesmo frame em 2x para rótulos pequenos do catálogo.
@@ -287,10 +380,142 @@ def check_provider_refreshes_open_conversation():
         print("providers smoke ok: modelos atualizados na conversa aberta", flush=True)
 
 
+def assert_real_pi_model_not_found(program):
+    """Mede o defeito direto no RPC do Pi real, antes de testar a UI.
+
+    Agente isolado, chaves falsas, `PI_OFFLINE=1`: nenhum valor real e nenhuma
+    rede. A credencial da anthropic é gravada *depois* do startup; a lista não
+    muda e `set_model` responde `Model not found`, exatamente como na seção 7.3.
+    """
+    with tempfile.TemporaryDirectory(prefix="dish-real-pi-stale-") as directory:
+        temp = Path(directory)
+        agent = temp / "agent"
+        agent.mkdir()
+        home = temp / "home"
+        home.mkdir()
+        (agent / "auth.json").write_text(json.dumps({
+            "deepseek": {"type": "api_key", "key": "sk-dish-provider-smoke-fake"},
+        }))
+        env = dict(os.environ, HOME=str(home), PI_CODING_AGENT_DIR=str(agent),
+                   PI_OFFLINE="1")
+        env.pop("DISH_PI_PACKAGE", None)
+        env.pop("DISH_PI_BIN", None)
+        process = subprocess.Popen(
+            [program, "--mode", "rpc"], cwd=temp, env=env,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, bufsize=1)
+
+        next_id = [0]
+
+        def request(kind, **fields):
+            next_id[0] += 1
+            request_id = next_id[0]
+            process.stdin.write(json.dumps({"id": request_id, "type": kind, **fields}) + "\n")
+            process.stdin.flush()
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                ready, _, _ = select.select([process.stdout], [], [], 0.5)
+                if not ready:
+                    continue
+                line = process.stdout.readline()
+                if not line:
+                    break
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if record.get("type") == "response" and record.get("id") == request_id:
+                    return record
+            raise AssertionError(f"Pi real não respondeu a {kind}")
+
+        try:
+            first = request("get_available_models")
+            providers = sorted({model["provider"] for model in first["data"]["models"]})
+            assert providers == ["deepseek"], providers
+            auth = json.loads((agent / "auth.json").read_text())
+            auth["anthropic"] = {"type": "api_key", "key": "sk-ant-dish-provider-smoke-fake"}
+            (agent / "auth.json").write_text(json.dumps(auth))
+            stale = request("get_available_models")
+            stale_providers = sorted({model["provider"] for model in stale["data"]["models"]})
+            assert stale_providers == ["deepseek"], stale_providers
+            selection = request("set_model", provider="anthropic", modelId="claude-haiku-4-5")
+            assert selection.get("success") is False, selection
+            assert selection.get("error") == "Model not found: anthropic/claude-haiku-4-5", selection
+        finally:
+            try:
+                process.stdin.close()
+            except OSError:
+                pass
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+
+
+def check_real_pi_stale_catalog_and_reopen():
+    """Pi real: o snapshot de startup não vê uma credencial conectada depois.
+
+    Diretório de agente isolado, chaves falsas e `PI_OFFLINE=1`: nenhuma
+    credencial real é lida, escrita ou enviada a um serviço. O teste mede o
+    `Model not found` no RPC real e depois verifica, na UI, o aviso honesto e a
+    ação que reinicia o processo mantendo rascunho e histórico.
+    """
+    program = shutil.which("pi")
+    if not program:
+        print("providers smoke: caso com Pi real ignorado — `pi` não está no PATH", flush=True)
+        return
+    assert_real_pi_model_not_found(program)
+    with Harness("real", {}, real_pi=True) as h:
+        # O __enter__ já abriu as Configurações; aqui a conversa precisa estar
+        # visível para o rascunho e a checagem de histórico.
+        h.close_settings()
+        h.wait_text(["pergunta anterior", "resposta anterior"])
+        chord("Control_L", "l")
+        type_text("rascunho-real-preservado")
+        wait_for(lambda: find_word(h.window, "rascunho"), "Rascunho real não apareceu")
+        press("F1")
+        h.wait_text(["Provedores"])
+        h.click("Provedores")
+        h.wait_text(["deepseek", "credencial salva", "anthropic"])
+        # anthropic é a segunda linha; o primeiro "Conectar" seria amazon-bedrock.
+        h.click_row_action("anthropic", "Conectar")
+        h.wait_text(["Como entrar em anthropic", "Anthropic API key"])
+        h.click("Usar")
+        # O Pi real usa a mensagem do provedor ("Enter Anthropic API key"), não
+        # o texto em português do SDK de fixture.
+        h.wait_text(["Enter Anthropic API key", "Enviar"])
+        type_text("sk-ant-chave-real-de-teste")
+        time.sleep(0.3)
+        h.click("Enviar")
+        h.wait_text(["Provedor anthropic conectado"])
+        h.click("Voltar à lista")
+        # O resumo ("2 conectados") fica no rodapé de 42 linhas e sai da tela;
+        # a credencial salva da anthropic é a prova visível.
+        h.wait_text(["anthropic", "credencial salva", "Remover credencial"])
+        h.close_settings()
+        # O processo continua com o snapshot antigo: a conversa não pode dizer
+        # que atualizou; ela avisa que falta anthropic e oferece reabrir.
+        h.wait_text(["desatualizado", "anthropic", "Reabrir esta conversa"], timeout=30)
+        wait_for(lambda: find_word(h.window, "rascunho"), "Rascunho perdido antes de reabrir")
+        h.click("Reabrir esta conversa")
+        # Histórico vem do mesmo --session; o rascunho nunca saiu do editor.
+        h.wait_text(["pergunta anterior", "resposta anterior"], timeout=30)
+        h.assert_absent("desatualizado")
+        wait_for(lambda: find_word(h.window, "rascunho"), "Rascunho perdido ao reabrir")
+        # O processo novo calculou o snapshot com as duas credenciais.
+        chord("Control_L", "Shift_L", "m")
+        h.wait_text(["Selecionar modelo"], timeout=30)
+        type_text("claude-haiku-4-5")
+        h.wait_text(["claude-haiku-4-5"], timeout=30)
+        press("Escape")
+        print("providers smoke ok: Pi real avisa o snapshot velho e reabre sem perder rascunho/histórico", flush=True)
+
+
 check_catalog()
 check_first_use()
 check_unavailable()
 check_npm_global()
 check_login_and_logout()
 check_provider_refreshes_open_conversation()
-print("Providers smoke passed: catálogo, npm global, primeiro uso, falha honesta, login, remoção e atualização da conversa")
+check_real_pi_stale_catalog_and_reopen()
+print("Providers smoke passed: catálogo, npm global, primeiro uso, falha honesta, login, remoção, atualização da conversa e snapshot velho do Pi real")

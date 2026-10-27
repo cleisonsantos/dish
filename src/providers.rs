@@ -10,6 +10,7 @@
 
 use anyhow::{anyhow, Result};
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -112,6 +113,16 @@ pub struct Snapshot {
     pub providers: Vec<Provider>,
 }
 
+/// Os provedores que o adaptador conhece e os que ele reporta como configurados.
+///
+/// Comparar modelos com isto permite dizer que um processo do Pi está com o
+/// catálogo velho sem inventar uma atualização que não aconteceu.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProviderCatalog {
+    pub configured: BTreeSet<String>,
+    pub known: BTreeSet<String>,
+}
+
 impl Snapshot {
     pub fn ready(&self) -> usize {
         self.providers.iter().filter(|provider| provider.configured).count()
@@ -120,6 +131,18 @@ impl Snapshot {
     /// Nenhum provedor utilizável: é o primeiro uso que a issue #69 descreve.
     pub fn empty(&self) -> bool {
         self.providers.is_empty() || self.ready() == 0
+    }
+
+    pub fn catalog_state(&self) -> ProviderCatalog {
+        ProviderCatalog {
+            configured: self.providers.iter()
+                .filter(|provider| provider.configured)
+                .map(|provider| provider.id.clone())
+                .collect(),
+            known: self.providers.iter()
+                .map(|provider| provider.id.clone())
+                .collect(),
+        }
     }
 }
 
@@ -343,6 +366,9 @@ mod tests {
         assert_eq!(openai.models, 44);
         assert_eq!(openai.source, Some(Source::Stored));
         assert_eq!(openai.source.map(Source::label), Some("credencial salva"));
+        let catalog = snapshot.catalog_state();
+        assert_eq!(catalog.configured, ["openai".to_string()].into());
+        assert_eq!(catalog.known, ["openai".to_string(), "groq".to_string()].into());
         // O que a interface pode oferecer para conectar.
         assert_eq!(
             openai.methods(),

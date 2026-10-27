@@ -30,10 +30,11 @@ pub enum SettingsEvent {
     RequestPiUpdate,
     /// Uma credencial de provedor foi adicionada ou removida no Pi.
     ///
-    /// As conversas abertas precisam reler a lista de modelos: o processo do Pi
-    /// não avisa sozinho quando uma credencial muda, e o usuário deve conseguir
-    /// escolher o novo modelo sem reiniciar a conversa.
-    ProvidersChanged,
+    /// `catalog` é o estado lido do adaptador depois da mudança. As conversas
+    /// abertas releem `get_available_models` e comparam essa lista com os
+    /// provedores configurados; o processo do Pi não recalcula o snapshot
+    /// sozinho. `None` quando o estado não pôde ser verificado.
+    ProvidersChanged { catalog: Option<crate::providers::ProviderCatalog> },
 }
 impl EventEmitter<SettingsEvent> for Settings {}
 
@@ -97,6 +98,9 @@ pub struct Settings {
     answer_focus: bool,
     /// Provedor esperando confirmação de remoção.
     confirming_logout: Option<String>,
+    /// A próxima consulta terminou? Então ela é consequência de uma credencial
+    /// que mudou e precisa avisar as conversas abertas.
+    provider_change_pending: bool,
     /// Versão do Pi e opções de atualização mostradas em Sobre / Pi.
     pi: PiStatus,
     /// Consulta de versão em andamento (não é a checagem de rede).
@@ -149,6 +153,7 @@ impl Settings {
             answer,
             answer_focus: false,
             confirming_logout: None,
+            provider_change_pending: false,
             pi: PiStatus::default(),
             pi_version_loading: false,
         }
@@ -226,6 +231,13 @@ impl Settings {
                     crate::providers::Probed::Ready(snapshot) => ProvidersView::Ready(snapshot),
                     crate::providers::Probed::Unavailable(reason) => ProvidersView::Unavailable(reason),
                 };
+                if std::mem::take(&mut this.provider_change_pending) {
+                    let catalog = match &this.providers {
+                        ProvidersView::Ready(snapshot) => Some(snapshot.catalog_state()),
+                        _ => None,
+                    };
+                    cx.emit(SettingsEvent::ProvidersChanged { catalog });
+                }
                 cx.notify();
             });
         })
@@ -651,10 +663,10 @@ impl Settings {
                 self.login = Some(LoginStep::Done {
                     provider: outcome.provider,
                 });
+                // A consulta que está para voltar é a que leva às conversas
+                // o estado novo; ver `SettingsEvent::ProvidersChanged`.
+                self.provider_change_pending = true;
                 self.refresh_providers(cx);
-                // Os modelos das conversas abertas só são atualizados quando
-                // pedimos de novo ao Pi; ver `SettingsEvent::ProvidersChanged`.
-                cx.emit(SettingsEvent::ProvidersChanged);
                 return true;
             }
             Message::Failed(message) => {
@@ -740,9 +752,7 @@ impl Settings {
                     ),
                     Err(error) => format!("{error:#}"),
                 });
-                if removed {
-                    cx.emit(SettingsEvent::ProvidersChanged);
-                }
+                this.provider_change_pending = removed;
                 this.refresh_providers(cx);
                 cx.notify();
             });

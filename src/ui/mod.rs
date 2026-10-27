@@ -64,7 +64,7 @@ impl Render for AppState {
             .child(transcript::transcript(self, cx));
 
         if let Some(banner) = self.banner.clone() {
-            main_column = main_column.child(banner_element(&banner, cx));
+            main_column = main_column.child(banner_element(self, &banner, cx));
         }
         main_column = main_column
             .child(composer::composer(self, &slash, slash_index, window, cx))
@@ -596,9 +596,13 @@ fn conversation_state(state: &AppState) -> (Icon, Hsla, String) {
 
 // ----------------------------------------------------------------- the rail
 
-fn banner_element(banner: &crate::state::Banner, cx: &mut Context<AppState>) -> Div {
+fn banner_element(
+    state: &AppState,
+    banner: &crate::state::Banner,
+    cx: &mut Context<AppState>,
+) -> Div {
     let color = tone_color(banner.tone);
-    div()
+    let mut row = div()
         .flex()
         .flex_row()
         .items_center()
@@ -615,24 +619,45 @@ fn banner_element(banner: &crate::state::Banner, cx: &mut Context<AppState>) -> 
         .text_size(px(theme::TEXT_SM))
         .text_color(theme::dim())
         .child(div().text_color(color).child("●"))
-        .child(div().flex_1().min_w(px(0.)).child(SharedString::from(banner.text.clone())))
-        .child(
+        .child(div().flex_1().min_w(px(0.)).child(SharedString::from(banner.text.clone())));
+    if matches!(banner.action, Some(crate::state::BannerAction::ReopenConversation)) {
+        let reason = if state.reopening {
+            Some("Reabrindo a conversa…")
+        } else {
+            state.reopen_block_reason()
+        };
+        let enabled = state.can_reopen_conversation();
+        if let Some(reason) = reason {
+            row = row.child(
+                div()
+                    .flex_none()
+                    .max_w(px(220.))
+                    .text_size(px(theme::TEXT_XS))
+                    .text_color(theme::faint())
+                    .child(SharedString::from(reason)),
+            );
+        }
+        row = row.child(
             div()
-                .id("banner-dismiss")
-                .size(px(22.))
+                .id("banner-reopen")
+                .flex_none()
+                .px(px(theme::S2))
+                .py(px(theme::S1 + 1.))
                 .rounded(theme::r_control())
-                .flex()
-                .items_center()
-                .justify_center()
-                .cursor_pointer()
+                .bg(theme::wash(color, if enabled { 0.22 } else { 0.10 }))
+                .text_size(px(theme::TEXT_SM))
+                .text_color(if enabled { color } else { theme::faint() })
                 .focusable()
                 .tab_index(0)
-                .hover(|style| style.bg(theme::hover()))
-                .focus(|style| style.bg(theme::hover()))
-                .tooltip(|_, cx| cx.new(|_| copy_button::TextTooltip("Dispensar aviso (Esc)".into())).into())
+                .when(enabled, |el| {
+                    el.cursor_pointer()
+                        .hover(|style| style.bg(theme::wash(color, 0.30)))
+                        .focus(|style| style.shadow(theme::focus_ring()))
+                })
                 .on_click(cx.listener(|state, _: &ClickEvent, _, cx| {
-                    state.banner = None;
-                    cx.notify();
+                    if state.can_reopen_conversation() {
+                        state.request_reopen_conversation(cx);
+                    }
                 }))
                 .on_key_down(cx.listener(|state, event: &KeyDownEvent, window, cx| {
                     if event.keystroke.key == "tab" {
@@ -643,12 +668,48 @@ fn banner_element(banner: &crate::state::Banner, cx: &mut Context<AppState>) -> 
                         }
                         cx.stop_propagation();
                     } else if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                        state.banner = None;
-                        cx.notify();
+                        if state.can_reopen_conversation() {
+                            state.request_reopen_conversation(cx);
+                        }
+                        cx.stop_propagation();
                     }
                 }))
-                .child(icon(Icon::Close, 12., color)),
-        )
+                .child("Reabrir esta conversa"),
+        );
+    }
+    row.child(
+        div()
+            .id("banner-dismiss")
+            .size(px(22.))
+            .rounded(theme::r_control())
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .focusable()
+            .tab_index(0)
+            .hover(|style| style.bg(theme::hover()))
+            .focus(|style| style.bg(theme::hover()))
+            .tooltip(|_, cx| cx.new(|_| copy_button::TextTooltip("Dispensar aviso (Esc)".into())).into())
+            .on_click(cx.listener(|state, _: &ClickEvent, _, cx| {
+                state.banner = None;
+                cx.notify();
+            }))
+            .on_key_down(cx.listener(|state, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "tab" {
+                    if event.keystroke.modifiers.shift {
+                        window.focus_prev(cx);
+                    } else {
+                        window.focus_next(cx);
+                    }
+                    cx.stop_propagation();
+                } else if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    state.banner = None;
+                    cx.notify();
+                }
+            }))
+            .child(icon(Icon::Close, 12., color)),
+    )
 }
 
 // ------------------------------------------------------------- vocabulary
