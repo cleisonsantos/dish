@@ -30,6 +30,29 @@ import license_bundle  # noqa: E402
 
 
 class ReleaseToolTests(unittest.TestCase):
+    def test_reused_binary_must_match_the_release_build_identity(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(package, "ROOT", Path(temporary)):
+            binary = package.ROOT / "target" / package.TARGET / "release/dish"
+            binary.parent.mkdir(parents=True)
+            binary.write_bytes(b"test release executable")
+            with self.assertRaisesRegex(RuntimeError, "identity missing"):
+                package.build_release("0.1.0-alpha.6", True)
+            with patch.object(package, "build_environment", return_value={"DISH_RELEASE_VERSION": "0.1.0-alpha.6"}), patch.object(package.subprocess, "run") as build:
+                self.assertEqual(package.build_release("0.1.0-alpha.6", False), binary)
+                self.assertEqual(build.call_args.kwargs["env"]["DISH_RELEASE_VERSION"], "0.1.0-alpha.6")
+            self.assertEqual(package.build_release("0.1.0-alpha.6", True), binary)
+            with self.assertRaisesRegex(RuntimeError, "identity differs"):
+                package.build_release("0.1.0-alpha.7", True)
+            binary.write_bytes(b"another build")
+            with self.assertRaisesRegex(RuntimeError, "identity differs"):
+                package.build_release("0.1.0-alpha.6", True)
+
+    def test_release_label_is_injected_without_changing_cargo_version(self):
+        with patch.dict(os.environ, {"DISH_RELEASE_VERSION": "wrong-label"}, clear=True), patch.object(package, "run", return_value="/toolchain\n"):
+            env = package.build_environment("0.1.0-alpha.6")
+        self.assertEqual(env["DISH_RELEASE_VERSION"], "0.1.0-alpha.6")
+        self.assertEqual(__import__("tomllib").loads((ROOT / "Cargo.toml").read_text())["package"]["version"], "0.1.0")
+
     def test_flags_preserve_existing_settings_and_remap_paths(self):
         with patch.dict(os.environ, {"RUSTFLAGS": "-C opt-level=2"}, clear=True), patch.object(package, "run", return_value="/toolchain\n"):
             env = package.build_environment()

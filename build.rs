@@ -26,6 +26,7 @@ fn embed_resources() {
 }
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=DISH_RELEASE_VERSION");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         #[cfg(windows)]
         embed_resources();

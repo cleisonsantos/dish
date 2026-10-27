@@ -1225,7 +1225,7 @@ impl Render for Settings {
                 page.into_any_element()
             }
             Section::About => column().child(page_title("Dish"))
-                .child(note(&format!("Versão do Dish: {}", env!("CARGO_PKG_VERSION"))))
+                .child(note(&format!("Versão do Dish: {}", crate::version::display_version())))
                 // Os pares de valor分离tens: rótulo em uma linha, path na
                 // seguinte — caminhos longos não roubam a leitura do rótulo.
                 .child(about_pair("Pi selecionado", &crate::installation::program()))

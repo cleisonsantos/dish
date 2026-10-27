@@ -40,6 +40,9 @@ pub struct Preferences {
     pub theme: Option<String>,
     /// Stable notification ids the user has dismissed.
     pub dismissed_notifications: BTreeSet<String>,
+    pub last_update_check: Option<i64>,
+    pub last_update_etag: Option<String>,
+    pub update_channel: Option<crate::update::UpdateChannel>,
 }
 
 fn env_path(name: &str) -> Option<PathBuf> {
@@ -135,6 +138,9 @@ mod tests {
         assert_eq!(preferences.theme, None);
         assert_eq!(preferences.reduce_motion, None, "preserve platform motion setting");
         assert!(preferences.dismissed_notifications.is_empty());
+        assert_eq!(preferences.last_update_check, None);
+        assert_eq!(preferences.last_update_etag, None);
+        assert_eq!(preferences.update_channel, None);
     }
 
     #[test]
@@ -196,6 +202,9 @@ mod tests {
             reduce_motion: Some(true),
             theme: Some("user:meu-tema".to_string()),
             dismissed_notifications: ["sample".to_string()].into(),
+            last_update_check: Some(1_800_000_000),
+            last_update_etag: Some("\"test-etag\"".to_string()),
+            update_channel: Some(crate::update::UpdateChannel::Prerelease),
         };
         let bytes = serde_json::to_vec(&preferences).unwrap();
         assert_eq!(serde_json::from_slice::<Preferences>(&bytes).unwrap(), preferences);
