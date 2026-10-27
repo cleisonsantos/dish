@@ -1,0 +1,66 @@
+# Maintainer: Cleison Santos <33238294+cleisonsantos@users.noreply.github.com>
+
+pkgname=dish-pi-bin
+_release=0.1.0-alpha.5
+# O Arch proíbe hífen em pkgver; a release mantém o hífen no nome dos arquivos.
+pkgver=0.1.0.alpha.5
+pkgrel=1
+pkgdesc='Desktop interface for the Pi coding agent'
+arch=('x86_64')
+url='https://github.com/cleisonsantos/dish'
+license=('Apache-2.0')
+
+# Derivado do NEEDED do binário da release (ldd), não da proposta da issue:
+# libc/libm -> glibc, libgcc_s -> libgcc, mais libxcb, libxkbcommon e
+# libxkbcommon-x11. libXau, libXdmcp e libxcb-xkb vêm como dependências do
+# libxcb. Wayland, EGL, Vulkan, fontconfig e OpenSSL não aparecem no NEEDED
+# porque são abertos em tempo de execução (libwayland-client.so.0,
+# libwayland-egl.so.1, libEGL.so.1, libvulkan.so.1) e ficam em optdepends.
+depends=('glibc' 'libgcc' 'libxcb' 'libxkbcommon' 'libxkbcommon-x11')
+
+optdepends=(
+  'wayland: backend Wayland (libwayland-client.so.0, libwayland-egl.so.1)'
+  'libglvnd: backend EGL/OpenGL (libEGL.so.1)'
+  'vulkan-icd-loader: renderizador Vulkan (libvulkan.so.1)'
+  'mesa: OpenGL e Vulkan por software (lavapipe)'
+  'vulkan-radeon: driver Vulkan AMD'
+  'vulkan-intel: driver Vulkan Intel'
+  'nvidia-utils: driver Vulkan NVIDIA'
+)
+
+provides=('dish-pi')
+conflicts=('dish-pi')
+# O binário da release já sai remapeado e sem símbolos do CI: não mexer nele.
+options=('!strip' '!debug')
+
+source=("dish-${_release}-linux-x86_64.tar.gz::${url}/releases/download/v${_release}/dish-${_release}-linux-x86_64.tar.gz")
+sha256sums=('89d5f2834ed7ca193cd738481c1c9061027690125e4bd2dba814c89dd4742524')
+
+package() {
+  cd "$srcdir/dish-${_release}-linux-x86_64" || exit 1
+
+  install -Dm755 bin/dish "$pkgdir/usr/bin/dish-pi"
+  install -Dm644 share/icons/dish.png \
+    "$pkgdir/usr/share/icons/hicolor/512x512/apps/dish-pi.png"
+
+  install -d "$pkgdir/usr/share/applications"
+  cat > "$pkgdir/usr/share/applications/dish-pi.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Dish
+Comment=Desktop interface for the Pi coding agent
+Exec=dish-pi
+Icon=dish-pi
+StartupWMClass=dish
+Terminal=false
+Categories=Development;
+EOF
+  chmod 644 "$pkgdir/usr/share/applications/dish-pi.desktop"
+
+  install -Dm644 BUILD.json "$pkgdir/usr/share/doc/dish-pi/BUILD.json"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/dish-pi/README.md"
+
+  # Pacote binário: o license bundle completo vem do próprio arquivo da release.
+  install -d "$pkgdir/usr/share/licenses/dish-pi"
+  cp -a share/licenses/. "$pkgdir/usr/share/licenses/dish-pi/"
+}

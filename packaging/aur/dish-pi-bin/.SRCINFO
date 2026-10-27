@@ -1,0 +1,27 @@
+pkgbase = dish-pi-bin
+	pkgdesc = Desktop interface for the Pi coding agent
+	pkgver = 0.1.0.alpha.5
+	pkgrel = 1
+	url = https://github.com/cleisonsantos/dish
+	arch = x86_64
+	license = Apache-2.0
+	depends = glibc
+	depends = libgcc
+	depends = libxcb
+	depends = libxkbcommon
+	depends = libxkbcommon-x11
+	optdepends = wayland: backend Wayland (libwayland-client.so.0, libwayland-egl.so.1)
+	optdepends = libglvnd: backend EGL/OpenGL (libEGL.so.1)
+	optdepends = vulkan-icd-loader: renderizador Vulkan (libvulkan.so.1)
+	optdepends = mesa: OpenGL e Vulkan por software (lavapipe)
+	optdepends = vulkan-radeon: driver Vulkan AMD
+	optdepends = vulkan-intel: driver Vulkan Intel
+	optdepends = nvidia-utils: driver Vulkan NVIDIA
+	provides = dish-pi
+	conflicts = dish-pi
+	options = !strip
+	options = !debug
+	source = dish-0.1.0-alpha.5-linux-x86_64.tar.gz::https://github.com/cleisonsantos/dish/releases/download/v0.1.0-alpha.5/dish-0.1.0-alpha.5-linux-x86_64.tar.gz
+	sha256sums = 89d5f2834ed7ca193cd738481c1c9061027690125e4bd2dba814c89dd4742524
+
+pkgname = dish-pi-bin

@@ -71,6 +71,51 @@ dpkg-query -W -f='${Package} ${Version}\n' dish 2>/dev/null
 switch, but it also freezes the legitimate Debian package; moving to `dish-pi`
 is the definitive fix.
 
+### Arch Linux (AUR)
+
+Two AUR packages are maintained in this repository under `packaging/aur/`:
+
+- **`dish-pi-bin` (recommended)** installs the checksum-pinned CI archive. It
+  needs no Rust toolchain and uses the glibc reference build.
+- **`dish-pi`** builds the tagged source with `cargo build --release --locked`.
+  It needs `rust`, `pkgconf` and the usual GPUI build dependencies.
+
+Both install `/usr/bin/dish-pi`, `/usr/share/applications/dish-pi.desktop`, the
+hicolor icon, the license bundle under `/usr/share/licenses/dish-pi`, and
+`BUILD.json` under `/usr/share/doc/dish-pi`. The package names use `dish-pi`
+because the AUR name `dish` belongs to an unrelated project.
+
+Install the binary package with an AUR helper, or manually:
+
+```sh
+# while the AUR mirror is not yet published, build from this repository
+cd packaging/aur/dish-pi-bin
+makepkg -si
+```
+
+Once the mirror exists, `git clone https://aur.archlinux.org/dish-pi-bin.git`
+replaces the `cd` line. `dish-pi-bin` declares `provides=('dish-pi')` and
+`conflicts=('dish-pi')`, and `dish-pi` declares `conflicts=('dish-pi-bin')`, so
+the two variants replace each other instead of installing side by side.
+
+`depends` follows the binary's real `NEEDED` entries: `glibc`, `libgcc`,
+`libxcb`, `libxkbcommon` and `libxkbcommon-x11`. Wayland, EGL, Vulkan and the
+Vulkan drivers are opened at run time, so they are `optdepends`; the Debian
+package recommends the same set.
+
+Use `dish-pi` instead if you want to compile locally. Remove either package with
+`sudo pacman -Rns dish-pi-bin` (or `dish-pi`); preferences, Pi, projects and
+conversations are kept. `pacman -Ql dish-pi-bin` lists every installed file; it
+must show the binary, the desktop entry, the icon, the license bundle and
+`BUILD.json`.
+
+The AUR is not updated by CI. For each release, update `_release`, `pkgver`
+(Arch versions cannot contain `-`, so `0.1.0-alpha.5` becomes `0.1.0.alpha.5`)
+and the two `sha256sums` in both PKGBUILDs, then regenerate their `.SRCINFO`
+with `makepkg --printsrcinfo` and push `PKGBUILD` plus `.SRCINFO` to each AUR
+repository. The repository files are the review copy; the AUR mirror is manual.
+`tests/test_aur_package.py` fails when `ci.yml` and the PKGBUILDs disagree.
+
 ### Portable archive (no sudo)
 
 Download the `.tar.gz` and corresponding `.sha256` file into the same directory.
@@ -99,9 +144,9 @@ installation at those paths. It does not download Pi or run its installer.
 
 ### Running Dish
 
-Open Dish through your application menu, or run `dish-pi` (Debian package) or
-`dish` / `~/.local/bin/dish` (portable archive). If Pi is missing, follow the
-first-run setup. Set `DISH_PI_BIN` to select a custom Pi executable when
+Open Dish through your application menu, or run `dish-pi` (Debian package or
+AUR) or `dish` / `~/.local/bin/dish` (portable archive). If Pi is missing,
+follow the first-run setup. Set `DISH_PI_BIN` to select a custom Pi executable when
 launching from a terminal. Projects and conversations can modify files; this is
 not a sandbox.
 
@@ -110,7 +155,8 @@ GNOME users can set `DISH_BACKEND=x11` to use XWayland and native window borders
 
 ## Uninstall
 
-With the Debian package: `sudo apt remove dish-pi`.
+With the Debian package: `sudo apt remove dish-pi`. With an AUR package:
+`sudo pacman -Rns dish-pi-bin` (or `dish-pi`).
 
 With the portable archive: run `./install.sh uninstall` (or `./uninstall.sh`)
 from the extracted directory. It removes the installed Dish executable,

@@ -1,0 +1,6 @@
+# Artefatos de `makepkg`: nunca versionar pacotes, árvores extraídas ou logs.
+pkg/
+src/
+*.pkg.tar
+*.pkg.tar.*
+*.log

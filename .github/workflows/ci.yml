@@ -54,6 +54,8 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_ui_test_support.py' -v
       - name: Release tooling tests
         run: python3 -m unittest discover -s tests -p 'test_release_package.py' -v
+      - name: AUR packaging tests
+        run: python3 -m unittest discover -s tests -p 'test_aur_package.py' -v
       - name: Provider adapter contract
         # Rodam contra o SDK falso: sem Pi, sem rede e sem credencial real.
         run: |

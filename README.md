@@ -45,9 +45,12 @@ Get-FileHash .\dish-<version>-windows-x86_64-setup.exe -Algorithm SHA256
 
 ### Other Linux distributions
 
-The portable `.tar.gz` is the supported path on Arch, Fedora and other glibc
-distributions; there is no package for them yet. Download the archive and its
-`.sha256` sidecar, verify, extract and run the installer:
+Arch Linux has AUR packages: use `dish-pi-bin` for the prebuilt release or
+`dish-pi` to build from source; see the
+[Linux release notes](docs/linux-release.md#arch-linux-aur). The portable
+`.tar.gz` remains the supported path on Fedora and other glibc distributions;
+there is no package for them yet. Download the archive and its `.sha256`
+sidecar, verify, extract and run the installer:
 
 ```bash
 sha256sum -c dish-<version>-linux-x86_64.tar.gz.sha256
