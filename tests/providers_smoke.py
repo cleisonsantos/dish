@@ -88,6 +88,7 @@ class Harness:
             wrapper.write_text(f'#!/bin/sh\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@"\n')
             wrapper.chmod(0o700)
         self.log_path = temp / "events.jsonl"
+        self.trace_path = temp / "ui.jsonl"
         if not real_pi:
             session = temp / "session.jsonl"
             session.write_text(json.dumps({"type": "session", "cwd": str(temp), "id": f"providers-{name}"}) + "\n")
@@ -95,7 +96,8 @@ class Harness:
                       PI_CODING_AGENT_DIR=str(temp / "agent"),
                       XDG_CONFIG_HOME=str(temp / "config"), XDG_DATA_HOME=str(temp / "data"),
                       XDG_CACHE_HOME=str(temp / "cache"),
-                      DISH_FAKE_PI_LOG=str(self.log_path), XDG_SESSION_TYPE="x11")
+                      DISH_FAKE_PI_LOG=str(self.log_path), DISH_TEST_UI_LOG=str(self.trace_path),
+                      XDG_SESSION_TYPE="x11")
         merged.update(env)
         if real_pi:
             # Chave falsa + diretório isolado; sem tráfego de rede do Pi.
@@ -118,6 +120,7 @@ class Harness:
         self.window = None
         wait_for(lambda: find_window(), "Window not created", timeout=30)
         self.window = find_window()
+        UI_TRACES[self.window] = UiTrace(self.trace_path)
         if self.real_pi:
             # O primeiro frame do Xvfb pode não ter sido exposto ainda; sem um
             # pedido de expose o OCR lê uma imagem vazia até a primeira tecla.
@@ -144,6 +147,7 @@ class Harness:
             self.process.wait(timeout=5)
         except Exception:
             self.process.kill()
+        UI_TRACES.pop(self.window, None)
         self.directory.cleanup()
 
     def events(self):
@@ -258,6 +262,18 @@ class Harness:
             time.sleep(0.4)
         raise AssertionError(f"{self.name}: {needle!r} continuou na tela")
 
+    def assert_masked_answer(self, key):
+        """Confirma o estado pintado e que a chave não aparece na tela ou no trace."""
+        type_text(key)
+        node = wait_ui(self.window, "providers-answer", condition=lambda node:
+                       node["data"].get("length") == len(key))
+        assert node["data"].get("masked") is True, f"{self.name}: resposta não está mascarada"
+        readback = normalized(self.capture())
+        assert normalized(key) not in readback, f"{self.name}: valor real apareceu na tela"
+        assert normalized("nao-deve-aparecer") not in readback, (
+            f"{self.name}: parte do valor real apareceu na tela")
+        assert key not in self.trace_path.read_text(), f"{self.name}: valor real apareceu no trace"
+
     def close_settings(self):
         """Fecha as Configurações e espera o foco voltar para a conversa.
 
@@ -317,11 +333,12 @@ def check_login_and_logout():
         h.wait_text(["Como entrar em anthropic", "Anthropic API key"])
         h.click("Usar")
         h.wait_text(["Cole a chave de API da Anthropic"])
-        type_text("sk-ant-chave-de-teste")
-        time.sleep(0.3)
+        key = "sk-test-nao-deve-aparecer-123"
+        # O valor existe no buffer (vai no envio) mas não pode ser desenhado.
+        h.assert_masked_answer(key)
         h.click("Enviar")
         # O valor sai da tela ao ser enviado: nada dele fica renderizado.
-        h.assert_absent("chave-de-teste")
+        h.assert_absent(key)
         h.wait_text(["Provedor anthropic conectado"])
         h.click("Voltar à lista")
         # A lista é relida do Pi: a credencial agora aparece como salva.

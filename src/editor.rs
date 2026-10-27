@@ -285,6 +285,9 @@ pub struct Editor {
     pub cursor_visible: bool,
     pub placeholder: SharedString,
     pub read_only: bool,
+    /// Quando ligado, o editor desenha uma máscara por caractere em vez do
+    /// valor real. O valor enviado continua intacto em `value`.
+    pub masked: bool,
     /// Width handed to the text last frame, used to measure wrapping during the
     /// next layout pass.
     pub text_width: Rc<Cell<f32>>,
@@ -343,6 +346,7 @@ impl Editor {
             cursor_visible: false,
             placeholder: placeholder.into(),
             read_only: false,
+            masked: false,
             text_width: Rc::new(Cell::new(0.0)),
             geometry: Rc::new(RefCell::new(TextGeometry::default())),
             goal_column: GoalColumn::default(),
@@ -474,6 +478,16 @@ impl Editor {
 
     pub fn set_placeholder(&mut self, placeholder: impl Into<SharedString>) {
         self.placeholder = placeholder.into();
+    }
+
+    /// Liga ou desliga a máscara de exibição, no mesmo espírito de `read_only`.
+    /// O buffer real não muda: só o texto que o layout desenha.
+    pub fn set_masked(&mut self, masked: bool, cx: &mut Context<Self>) {
+        if self.masked == masked {
+            return;
+        }
+        self.masked = masked;
+        cx.notify();
     }
 
     // ------------------------------------------------------------- undo/redo
@@ -782,7 +796,8 @@ impl Editor {
     // ----------------------------------------------------------------- mouse
 
     /// Map a window position onto a byte offset in the buffer.
-    pub fn index_for_position(&self, position: Point<Pixels>) -> usize {
+    pub fn index_for_position(&self, position: Point<Pixels>, cx: &App) -> usize {
+        let content = self.text(cx);
         let geometry = self.geometry.borrow();
         if geometry.lines.is_empty() {
             return 0;
@@ -812,7 +827,12 @@ impl Editor {
             .closest_index_for_position(local, line_height)
             .unwrap_or_else(|nearest| nearest)
             .min(line.len);
-        line.start + offset
+        let offset = line.start + offset;
+        if self.masked {
+            source_offset(&content, offset)
+        } else {
+            offset
+        }
     }
 
     /// Take a click: place the caret, extend the selection with shift, or select
@@ -828,7 +848,7 @@ impl Editor {
         cx: &mut Context<Self>,
     ) {
         self.dragging = true;
-        let offset = self.index_for_position(position);
+        let offset = self.index_for_position(position, cx);
         let content = self.text(cx);
         let mut caret = Selection::caret(offset);
         caret.clamp(&content);
@@ -862,7 +882,7 @@ impl Editor {
         if !self.dragging {
             return;
         }
-        let mut caret = Selection::caret(self.index_for_position(position));
+        let mut caret = Selection::caret(self.index_for_position(position, cx));
         caret.clamp(self.value.read(cx));
         let offset = caret.head;
         if self.selection.head != offset {
@@ -918,6 +938,57 @@ impl Editor {
 }
 
 // ------------------------------------------------------------ text utilities
+
+/// O caractere desenhado no lugar de cada caractere real no modo mascarado.
+const MASK_CHAR: char = '•';
+
+/// Texto que o layout pode desenhar. No modo mascarado cada caractere vira
+/// `MASK_CHAR`; `\n` continua sendo quebra de linha para preservar a geometria
+/// do cursor e da seleção. O valor real nunca entra neste buffer.
+fn masked_text(content: &str) -> String {
+    let mut masked = String::with_capacity(content.len());
+    for character in content.chars() {
+        if character == '\n' {
+            masked.push('\n');
+        } else {
+            masked.push(MASK_CHAR);
+        }
+    }
+    masked
+}
+
+/// Byte offset no texto mascarado correspondente a `offset` no valor real.
+/// Offsets no meio de um caractere são fixados no começo dele: o cursor nunca
+/// deve cair dentro de uma máscara.
+fn masked_offset(content: &str, offset: usize) -> usize {
+    let mut original = 0usize;
+    let mut masked = 0usize;
+    for character in content.chars() {
+        let len = character.len_utf8();
+        if offset <= original || offset < original + len {
+            break;
+        }
+        original += len;
+        masked += if character == '\n' { 1 } else { MASK_CHAR.len_utf8() };
+    }
+    masked
+}
+
+/// Caminho inverso: offset de um índice desenhado (ou de um clique) de volta ao
+/// byte correspondente no valor real.
+fn source_offset(content: &str, offset: usize) -> usize {
+    let mut original = 0usize;
+    let mut masked = 0usize;
+    for character in content.chars() {
+        let len = if character == '\n' { 1 } else { MASK_CHAR.len_utf8() };
+        if offset <= masked || offset < masked + len {
+            break;
+        }
+        masked += len;
+        original += character.len_utf8();
+    }
+    original
+}
 
 /// New caret for a horizontal move: with a selection, collapse it in the
 /// direction of travel; otherwise step one grapheme.
@@ -1170,6 +1241,11 @@ impl EntityInputHandler for Editor {
     ) -> Option<Bounds<Pixels>> {
         let content = self.text(cx);
         let offset = offset_from_utf16(&content, range_utf16.start);
+        let offset = if self.masked {
+            masked_offset(&content, offset)
+        } else {
+            offset
+        };
         let geometry = self.geometry.borrow();
         for line in &geometry.lines {
             if offset >= line.start && offset <= line.end() {
@@ -1192,7 +1268,7 @@ impl EntityInputHandler for Editor {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<usize> {
-        let offset = self.index_for_position(point);
+        let offset = self.index_for_position(point, cx);
         let content = self.text(cx);
         Some(offset_to_utf16(&content, offset))
     }
@@ -1339,6 +1415,11 @@ impl Element for EditorText {
     ) -> (LayoutId, Self::RequestLayoutState) {
         let editor = self.editor.read(cx);
         let content = editor.text(cx);
+        let displayed = if editor.masked {
+            masked_text(&content)
+        } else {
+            content.clone()
+        };
         let width = editor.text_width.get();
         let placeholder = editor.placeholder.clone();
 
@@ -1349,7 +1430,7 @@ impl Element for EditorText {
         let measured = if content.is_empty() {
             placeholder.to_string()
         } else {
-            content.clone()
+            displayed
         };
         let wrap_width = (width > 1.0).then(|| px(width));
         let lines = shape_lines(
@@ -1377,10 +1458,11 @@ impl Element for EditorText {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        let (content, selection, cursor_visible, is_focused, placeholder, width_cell, geometry) = {
+        let (content, masked, selection, cursor_visible, is_focused, placeholder, width_cell, geometry) = {
             let editor = self.editor.read(cx);
             (
                 editor.text(cx),
+                editor.masked,
                 editor.selection,
                 editor.cursor_visible,
                 editor.focus_handle.is_focused(window),
@@ -1406,6 +1488,8 @@ impl Element for EditorText {
         let is_placeholder = content.is_empty();
         let measured = if is_placeholder {
             placeholder.to_string()
+        } else if masked {
+            masked_text(&content)
         } else {
             content.clone()
         };
@@ -1432,8 +1516,14 @@ impl Element for EditorText {
         let mut selections: Vec<PaintQuad> = Vec::new();
         if !is_placeholder && !selection.is_empty() {
             let selection_color = theme::wash(theme::accent(), 0.30);
+            let display_selection = if masked {
+                masked_offset(&content, selection.range().start)
+                    ..masked_offset(&content, selection.range().end)
+            } else {
+                selection.range()
+            };
             for line in &lines {
-                for (row, x0, x1) in selection_spans(line, selection.range(), line_height) {
+                for (row, x0, x1) in selection_spans(line, display_selection.clone(), line_height) {
                     let top = bounds.top() + line_height * (line.row + row) as f32;
                     selections.push(fill(
                         Bounds::new(
@@ -1448,7 +1538,13 @@ impl Element for EditorText {
 
         // Caret.
         let cursor = if is_focused && cursor_visible {
-            let caret = if is_placeholder { 0 } else { selection.head };
+            let caret = if is_placeholder {
+                0
+            } else if masked {
+                masked_offset(&content, selection.head)
+            } else {
+                selection.head
+            };
             let line = lines
                 .iter()
                 .rev()
@@ -1604,7 +1700,10 @@ pub fn standard_actions<E: InteractiveElement>(editor: Entity<Editor>) -> impl F
 
 #[cfg(test)]
 mod tests {
-    use super::{horizontal_target, trim_snapshots, PromptHistory, Selection, Snapshot};
+    use super::{
+        horizontal_target, masked_offset, masked_text, source_offset, trim_snapshots, PromptHistory,
+        Selection, Snapshot,
+    };
 
     #[test]
     fn undo_budget_drops_oldest_snapshots_but_keeps_the_latest() {
@@ -1638,6 +1737,46 @@ mod tests {
         history.push("segundo");
         history.push("primeiro");
         assert_eq!(history.entries(), ["primeiro", "segundo", "primeiro"]);
+    }
+
+    #[test]
+    fn masked_text_hides_every_character_but_keeps_line_structure() {
+        let content = "sk-test-nao-deve-aparecer-123\né👍";
+        let masked = masked_text(content);
+        assert!(!masked.contains("sk-test"));
+        assert!(!masked.contains('é'));
+        assert_eq!(masked.matches('\n').count(), 1);
+        assert_eq!(
+            masked.chars().filter(|character| *character == '•').count(),
+            content.chars().filter(|character| *character != '\n').count(),
+            "one mask character per real character"
+        );
+    }
+
+    #[test]
+    fn masked_offsets_round_trip_on_character_boundaries() {
+        let content = "aé👍\nz";
+        for (offset, _) in content.char_indices().chain(std::iter::once((content.len(), ' '))) {
+            let masked = masked_offset(content, offset);
+            assert_eq!(source_offset(content, masked), offset);
+        }
+        assert_eq!(
+            masked_offset(content, 1),
+            '•'.len_utf8(),
+            "the offset after the first character lands on the next mask"
+        );
+        assert_eq!(
+            source_offset(content, '•'.len_utf8()),
+            1,
+            "the second mask maps back to the second character"
+        );
+    }
+
+    #[test]
+    fn masked_offsets_clamp_a_mid_character_offset_to_its_start() {
+        let content = "é";
+        assert_eq!(masked_offset(content, 1), 0);
+        assert_eq!(source_offset(content, 1), 0);
     }
 
     #[test]
