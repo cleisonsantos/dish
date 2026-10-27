@@ -38,6 +38,8 @@ pub struct Preferences {
     /// Tema fixado pelo usuário, por id (`dish-paper`, `user:meu-tema`…).
     /// `None` usa o tema padrão da aparência resolvida.
     pub theme: Option<String>,
+    /// Stable notification ids the user has dismissed.
+    pub dismissed_notifications: BTreeSet<String>,
 }
 
 fn env_path(name: &str) -> Option<PathBuf> {
@@ -132,6 +134,7 @@ mod tests {
         assert_eq!(preferences.appearance, crate::theme::AppearanceMode::System);
         assert_eq!(preferences.theme, None);
         assert_eq!(preferences.reduce_motion, None, "preserve platform motion setting");
+        assert!(preferences.dismissed_notifications.is_empty());
     }
 
     #[test]
@@ -192,6 +195,7 @@ mod tests {
             appearance: crate::theme::AppearanceMode::Dark,
             reduce_motion: Some(true),
             theme: Some("user:meu-tema".to_string()),
+            dismissed_notifications: ["sample".to_string()].into(),
         };
         let bytes = serde_json::to_vec(&preferences).unwrap();
         assert_eq!(serde_json::from_slice::<Preferences>(&bytes).unwrap(), preferences);

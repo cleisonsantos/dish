@@ -10,6 +10,14 @@ use crate::rpc::{PiClient, PiConfig};
 use crate::sessions::{self, SessionInfo};
 use crate::state::AppState;
 use crate::theme;
+use crate::notifications::{Notification, NotificationQueue};
+
+#[derive(serde::Deserialize)]
+struct TestNotification {
+    id: String,
+    title: String,
+    detail: String,
+}
 use crate::ui::test_probe::TestProbe;
 use crate::session_activity::{SessionFilter, SessionSignals, epoch_millis, from_epoch_millis, relative_time};
 
@@ -262,6 +270,8 @@ pub struct Workspace {
     /// O que está sob o mouse na faixa recolhida, para o chip de título.
     hovered: Option<NavHover>,
     preferences: crate::preferences::Preferences,
+    notifications: NotificationQueue,
+    notification_focus: BTreeMap<String, (FocusHandle, FocusHandle)>,
     /// Aviso da linha de comando (pasta inexistente), mostrado no rail.
     notice: Option<String>,
     settings: Option<Entity<crate::settings::Settings>>,
@@ -271,6 +281,99 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    /// App-wide producer entry point. The id is stable across launches.
+    #[allow(dead_code)] // Concrete product producers are deliberately out of scope.
+    pub fn enqueue_notification(&mut self, notification: Notification, cx: &mut Context<Self>) {
+        if self.preferences.dismissed_notifications.contains(&notification.id) { return; }
+        let id = notification.id.clone();
+        if self.notifications.push(notification, &self.preferences.dismissed_notifications) {
+            self.notification_focus.entry(id).or_insert_with(||
+                (cx.focus_handle().tab_stop(true), cx.focus_handle().tab_stop(true)));
+            cx.notify();
+        }
+    }
+
+    fn dismiss_notification(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.notifications.dismiss(id) {
+            self.notification_focus.remove(id);
+            self.preferences.dismissed_notifications.insert(id.to_string());
+            crate::preferences::save(self.preferences.clone());
+            cx.notify();
+        }
+    }
+
+    fn poll_test_notifications(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
+        let Ok(bytes) = std::fs::read(path) else { return; };
+        let Ok(items) = serde_json::from_slice::<Vec<TestNotification>>(&bytes) else { return; };
+        let ids = items.iter().map(|item| item.id.as_str()).collect::<Vec<_>>().join("\n");
+        for item in items {
+            self.enqueue_notification(Notification {
+                id: item.id, title: item.title, detail: item.detail,
+                action_label: None, action: None,
+            }, cx);
+        }
+        let ack = path.with_extension("ack");
+        if std::fs::read_to_string(&ack).ok().as_deref() != Some(ids.as_str()) {
+            let _ = std::fs::write(ack, ids);
+        }
+    }
+
+    fn notification_cards(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        let streaming = self.conversations.iter().any(|conversation| conversation.state.read(cx).is_executing());
+        let visible: Vec<_> = self.notifications.visible(streaming).collect();
+        if visible.is_empty() { return None; }
+        let mut stack = div().absolute().top(px(64.)).right(px(24.))
+            .w(px(360.)).flex().flex_col().gap(px(8.));
+        for notification in visible {
+            let id = notification.id.clone();
+            let Some((action_focus, dismiss_focus)) = self.notification_focus.get(&id) else { continue; };
+            let dismiss_id = id.clone();
+            let dismiss_key_id = id.clone();
+            let dismiss = div().id(SharedString::from(format!("notification-dismiss-{id}")))
+                .test_probe(|| format!("notification-dismiss-{id}"), || serde_json::json!({}))
+                .track_focus(dismiss_focus).cursor_pointer().px(px(8.)).py(px(5.))
+                .rounded(theme::r_control()).hover(|style| style.bg(theme::hover()))
+                .text_size(px(theme::TEXT_SM)).text_color(theme::accent())
+                .on_click(cx.listener(move |workspace, _, _, cx| workspace.dismiss_notification(&dismiss_id, cx)))
+                .on_key_down(cx.listener(move |workspace, event: &KeyDownEvent, _, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        workspace.dismiss_notification(&dismiss_key_id, cx);
+                        cx.stop_propagation();
+                    }
+                })).child("Dispensar");
+            let mut controls = div().flex().flex_row().items_center().gap(px(8.));
+            if let Some(label) = notification.action_label.as_ref().filter(|_| notification.action.is_some()) {
+                let action_id = id.clone();
+                let action_key_id = id.clone();
+                controls = controls.child(div().id(SharedString::from(format!("notification-action-{id}")))
+                    .track_focus(action_focus).cursor_pointer().px(px(8.)).py(px(5.))
+                    .rounded(theme::r_control()).bg(theme::accent()).text_color(theme::bg())
+                    .text_size(px(theme::TEXT_SM))
+                    .on_click(cx.listener(move |workspace, _, window, cx| {
+                        if let Some(action) = workspace.notifications.action(&action_id) { action(window, cx); }
+                    }))
+                    .on_key_down(cx.listener(move |workspace, event: &KeyDownEvent, window, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            if let Some(action) = workspace.notifications.action(&action_key_id) { action(window, cx); }
+                            cx.stop_propagation();
+                        }
+                    })).child(SharedString::from(label.clone())));
+            }
+            controls = controls.child(dismiss);
+            stack = stack.child(div().id(SharedString::from(format!("notification-{id}")))
+                .test_probe(|| format!("notification-{id}"), || serde_json::json!({}))
+                .p(px(12.)).rounded(theme::r_control()).border_1()
+                .border_color(theme::line_strong()).bg(theme::surface_2())
+                .shadow(theme::shadow_overlay()).flex().flex_col().gap(px(5.))
+                .child(div().truncate().text_size(px(theme::TEXT)).text_color(theme::text())
+                    .child(SharedString::from(notification.title.clone())))
+                .child(div().truncate().text_size(px(theme::TEXT_SM)).text_color(theme::dim())
+                    .child(SharedString::from(notification.detail.clone())))
+                .child(controls));
+        }
+        Some(stack.into_any_element())
+    }
+
     pub fn new(
         state: Entity<AppState>,
         flags: Vec<String>,
@@ -399,6 +502,8 @@ impl Workspace {
             nav_user_choice: preferences.navigation_open.is_some(),
             hovered: None,
             preferences,
+            notifications: NotificationQueue::default(),
+            notification_focus: BTreeMap::new(),
             notice,
             settings: None,
             settings_models: Vec::new(),
@@ -428,6 +533,17 @@ impl Workspace {
             .unwrap_or(true)
         });
         self.refresh(cx);
+        // Explicit test hook: a JSON array at DISH_TEST_NOTIFY is polled while
+        // the app runs, so a smoke can enqueue during an active Pi stream.
+        if let Some(path) = std::env::var_os("DISH_TEST_NOTIFY").map(PathBuf::from) {
+            self.poll_test_notifications(&path, cx);
+            cx.spawn(async move |this, cx| loop {
+                cx.background_executor().timer(Duration::from_millis(100)).await;
+                if this.update(cx, |workspace, cx| workspace.poll_test_notifications(&path, cx)).is_err() {
+                    break;
+                }
+            }).detach();
+        }
         cx.spawn(async move |this, cx| loop {
             cx.background_executor()
                 .timer(Duration::from_secs(15))
@@ -2283,6 +2399,7 @@ impl Render for Workspace {
                 );
             }
         }
+        if let Some(cards) = self.notification_cards(cx) { root = root.child(cards); }
         if let Some(settings) = &self.settings {
             if settings.read(cx).open { root = root.child(settings.clone()); }
         }
@@ -2418,6 +2535,7 @@ impl Render for Workspace {
         root.test_probe(|| "frame".into(), || serde_json::json!({
             "project": active.cwd,
             "draft": active.editor.read(cx).text(cx),
+            "executing": active.is_executing(),
             "nav_query": self.query.read(cx).text(cx),
             "confirming_close": self.confirm_close,
             "session_menu": self.session_menu.is_some(),

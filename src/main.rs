@@ -23,6 +23,7 @@ mod providers;
 mod provider_login;
 mod startup;
 mod preferences;
+mod notifications;
 mod markdown;
 mod metadata;
 mod rpc;

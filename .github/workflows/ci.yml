@@ -223,7 +223,7 @@ jobs:
           echo "XDG_RUNTIME_DIR=$runtime" >> "$GITHUB_ENV"
       - name: Informative UI smokes (non-blocking)
         id: smokes
-        run: bash tests/run_ui.sh tests/search_stability_smoke.py tests/providers_smoke.py tests/session_titles_smoke.py tests/model_effort_smoke.py tests/session_activity_smoke.py tests/appearance_smoke.py tests/project_folder_smoke.py tests/pinned_sessions_smoke.py tests/diagnostic_privacy_smoke.py
+        run: bash tests/run_ui.sh tests/search_stability_smoke.py tests/providers_smoke.py tests/session_titles_smoke.py tests/model_effort_smoke.py tests/session_activity_smoke.py tests/appearance_smoke.py tests/project_folder_smoke.py tests/pinned_sessions_smoke.py tests/diagnostic_privacy_smoke.py tests/notifications_smoke.py
       - name: Save synthetic UI failure screenshots
         if: always() && steps.smokes.outcome == 'failure'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
