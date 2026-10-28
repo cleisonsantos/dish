@@ -122,9 +122,10 @@ sudo apt install libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb
 Wayland and X11 are both enabled in `Cargo.toml`; GPUI picks whichever session is
 available. GNOME/Wayland does not provide server-side decorations, so Dish draws
 the frame itself there: drag the title bar to move the window, use its minimize,
-maximize/restore and close controls, and drag the outer edges to resize. Windows
-gets the same client title bar because the current GPUI backend creates a
-caption-less window; there the system also handles dragging,
+maximize/restore and close controls, and drag the outer edges to resize. On
+Windows Dish checks the real window style at runtime: when the native caption
+exists, the system title bar is used alone; only a caption-less window gets the
+client title bar, where the system also handles dragging,
 double-click-to-maximize and edge resizing. X11 and macOS keep their native
 window frame.
 Set `DISH_BACKEND=x11` to run through XWayland instead — the system window manager

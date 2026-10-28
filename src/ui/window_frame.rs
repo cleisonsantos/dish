@@ -6,10 +6,10 @@
 //! bordas (via `BORDER`) para o redimensionamento; o arrasto fica na região
 //! livre da barra de título, separada dos controles e do conteúdo.
 //!
-//! X11 e macOS mantêm as decorações nativas (`Decorations::Server`). O backend
-//! do Windows também reporta `Server`, mas cria um HWND sem `WS_CAPTION` e não
-//! desenha barra nenhuma; até o `gpui_ce_windows` corrigir isso, o Dish assume
-//! a moldura lá também.
+//! X11 e macOS mantêm as decorações nativas (`Decorations::Server`). No Windows
+//! o `gpui_ce_windows` reporta `Server` mesmo quando cria o HWND sem
+//! `WS_CAPTION`, então o relatório não serve como prova: a legenda nativa é
+//! detectada em tempo de execução, lendo o estilo real da janela.
 
 use gpui::prelude::*;
 use gpui::*;
@@ -17,21 +17,52 @@ use gpui::*;
 /// Espessura da borda invisível de redimensionamento.
 pub const BORDER: f32 = 8.;
 
-/// O compositor deixou a moldura por conta do aplicativo?
+/// O sistema desenha a barra de título desta janela?
 ///
-/// O backend do Windows cria a janela sem legenda mas continua reportando
-/// `Decorations::Server`. Enquanto isso não muda no `gpui_ce_windows`, a
-/// moldura do app é a única barra de título que existe lá. Quando o backend
-/// passar a desenhar (ou reportar corretamente) a legenda nativa, basta
-/// desligar `WINDOWS_DRAWS_NO_NATIVE_TITLEBAR`.
-const WINDOWS_DRAWS_NO_NATIVE_TITLEBAR: bool = cfg!(target_os = "windows");
+/// `Some(true)`: o HWND tem `WS_CAPTION`; `Some(false)`: não tem (ou não deu
+/// para ler o handle — nesse caso mantemos o comportamento antigo e o app
+/// desenha a barra). `None`: fora do Windows não há sonda; o relatório de
+/// decorações da plataforma é a fonte da verdade.
+#[cfg(target_os = "windows")]
+fn runtime_caption(window: &Window) -> Option<bool> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongW, GWL_STYLE, WS_CAPTION};
 
-pub fn client_side(window: &Window) -> bool {
-    needs_client_frame(window.window_decorations(), WINDOWS_DRAWS_NO_NATIVE_TITLEBAR)
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        // Sem HWND não há prova da legenda; mantém o comportamento antigo.
+        return Some(false);
+    };
+    let RawWindowHandle::Win32(win32) = handle.as_raw() else {
+        return Some(false);
+    };
+    let hwnd = HWND(win32.hwnd.get() as *mut core::ffi::c_void);
+    // `WS_CAPTION` é `WS_BORDER | WS_DLGFRAME`; exigir os dois bits evita
+    // tratar uma janela só com borda como se tivesse legenda.
+    let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32;
+    Some(style & WS_CAPTION.0 == WS_CAPTION.0)
 }
 
-fn needs_client_frame(decorations: Decorations, windows_without_native_bar: bool) -> bool {
-    matches!(decorations, Decorations::Client { .. }) || windows_without_native_bar
+#[cfg(not(target_os = "windows"))]
+fn runtime_caption(_window: &Window) -> Option<bool> {
+    None
+}
+
+/// Decisão pura, sem janela: a moldura pertence ao aplicativo?
+///
+/// No Windows o estilo real do HWND manda, porque o backend pode reportar
+/// `Server` e ainda assim criar (ou não) a legenda. Nas outras plataformas só
+/// o relatório de decorações importa: `Client` é o compositor delegando a
+/// moldura ao app.
+pub(crate) fn needs_client_frame(decorations: Decorations, runtime_caption: Option<bool>) -> bool {
+    match runtime_caption {
+        Some(has_native_caption) => !has_native_caption,
+        None => matches!(decorations, Decorations::Client { .. }),
+    }
+}
+
+pub fn client_side(window: &Window) -> bool {
+    needs_client_frame(window.window_decorations(), runtime_caption(window))
 }
 
 /// Camada atrás do conteúdo. `None` quando a plataforma desenha a moldura.
@@ -116,13 +147,21 @@ mod tests {
     use gpui::{Decorations, Tiling};
 
     #[test]
-    fn client_frame_follows_decorations_and_windows_workaround() {
+    fn client_frame_follows_decorations_and_native_caption() {
         let client = Decorations::Client {
             tiling: Tiling::default(),
         };
-        assert!(needs_client_frame(client, false));
-        assert!(needs_client_frame(client, true));
-        assert!(!needs_client_frame(Decorations::Server, false));
-        assert!(needs_client_frame(Decorations::Server, true));
+
+        // Linux/macOS: sem sonda de HWND, o relatório de decorações decide.
+        assert!(needs_client_frame(client, None));
+        assert!(!needs_client_frame(Decorations::Server, None));
+
+        // Windows sem `WS_CAPTION`: nenhuma barra nativa, o app desenha.
+        assert!(needs_client_frame(Decorations::Server, Some(false)));
+        assert!(needs_client_frame(client, Some(false)));
+
+        // Windows com `WS_CAPTION`: a barra é do sistema, nunca duplicar.
+        assert!(!needs_client_frame(Decorations::Server, Some(true)));
+        assert!(!needs_client_frame(client, Some(true)));
     }
 }
