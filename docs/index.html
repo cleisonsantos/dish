@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dish — a native desktop workbench for the Pi coding agent</title>
+<meta name="description" content="Dish is a desktop client for the Pi coding agent: a GPU-rendered workbench in Rust, with transcript, tool inspector and session history, for Linux and Windows.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2314191f'/%3E%3Ccircle cx='16' cy='16' r='7' fill='none' stroke='%2376b9a5' stroke-width='2.5'/%3E%3C/svg%3E">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfbfa;
+    --fg: #16181d;
+    --muted: #5c6270;
+    --line: #e2e2df;
+    --card: #ffffff;
+    --accent: #1f6f5c;
+    --accent-soft: #eaf3f0;
+    --code-bg: #f2f2ef;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1216;
+      --fg: #e8e9ea;
+      --muted: #9aa1ad;
+      --line: #23272e;
+      --card: #151a20;
+      --accent: #7fcdb6;
+      --accent-soft: #16241f;
+      --code-bg: #13181e;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.65 ui-sans-serif, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  main { max-width: 46rem; margin: 0 auto; padding: 4rem 1.25rem 5rem; }
+  header { margin-bottom: 2.5rem; }
+  h1 { font-size: 2.4rem; line-height: 1.1; letter-spacing: -0.02em; margin: 0 0 .5rem; }
+  h2 { font-size: 1.15rem; letter-spacing: -0.01em; margin: 2.75rem 0 .9rem; padding-bottom: .45rem; border-bottom: 1px solid var(--line); }
+  p { margin: 0 0 1rem; }
+  .tagline { font-size: 1.2rem; color: var(--muted); margin: 0 0 1.5rem; }
+  .lede { font-size: 1.02rem; color: var(--muted); }
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  code, pre { font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace; font-size: .87em; }
+  code { background: var(--code-bg); padding: .12em .38em; border-radius: 4px; }
+  pre { background: var(--code-bg); padding: .85rem 1rem; border-radius: 8px; overflow-x: auto; margin: 0 0 1rem; }
+  pre code { background: none; padding: 0; }
+  .dl { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); margin: 1.25rem 0 .5rem; align-items: start; }
+  .dl section { align-self: start; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 1rem 1.1rem; }
+  .dl h3 { margin: 0 0 .55rem; font-size: .82rem; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); font-weight: 600; }
+  .dl ul { margin: 0; padding: 0; list-style: none; }
+  .dl li { display: flex; justify-content: space-between; gap: .5rem; padding: .28rem 0; font-size: .93rem; }
+  .dl li span { color: var(--muted); font-family: ui-monospace, Menlo, monospace; font-size: .82rem; }
+  .btn { display: inline-block; background: var(--accent); color: var(--bg); text-decoration: none; font-weight: 600; padding: .62rem 1.1rem; border-radius: 8px; margin: .35rem .5rem .35rem 0; }
+  .btn.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+  .note { background: var(--accent-soft); border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0; padding: .85rem 1rem; font-size: .93rem; margin: 1.25rem 0; }
+  .note p:last-child { margin: 0; }
+  @media (max-width: 34rem) {
+    pre { font-size: .9em; }
+    body { font-size: 15.5px; }
+  }
+  footer { margin-top: 3.5rem; padding-top: 1.25rem; border-top: 1px solid var(--line); font-size: .88rem; color: var(--muted); }
+  footer p { margin: .3rem 0; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Dish</h1>
+    <p class="tagline">A native desktop workbench for the Pi coding agent.</p>
+    <p class="lede">
+      Dish speaks the Pi CLI's JSON-RPC protocol over stdio and renders the session in a
+      GPU-accelerated window: transcript, tool-call inspector, session history, workspace
+      navigation, themes and reduced-motion support. No browser, no webview, no embedded
+      Node runtime. Everything runs on your machine — no backend, no account, no telemetry.
+    </p>
+    <p>
+      <a class="btn" href="https://github.com/cleisonsantos/dish/releases/latest">Download the latest release</a>
+      <a class="btn secondary" href="https://github.com/cleisonsantos/dish">Source on GitHub</a>
+    </p>
+  </header>
+
+  <h2>Download</h2>
+  <p>All builds are produced from tagged commits by GitHub Actions, and every file publishes a matching <code>.sha256</code>.</p>
+  <div class="dl">
+    <section>
+      <h3>Windows</h3>
+      <ul>
+        <li><a href="https://github.com/cleisonsantos/dish/releases/latest">NSIS setup installer</a> <span>.exe</span></li>
+        <li><a href="https://github.com/cleisonsantos/dish/releases/latest">Windows Installer package</a> <span>.msi</span></li>
+      </ul>
+    </section>
+    <section>
+      <h3>Linux</h3>
+      <ul>
+        <li><a href="https://github.com/cleisonsantos/dish/releases/latest">Portable tarball</a> <span>.tar.gz</span></li>
+        <li><a href="https://github.com/cleisonsantos/dish/releases/latest">Debian package</a> <span>.deb</span></li>
+        <li><a href="https://github.com/cleisonsantos/dish/releases/latest">Fedora package</a> <span>.rpm</span></li>
+        <li><a href="https://github.com/cleisonsantos/dish/releases/latest">Single-file app</a> <span>.AppImage</span></li>
+      </ul>
+    </section>
+  </div>
+  <p><small>The <code>.deb</code> and <code>.rpm</code> packages install the binary as <code>dish-pi</code>, because <code>dish</code> is already taken by an unrelated package in both distributions.</small></p>
+
+  <h2>Install</h2>
+  <p>The portable tarball needs no package manager and no root. It installs into <code>~/.local/bin</code>:</p>
+  <pre><code>tar xzf dish-*-linux-x86_64.tar.gz
+cd dish-*-linux-x86_64/
+./install.sh</code></pre>
+  <p>Dish drives the Pi CLI, so Pi has to be installed and on your <code>PATH</code> (this needs Node.js):</p>
+  <pre><code>npm install -g @earendil-works/pi-coding-agent</code></pre>
+
+  <h2>Verify a download</h2>
+  <pre><code>sha256sum -c dish-*.tar.gz.sha256</code></pre>
+  <p>On Windows, check the checksum and then the signature (see below).</p>
+
+  <h2>Code signing policy</h2>
+  <div class="note">
+    <p><strong>Free code signing provided by <a href="https://about.signpath.io">SignPath.io</a>, certificate by <a href="https://signpath.org">SignPath Foundation</a>.</strong></p>
+  </div>
+  <p>
+    The Windows installers and the <code>dish.exe</code> inside them carry an Authenticode
+    signature, so you can confirm where the binary came from before running it. Signing
+    happens in the release workflow on GitHub-hosted runners, and every signing request is
+    approved by a maintainer before the certificate is used.
+  </p>
+  <p>
+    To verify a download, compare it against the published <code>.sha256</code>, then check
+    the signature on the installer (or on the installed <code>dish.exe</code>):
+  </p>
+  <pre><code>Get-AuthenticodeSignature .\dish-*-setup.exe | Format-List
+signtool verify /pa /v .\dish-*.msi</code></pre>
+  <p>
+    Linux builds are not Authenticode-signed, because that mechanism does not exist on the
+    platform; integrity comes from the published SHA-256 and from the minisign-signed update
+    manifest that the app verifies before offering an update. The full policy, including
+    team roles, is in
+    <a href="https://github.com/cleisonsantos/dish/blob/main/docs/code-signing.md">docs/code-signing.md</a>.
+  </p>
+
+  <h2>Build from source</h2>
+  <pre><code>git clone https://github.com/cleisonsantos/dish
+cd dish
+cargo build --release --locked</code></pre>
+
+  <footer>
+    <p>Apache-2.0 licensed. Issues and pull requests live on
+      <a href="https://github.com/cleisonsantos/dish">GitHub</a>.</p>
+    <p>Dish is an independent project and is not affiliated with the Pi maintainers.</p>
+  </footer>
+</main>
+</body>
+</html>
