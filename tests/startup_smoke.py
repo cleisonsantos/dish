@@ -2,6 +2,7 @@
 
 Uses only fake Node/npm/Pi executables. No network or user configuration changes.
 """
+import re
 from pathlib import Path
 
 # Reuse XTest helpers without running the existing-session test scenario.
@@ -193,7 +194,38 @@ printf '#!/bin/sh\\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@
         wait_for(lambda: terminal_log.exists(), "Official consent did not open terminal")
         arguments = terminal_log.read_text().splitlines()
         assert arguments[:3] == ["-e", "/bin/sh", "-c"]
-        assert "curl -fsSL https://pi.dev/install.sh | sh" in arguments[3]
+        # O script é multilinha: o log grava um argumento por linha e o
+        # restante pertence ao comando passado para `sh -c`.
+        script = "\n".join(arguments[3:])
+        # Propriedades, não o texto literal: URL oficial, download para
+        # arquivo com -o, status conferido e só então execução — nunca pipe.
+        assert "https://pi.dev/install.sh" in script, script
+        assert not re.search(r"\|\s*(?:/bin/)?sh\b", script), script
+        lines = [line.strip() for line in script.splitlines()]
+        downloads = [
+            index for index, line in enumerate(lines)
+            if "curl " in line and "https://pi.dev/install.sh" in line
+        ]
+        assert len(downloads) == 1, script
+        download = lines[downloads[0]]
+        target = re.search(r"(?:^|\s)-o\s+(\S+)", download)
+        assert target, f"download must use -o: {download}"
+        target = target.group(1)
+        status = [
+            index for index in range(downloads[0] + 1, len(lines))
+            if lines[index] == "result=$?"
+        ]
+        assert status, script
+        checks = [
+            index for index in range(status[0] + 1, len(lines))
+            if re.search(r"\$result.*-eq\s+0", lines[index])
+        ]
+        executions = [
+            index for index in range(downloads[0] + 1, len(lines))
+            if re.search(rf"(?:^|\s)(?:/bin/)?sh\s+{re.escape(target)}(?:\s|$)",
+                         lines[index])
+        ]
+        assert checks and executions and checks[0] < executions[0], script
         assert not install_log.exists(), "Official option invoked npm instead"
         process.terminate()
         process.wait(timeout=5)
