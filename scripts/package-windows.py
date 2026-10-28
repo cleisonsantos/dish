@@ -21,22 +21,35 @@ import license_bundle  # noqa: E402  (precisa do sys.path acima)
 ROOT = Path(__file__).resolve().parent.parent
 TARGET = "x86_64-pc-windows-msvc"
 PAYLOAD = ROOT / "dist/windows-payload"
-LABEL = re.compile(r"--version ([0-9][^\s'\"]*)")
+VERSION_LABEL = r"[0-9][0-9A-Za-z.+_-]*"
+LABEL = re.compile(rf"--version\s+['\"]?({VERSION_LABEL})")
+ENV_LABEL = re.compile(rf"^\s*DISH_VERSION\s*:\s*['\"]?({VERSION_LABEL})", re.MULTILINE)
 
 
 def run(*args, **kwargs):
     return subprocess.check_output(args, cwd=ROOT, text=True, encoding="utf-8", **kwargs)
 
 
+def ci_release_version(ci: Path) -> str:
+    """Return the single label declared in ci.yml, whichever spelling is used."""
+    text = ci.read_text(encoding="utf-8")
+    labels = list(dict.fromkeys(LABEL.findall(text) + ENV_LABEL.findall(text)))
+    if not labels:
+        raise RuntimeError(
+            f"{ci} exists but defines no release label; expected "
+            f"`--version <label>` or `DISH_VERSION: <label>`")
+    if len(labels) > 1:
+        raise RuntimeError(f"{ci} defines conflicting release labels: {', '.join(labels)}")
+    return labels[0]
+
+
 def release_version(explicit: str | None) -> str:
-    """O rótulo vive no ci.yml; o Cargo.toml é o fallback."""
+    """O rótulo vive no ci.yml; o Cargo.toml é o fallback apenas sem ci.yml."""
     if explicit:
         return explicit
     ci = ROOT / ".github/workflows/ci.yml"
     if ci.is_file():
-        match = LABEL.search(ci.read_text(encoding="utf-8"))
-        if match:
-            return match.group(1)
+        return ci_release_version(ci)
     return tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["package"]["version"]
 
 
