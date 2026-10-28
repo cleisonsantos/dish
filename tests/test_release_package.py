@@ -678,6 +678,144 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertTrue((ROOT / "scripts/license_bundle.py").is_file())
 
 
+class WindowsSigningTests(unittest.TestCase):
+    SIGNPATH_ACTION = ('signpath/github-action-submit-signing-request@'
+                       'f6d04783b4569d051e0c80105fe66e82819d0092')
+    UPLOAD_ACTION = 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02'
+    GATE = "if: github.event_name == 'release' && vars.SIGNPATH_PROJECT_SLUG != ''"
+    TARGETS = {
+        'exe': ('target/release/dish.exe', "'target/release/dish.exe'"),
+        'nsis': ('dist/dish-${{ steps.release-version.outputs.label }}-windows-x86_64-setup.exe',
+                 '"dist/dish-$env:RELEASE_LABEL-windows-x86_64-setup.exe"'),
+        'msi': ('dist/dish-${{ steps.release-version.outputs.label }}-windows-x86_64.msi',
+                '"dist/dish-$env:RELEASE_LABEL-windows-x86_64.msi"'),
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        cls.workflow = (ROOT / '.github/workflows/windows.yml').read_text(encoding='utf-8')
+        build = cls.workflow.split('  publish:\n', 1)[0]
+        # Static step boundaries; no PyYAML dependency for the release tests.
+        cls.steps = re.findall(r'^      - .+?(?=^      - |\Z)', build, re.MULTILINE | re.DOTALL)
+
+    def step(self, step_id):
+        matches = [step for step in self.steps
+                   if re.search(r'^        id: ' + re.escape(step_id) + r'$', step, re.MULTILINE)]
+        self.assertEqual(len(matches), 1, f'Expected exactly one step with id {step_id}')
+        return matches[0]
+
+    def test_signpath_action_is_pinned_and_uses_uploaded_raw_artifacts(self):
+        actions = [step for step in self.steps if 'uses: signpath/' in step]
+        self.assertEqual(len(actions), 3)
+        for kind, (upload_path, _) in self.TARGETS.items():
+            with self.subTest(artifact=kind):
+                upload = self.step(f'signpath-{kind}-upload')
+                sign = self.step(f'signpath-{kind}')
+                self.assertIn('uses: ' + self.UPLOAD_ACTION, upload)
+                self.assertIn('path: ' + upload_path, upload)
+                self.assertIn('archive: false', upload)
+                self.assertIn('if-no-files-found: error', upload)
+                self.assertIn('uses: ' + self.SIGNPATH_ACTION, sign)
+                self.assertIn('github-artifact-id: ${{ steps.signpath-' + kind + '-upload.outputs.artifact-id }}', sign)
+                self.assertIn('api-token: ${{ secrets.SIGNPATH_API_TOKEN }}', sign)
+                for input_name, variable in (
+                        ('organization-id', 'SIGNPATH_ORGANIZATION_ID'),
+                        ('project-slug', 'SIGNPATH_PROJECT_SLUG'),
+                        ('signing-policy-slug', 'SIGNPATH_SIGNING_POLICY_SLUG'),
+                        ('artifact-configuration-slug', 'SIGNPATH_ARTIFACT_CONFIGURATION_SLUG')):
+                    self.assertIn(input_name + ': ${{ vars.' + variable + ' }}', sign)
+                self.assertIn('wait-for-completion: true', sign)
+                self.assertIn('skip-decompress: true', sign)
+                self.assertIn('output-artifact-directory: ${{ runner.temp }}/signpath-' + kind, sign)
+                self.assertLess(self.workflow.index(upload), self.workflow.index(sign))
+
+    def test_all_signpath_steps_are_release_only_and_project_gated(self):
+        ids = ['signpath-config'] + [f'signpath-{kind}{suffix}' for kind in self.TARGETS
+                                    for suffix in ('-upload', '', '-verify')]
+        for step_id in ids:
+            with self.subTest(step=step_id):
+                step = self.step(step_id)
+                conditions = [line.strip() for line in step.splitlines() if line.strip().startswith('if:')]
+                self.assertEqual(conditions, [self.GATE])
+        self.assertNotIn('continue-on-error', self.workflow)
+        self.assertNotIn('|| true', self.workflow)
+
+    def test_configured_signpath_without_token_fails_explicitly_before_build(self):
+        config = self.step('signpath-config')
+        self.assertIn('SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}', config)
+        self.assertIn('if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_API_TOKEN))', config)
+        self.assertIn("throw 'SIGNPATH_PROJECT_SLUG is set, but SIGNPATH_API_TOKEN is missing.'", config)
+        self.assertNotIn('exit 0', config)
+        self.assertLess(self.workflow.index(config), self.workflow.index('name: Build release'))
+
+    def test_signed_outputs_replace_originals_and_are_verified_after_each_request(self):
+        for kind, (_, destination) in self.TARGETS.items():
+            with self.subTest(artifact=kind):
+                sign = self.step(f'signpath-{kind}')
+                verify = self.step(f'signpath-{kind}-verify')
+                self.assertIn('$ErrorActionPreference = \'Stop\'', verify)
+                self.assertIn(f'"$env:RUNNER_TEMP/signpath-{kind}"', verify)
+                self.assertIn('if ($signed.Count -ne 1) { throw', verify)
+                copy = 'Copy-Item -LiteralPath $signed[0].FullName -Destination ' + destination + ' -Force'
+                check = './scripts/verify-signature.ps1 -Path ' + destination
+                self.assertIn(copy, verify)
+                self.assertIn(check, verify)
+                self.assertLess(verify.index(copy), verify.index(check))
+                sign_index = self.steps.index(sign)
+                self.assertEqual(self.steps[sign_index + 1], verify)
+
+    def test_signpath_executable_precedes_packaging_and_installers_follow_it(self):
+        stages = [self.step('signpath-exe-upload'), self.step('signpath-exe'),
+                  self.step('signpath-exe-verify'), 'python3 scripts/package-windows.py',
+                  'name: Build the MSI installer', 'name: Verify MSI source determinism',
+                  self.step('signpath-nsis-upload'), self.step('signpath-nsis'),
+                  self.step('signpath-nsis-verify'), self.step('signpath-msi-upload'),
+                  self.step('signpath-msi'), self.step('signpath-msi-verify'),
+                  'name: Checksum the final MSI installer', 'name: Save Windows executable',
+                  'name: Save the Windows installer']
+        offsets = [self.workflow.index(stage) for stage in stages]
+        self.assertEqual(offsets, sorted(offsets))
+
+    def test_final_checksums_cover_signed_installers(self):
+        nsis = self.step('signpath-nsis-verify')
+        self.assertLess(nsis.index('verify-signature.ps1'), nsis.index('Get-FileHash'))
+        self.assertIn('Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256', nsis)
+        self.assertIn('[IO.File]::WriteAllText($file.FullName + \'.sha256\'', nsis)
+        self.assertIn('"$hash  $($file.Name)`n"', nsis)
+        self.assertLess(self.workflow.index(self.step('signpath-msi-verify')),
+                        self.workflow.index('name: Checksum the final MSI installer'))
+
+    def test_pfx_signing_remains_only_as_the_existing_fallback(self):
+        fallback = [step for step in self.steps if './scripts/sign-windows.ps1' in step]
+        self.assertEqual(len(fallback), 3)
+        for step in fallback:
+            self.assertIn("if: github.event_name != 'release' || vars.SIGNPATH_PROJECT_SLUG == ''", step)
+
+    def test_signature_verifier_fails_closed(self):
+        script = (ROOT / 'scripts/verify-signature.ps1').read_text(encoding='utf-8')
+        self.assertIn('[Parameter(Mandatory)][string[]]$Path', script)
+        self.assertIn("$ErrorActionPreference = 'Stop'", script)
+        self.assertIn('foreach ($pattern in $Path)', script)
+        self.assertIn('Get-Item -Path $pattern -ErrorAction Stop', script)
+        self.assertIn('if ($files.Count -eq 0) { throw', script)
+        self.assertIn('foreach ($file in $files)', script)
+        self.assertIn('& $signtool verify /pa /v $file.FullName', script)
+        self.assertIn('if ($LASTEXITCODE -ne 0) { throw', script)
+        self.assertNotIn('exit 0', script)
+        self.assertNotIn('WINDOWS_CERT_', script)
+        self.assertNotIn('SIGNPATH_API_TOKEN', script)
+
+    def test_signpath_workflow_uses_only_github_hosted_runners(self):
+        runners = re.findall(r'^    runs-on: (.+)$', self.workflow, re.MULTILINE)
+        self.assertEqual(runners, ['windows-latest', 'ubuntu-24.04'])
+
+    def test_readme_has_required_attribution_and_policy_link(self):
+        readme = (ROOT / 'README.md').read_text(encoding='utf-8')
+        self.assertIn('\n## Code signing policy\n', readme)
+        self.assertIn('Free code signing provided by SignPath.io, certificate by SignPath Foundation', readme)
+        self.assertIn('](docs/code-signing.md)', readme)
+
+
 class _DownloadResponse:
     """Resposta mínima de `urlopen`; nenhum destes testes toca a rede."""
 

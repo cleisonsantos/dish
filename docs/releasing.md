@@ -120,6 +120,52 @@ overwrites an existing asset (`--clobber` is deliberately absent), so a wrong or
 replaced build fails closed. Publishing Windows assets is therefore a human
 decision, made by creating the Release.
 
+### Windows code signing (SignPath Foundation)
+
+The [code signing policy](code-signing.md) names
+[@cleisonsantos](https://github.com/cleisonsantos) as the approver. This maintainer
+reviews and manually approves each signing request in the SignPath dashboard
+for every published release; approval is not automatic or carried over from a
+previous release.
+
+Configure these repository **Variables** under Settings > Secrets and variables
+> Actions > Variables:
+
+- `SIGNPATH_ORGANIZATION_ID`
+- `SIGNPATH_PROJECT_SLUG`
+- `SIGNPATH_SIGNING_POLICY_SLUG`
+- `SIGNPATH_ARTIFACT_CONFIGURATION_SLUG`
+
+Store `SIGNPATH_API_TOKEN` as a repository **Secret**, never as a variable or in
+source. The SignPath project, signing policy and artifact configuration must be
+provisioned in the dashboard to accept this repository's raw `dish.exe`, NSIS
+`.exe` and `.msi` requests. They are not created by the workflow.
+
+Only `release: published` runs with a nonempty `SIGNPATH_PROJECT_SLUG` submit
+requests. All jobs through signing run on GitHub-hosted runners. Push, PR and
+manual builds never contact SignPath. With SignPath enabled, a missing token or
+required variable fails the job before building; rejected requests, timeouts,
+missing signed output and invalid Authenticode signatures also fail closed.
+
+There are **three sequential manual approvals per release**: first `dish.exe`,
+which is restored and verified with `signtool verify /pa /v` before staging the
+shared NSIS/MSI payload; then the NSIS installer and MSI package after both have
+been built. The approver checks the repository, release commit, artifact and
+policy in the dashboard before approving each request. Keep the dashboard open
+while the job waits: all approvals and builds must fit the workflow's 60-minute
+job timeout. The workflow verifies each returned file and computes final
+installer checksums only after signing, before uploading release assets.
+
+Without `SIGNPATH_PROJECT_SLUG`, SignPath is disabled and the default release is
+**unsigned**. Release notes **must explicitly state that Windows artifacts are
+unsigned**; do not claim compliance with the signing policy for that release.
+The pre-existing PFX opt-in path (`WINDOWS_CERT_PFX_BASE64` and
+`WINDOWS_CERT_PASSWORD`) remains a separate legacy fallback when SignPath is
+disabled; it is not SignPath Foundation signing. If that fallback is explicitly
+used, verify the final signatures and describe their actual issuer in the
+release notes instead. PFX steps are skipped for SignPath-enabled releases so
+they cannot overwrite the Foundation signatures.
+
 ## GitHub CI
 
 `.github/workflows/ci.yml` builds on Ubuntu 24.04, runs strict Clippy and unit
