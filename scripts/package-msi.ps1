@@ -1,6 +1,8 @@
 param(
     [Parameter(Mandatory)][string]$Version,
-    [Parameter(Mandatory)][string]$OutputPath
+    [Parameter(Mandatory)][string]$OutputPath,
+    [string]$SourcePath,
+    [switch]$GenerateOnly
 )
 $ErrorActionPreference = 'Stop'
 
@@ -11,8 +13,11 @@ $parts = $Version.Split('.') | ForEach-Object { [uint64]$_ }
 if ($parts[0] -gt 255 -or $parts[1] -gt 255 -or $parts[2] -gt 65535 -or $parts[3] -gt 65535) {
     throw 'MSI Version exceeds Windows Installer limits (255.255.65535.65535).'
 }
-$wix = Get-Command wix -ErrorAction SilentlyContinue
-if (-not $wix) { throw 'WiX not found. Install wix 4.0.6 and WixToolset.UI.wixext/4.0.6.' }
+if ($GenerateOnly -and -not $SourcePath) { throw 'GenerateOnly requires SourcePath to retain the generated .wxs.' }
+if (-not $GenerateOnly) {
+    $wix = Get-Command wix -ErrorAction SilentlyContinue
+    if (-not $wix) { throw 'WiX not found. Install wix 4.0.6 and WixToolset.UI.wixext/4.0.6.' }
+}
 
 # Product identity: NEVER regenerate this code between releases.
 $UpgradeCode = '8B5C069E-5489-43A7-92FC-A668810CD0DB'
@@ -36,7 +41,7 @@ function Escape-Xml([string]$Value) {
     return [Security.SecurityElement]::Escape($Value)
 }
 
-# IDs (and WiX's registry-based component GUIDs) depend on relative paths,
+# IDs depend on relative paths,
 # never on the build directory, release version, or traversal order.
 function Get-StableId([string]$Prefix, [string]$RelativePath) {
     $bytes = [Text.Encoding]::UTF8.GetBytes($RelativePath.Replace('\', '/').ToLowerInvariant())
@@ -44,14 +49,34 @@ function Get-StableId([string]$Prefix, [string]$RelativePath) {
     return $Prefix + $hash.Substring(0, 32)
 }
 
+# Fixed UUID v5 namespace for component identities; keep it across releases.
+$ComponentGuidNamespace = 'E2829A7B-5D29-4FCC-989B-73EB8D15336E'
+function Get-ComponentGuid([string]$LogicalName) {
+    # Derive rather than list literal GUIDs: the license inventory changes, but
+    # the same logical component must retain its identity in every build.
+    # UUID v5 hashes namespace bytes in network order (not Guid.ToByteArray's
+    # mixed-endian layout), followed by the normalized UTF-8 logical name.
+    $namespaceBytes = [Convert]::FromHexString($ComponentGuidNamespace.Replace('-', ''))
+    $nameBytes = [Text.Encoding]::UTF8.GetBytes($LogicalName.Replace('\', '/').ToLowerInvariant())
+    $hash = [Security.Cryptography.SHA1]::HashData([byte[]]($namespaceBytes + $nameBytes))
+    $hash[6] = ($hash[6] -band 0x0f) -bor 0x50
+    $hash[8] = ($hash[8] -band 0x3f) -bor 0x80
+    $hex = [Convert]::ToHexString($hash).Substring(0, 32)
+    return ([guid]::ParseExact($hex, 'N')).ToString('D').ToUpperInvariant()
+}
+
 $componentRefs = [Collections.Generic.List[string]]::new()
 function Add-PayloadFile([IO.FileInfo]$File, [string]$RelativePath) {
     $id = Get-StableId 'C' $RelativePath
+    $guid = Get-ComponentGuid "file/$RelativePath"
     $fileId = if ($RelativePath -eq 'dish.exe') { 'DishExe' } else { Get-StableId 'F' $RelativePath }
     $componentRefs.Add("<ComponentRef Id=`"$id`" />")
-    # Per-user components use HKCU key paths, including non-advertised shortcuts.
+    # Guid='*' is forbidden here (WIX0230): this component has a File and an
+    # HKCU registry keypath. Separating them violates ICE38 in the user profile.
+    # Keeping both together with an explicit derived GUID is the only composition
+    # that satisfies both rules and retains the same identity across builds.
     return @"
-<Component Id="$id" Guid="*">
+<Component Id="$id" Guid="$guid">
   <RegistryValue Root="HKCU" Key="Software\Dish\MSI\Components" Name="$id" Type="integer" Value="1" KeyPath="yes" />
   <File Id="$fileId" Source="$(Escape-Xml $File.FullName)" Name="$(Escape-Xml $File.Name)" />
 </Component>
@@ -61,10 +86,11 @@ function Add-PayloadFile([IO.FileInfo]$File, [string]$RelativePath) {
 function Add-PayloadDirectory([IO.DirectoryInfo]$Directory, [string]$RelativePath) {
     $id = Get-StableId 'D' $RelativePath
     $cleanup = Get-StableId 'R' $RelativePath
+    $cleanupGuid = Get-ComponentGuid "directory/$RelativePath"
     $componentRefs.Add("<ComponentRef Id=`"$cleanup`" />")
     $xml = [Text.StringBuilder]::new()
     [void]$xml.AppendLine(@"
-<Component Id="$cleanup" Guid="*">
+<Component Id="$cleanup" Guid="$cleanupGuid">
   <RegistryValue Root="HKCU" Key="Software\Dish\MSI\Components" Name="$cleanup" Type="integer" Value="1" KeyPath="yes" />
   <RemoveFolder Id="$cleanup" On="uninstall" />
 </Component>
@@ -87,7 +113,14 @@ $licenses = Add-PayloadDirectory (Get-Item -LiteralPath (Join-Path $payload 'lic
 
 $OutputPath = [IO.Path]::GetFullPath($OutputPath)
 [void][IO.Directory]::CreateDirectory((Split-Path -Parent $OutputPath))
-$work = Join-Path ([IO.Path]::GetTempPath()) ('dish-msi-' + [IO.Path]::GetRandomFileName())
+if ($SourcePath) {
+    # Retain caller-selected sources for the CI determinism comparison.
+    $resolvedSourcePath = [IO.Path]::GetFullPath($SourcePath)
+    $work = Split-Path -Parent $resolvedSourcePath
+} else {
+    $work = Join-Path ([IO.Path]::GetTempPath()) ('dish-msi-' + [IO.Path]::GetRandomFileName())
+    $resolvedSourcePath = Join-Path $work 'Dish.wxs'
+}
 [void][IO.Directory]::CreateDirectory($work)
 try {
     # WixUI expects RTF. Escape the same license shown by NSIS.
@@ -110,7 +143,7 @@ try {
         <Directory Id="INSTALLFOLDER" Name="Dish">
           $($files -join "`n")
           $licenses
-          <Component Id="InstallDirectory" Guid="*">
+          <Component Id="InstallDirectory" Guid="$(Get-ComponentGuid 'directory/install')">
             <RegistryValue Root="HKCU" Key="Software\Dish" Name="InstallDir" Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />
             <RemoveFolder Id="RemoveInstallDirectory" On="uninstall" />
             <RemoveFolder Id="RemoveUserProgramsDirectory" Directory="UserProgramsFolder" On="uninstall" />
@@ -120,7 +153,7 @@ try {
     </StandardDirectory>
     <StandardDirectory Id="ProgramMenuFolder">
       <Directory Id="DishMenuFolder" Name="Dish">
-        <Component Id="StartMenuShortcut" Guid="*">
+        <Component Id="StartMenuShortcut" Guid="$(Get-ComponentGuid 'shortcut/start-menu')">
           <Shortcut Id="StartDish" Name="Dish" Target="[#DishExe]" WorkingDirectory="INSTALLFOLDER" Icon="DishIcon" />
           <RemoveFolder Id="RemoveDishMenu" On="uninstall" />
           <RegistryValue Root="HKCU" Key="Software\Dish\MSI" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
@@ -128,12 +161,12 @@ try {
       </Directory>
     </StandardDirectory>
     <StandardDirectory Id="DesktopFolder">
-      <Component Id="DesktopShortcut" Guid="*">
+      <Component Id="DesktopShortcut" Guid="$(Get-ComponentGuid 'shortcut/desktop')">
         <Shortcut Id="DesktopDish" Name="Dish" Target="[#DishExe]" WorkingDirectory="INSTALLFOLDER" Icon="DishIcon" />
         <RegistryValue Root="HKCU" Key="Software\Dish\MSI" Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes" />
       </Component>
     </StandardDirectory>
-    <Feature Id="Dish" Title="Dish" Level="1" Absent="disallow" AllowAdvertise="no" Display="expand">
+    <Feature Id="Dish" Title="Dish" Level="1" AllowAbsent="no" AllowAdvertise="no" Display="expand">
       $($componentRefs -join "`n")
       <ComponentRef Id="InstallDirectory" />
       <ComponentRef Id="StartMenuShortcut" />
@@ -142,18 +175,23 @@ try {
       </Feature>
     </Feature>
     <ui:WixUI Id="WixUI_FeatureTree" />
-    <WixVariable Id="WixUILicenseRtf" Value="$(Escape-Xml $licensePath)" />
+    <WixVariable Id="WixUILicenseRtf" Value="license.rtf" />
   </Package>
 </Wix>
 "@
-    $sourcePath = Join-Path $work 'Dish.wxs'
-    [IO.File]::WriteAllText($sourcePath, $source, [Text.UTF8Encoding]::new($false))
-    & $wix.Source build $sourcePath -arch x64 -ext WixToolset.UI.wixext/4.0.6 -pdbtype none -o $OutputPath
+    [IO.File]::WriteAllText($resolvedSourcePath, $source, [Text.UTF8Encoding]::new($false))
+    if ($GenerateOnly) {
+        Write-Host "MSI source: $resolvedSourcePath"
+        return
+    }
+    # Resolve the relative license beside the source without embedding a random
+    # temporary directory in the .wxs. No ICE validation is suppressed.
+    & $wix.Source build $resolvedSourcePath -arch x64 -ext WixToolset.UI.wixext/4.0.6 -b $work -pdbtype none -o $OutputPath
     if ($LASTEXITCODE -ne 0) { throw "WiX MSI build failed (exit $LASTEXITCODE)." }
     if (-not (Test-Path -LiteralPath $OutputPath -PathType Leaf) -or (Get-Item -LiteralPath $OutputPath).Length -eq 0) {
         throw "WiX did not produce a nonempty MSI: $OutputPath"
     }
     Write-Host "MSI: $OutputPath (version $Version, UpgradeCode $UpgradeCode)"
 } finally {
-    Remove-Item -LiteralPath $work -Recurse -Force
+    if (-not $SourcePath) { Remove-Item -LiteralPath $work -Recurse -Force }
 }

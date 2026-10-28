@@ -141,7 +141,22 @@ jobs:
           DOTNET_ROLL_FORWARD: Major
           MSI_VERSION: ${{ steps.release-version.outputs.numeric }}
           RELEASE_LABEL: ${{ steps.release-version.outputs.label }}
-        run: ./scripts/package-msi.ps1 -Version $env:MSI_VERSION -OutputPath "dist/dish-$env:RELEASE_LABEL-windows-x86_64.msi"
+        run: ./scripts/package-msi.ps1 -Version $env:MSI_VERSION -OutputPath "dist/dish-$env:RELEASE_LABEL-windows-x86_64.msi" -SourcePath "$env:RUNNER_TEMP/dish-msi-first/Dish.wxs"
+      - name: Verify MSI source determinism
+        shell: pwsh
+        env:
+          MSI_VERSION: ${{ steps.release-version.outputs.numeric }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $first = "$env:RUNNER_TEMP/dish-msi-first/Dish.wxs"
+          $second = "$env:RUNNER_TEMP/dish-msi-second/Dish.wxs"
+          ./scripts/package-msi.ps1 -Version $env:MSI_VERSION -OutputPath "$env:RUNNER_TEMP/dish-msi-second/Dish.msi" -SourcePath $second -GenerateOnly
+          $firstHash = (Get-FileHash -LiteralPath $first -Algorithm SHA256).Hash
+          $secondHash = (Get-FileHash -LiteralPath $second -Algorithm SHA256).Hash
+          if ($firstHash -cne $secondHash) { throw 'MSI source differs between generations (SHA256 mismatch).' }
+          $differences = Compare-Object -ReferenceObject ([IO.File]::ReadAllBytes($first)) -DifferenceObject ([IO.File]::ReadAllBytes($second)) -SyncWindow 0
+          if ($differences) { throw 'MSI source differs between generations (byte comparison).' }
+          Write-Host "Identical MSI sources in separate temporary directories: $firstHash"
       - name: Sign and verify the MSI installer (opt-in)
         shell: pwsh
         env:
