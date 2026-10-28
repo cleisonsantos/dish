@@ -1306,11 +1306,13 @@ dependencies = [
  "gpui_ce_platform",
  "libc",
  "minisign-verify",
+ "raw-window-handle",
  "serde",
  "serde_json",
  "unicode-segmentation",
  "ureq",
  "url",
+ "windows 0.62.2",
  "winresource",
 ]
 

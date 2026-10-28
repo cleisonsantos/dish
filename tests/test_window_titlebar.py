@@ -14,6 +14,7 @@ FRAME = (ROOT / "src/ui/window_frame.rs").read_text()
 ICONS = (ROOT / "src/ui/icons.rs").read_text()
 README = (ROOT / "README.md").read_text()
 MAIN = (ROOT / "src/main.rs").read_text()
+CARGO = (ROOT / "Cargo.toml").read_text()
 
 
 class WindowTitlebarTests(unittest.TestCase):
@@ -92,17 +93,35 @@ class WindowTitlebarTests(unittest.TestCase):
         ):
             self.assertIn(arm, ICONS)
 
-    def test_window_scope_on_every_platform_uses_client_frame_where_needed(self):
-        self.assertIn(
-            'const WINDOWS_DRAWS_NO_NATIVE_TITLEBAR: bool = cfg!(target_os = "windows");',
-            FRAME,
-        )
-        self.assertIn(
-            "matches!(decorations, Decorations::Client { .. }) || windows_without_native_bar",
-            FRAME,
-        )
+    def test_client_frame_decision_reads_the_real_windows_caption(self):
+        self.assertNotIn("WINDOWS_DRAWS_NO_NATIVE_TITLEBAR", FRAME)
         self.assertEqual(FRAME.count("pub fn client_side("), 1)
-        self.assertIn("fn needs_client_frame(", FRAME)
+        self.assertIn(
+            "pub(crate) fn needs_client_frame(decorations: Decorations, runtime_caption: Option<bool>) -> bool",
+            FRAME,
+        )
+        # The Windows decision comes from the HWND style, never from a
+        # compile-time guess.
+        self.assertIn('#[cfg(target_os = "windows")]', FRAME)
+        self.assertIn("HasWindowHandle::window_handle(window)", FRAME)
+        self.assertIn("RawWindowHandle::Win32(win32)", FRAME)
+        self.assertIn("GetWindowLongW(hwnd, GWL_STYLE)", FRAME)
+        self.assertIn("style & WS_CAPTION.0 == WS_CAPTION.0", FRAME)
+        # A failed handle keeps the old behaviour: the app draws the bar.
+        self.assertIn("return Some(false);", FRAME)
+        # Non-Windows still trusts the reported decorations.
+        self.assertIn("matches!(decorations, Decorations::Client { .. })", FRAME)
+        self.assertIn(
+            "needs_client_frame(window.window_decorations(), runtime_caption(window))",
+            FRAME,
+        )
+
+    def test_windows_dependency_can_read_the_hwnd_style(self):
+        self.assertIn("[target.'cfg(windows)'.dependencies]", CARGO)
+        self.assertIn('windows = { version = "0.62"', CARGO)
+        self.assertIn('"Win32_Foundation"', CARGO)
+        self.assertIn('"Win32_UI_WindowsAndMessaging"', CARGO)
+        self.assertIn('raw-window-handle = "0.6"', CARGO)
 
     def test_linux_still_requests_client_decorations(self):
         self.assertIn('window_decorations: cfg!(target_os = "linux")', MAIN)
@@ -133,14 +152,16 @@ class WindowTitlebarTests(unittest.TestCase):
         controls = self.controls()
         self.assertIn("window.dispatch_action(Box::new(CloseWindow), cx)", controls)
 
-    def test_readme_documents_three_controls_and_no_native_windows_frame(self):
+    def test_readme_documents_three_controls_and_runtime_windows_frame(self):
         self.assertNotIn(
             "X11, macOS and Windows keep their native window frame", README
         )
         self.assertIn("client title bar", README)
         self.assertIn("caption-less window", README)
+        self.assertIn("checks the real window style at runtime", README)
         self.assertIn("maximize/restore and close controls", README)
         self.assertIn("X11 and macOS keep their native", README)
+        self.assertNotIn("creates a caption-less window", README)
 
 
 if __name__ == "__main__":
