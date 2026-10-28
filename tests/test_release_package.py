@@ -254,6 +254,25 @@ class WindowsPackagingTests(unittest.TestCase):
                              (ROOT / ".github/workflows/ci.yml").read_text()).group(1)
         self.assertEqual(windows.release_version(None), expected)
 
+    def test_windows_build_uses_the_release_label_from_ci(self):
+        workflow = (ROOT / ".github/workflows/windows.yml").read_text(encoding="utf-8")
+        lines = workflow.splitlines()
+        build = next(i for i, line in enumerate(lines)
+                     if line.strip() == "run: cargo build --release --locked")
+        exports = [i for i, line in enumerate(lines[:build])
+                   if "DISH_RELEASE_VERSION=" in line and "GITHUB_ENV" in line]
+        self.assertTrue(exports,
+                        "windows.yml precisa exportar DISH_RELEASE_VERSION antes do build")
+        start = max(i for i in range(exports[0]) if re.match(r"\s+- name:", lines[i]))
+        step = "\n".join(lines[start:exports[0] + 1])
+        # O rótulo vem do ci.yml pela função do empacotador, nunca escrito à mão.
+        self.assertIn("package-windows.py", step)
+        self.assertIn("release_version(None)", step)
+        self.assertNotRegex(step, r"\d+\.\d+")
+        # Rótulo vazio reproduz o defeito: o passo precisa falhar cedo.
+        self.assertIn("set -euo pipefail", step)
+        self.assertIn("if [ -z", step)
+
     def test_installer_ships_the_shared_license_bundle(self):
         nsi = (ROOT / "scripts/windows-installer.nsi").read_text()
         self.assertIn('File /r "${SRCDIR}\\dist\\windows-payload\\licenses"', nsi)

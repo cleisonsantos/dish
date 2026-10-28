@@ -36,7 +36,25 @@ jobs:
             windows-v1-${{ hashFiles('Cargo.lock') }}-
       - name: Check all targets
         run: cargo check --locked --all-targets
+      - name: Resolve the release label
+        id: release-version
+        # O rótulo é definido uma única vez, no ci.yml; o empacotador lê de lá.
+        # Sem esta variável o app se anuncia como "build local".
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(
+            python -c "import importlib.util as u; s=u.spec_from_file_location('pw','scripts/package-windows.py'); m=u.module_from_spec(s); s.loader.exec_module(m); print(m.release_version(None))"
+          )"
+          if [ -z "$version" ]; then
+            echo 'DISH_RELEASE_VERSION veio vazio; confira o --version em ci.yml.' >&2
+            exit 1
+          fi
+          echo "DISH_RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+          echo "label=$version" >> "$GITHUB_OUTPUT"
       - name: Build release
+        env:
+          DISH_RELEASE_VERSION: ${{ steps.release-version.outputs.label }}
         run: cargo build --release --locked
       - name: Verify the GUI subsystem
         shell: pwsh
