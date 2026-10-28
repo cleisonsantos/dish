@@ -14,6 +14,8 @@ import tarfile
 import unittest
 from unittest.mock import patch
 import urllib.error
+import uuid
+import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("package_linux", ROOT / "scripts/package-linux.py")
@@ -276,6 +278,270 @@ class WindowsPackagingTests(unittest.TestCase):
         nsi = (ROOT / "scripts/windows-installer.nsi").read_text()
         self.assertIn('File /r "${SRCDIR}\\dist\\windows-payload\\licenses"', nsi)
         self.assertIn('RMDir /r "$INSTDIR\\licenses"', nsi)
+
+    def test_msi_version_is_derived_and_passed_to_the_builder(self):
+        workflow = (ROOT / ".github/workflows/windows.yml").read_text()
+        resolve = workflow.split("name: Resolve the release label", 1)[1].split("      - name:", 1)[0]
+        self.assertIn("release_version(None)", resolve)
+        self.assertIn("m.numeric_version(os.environ['RELEASE_LABEL'])", resolve)
+        self.assertIn('RELEASE_LABEL="$version" python', resolve)
+        self.assertIn('echo "numeric=$numeric" >> "$GITHUB_OUTPUT"', resolve)
+        self.assertNotRegex(resolve, r"\d+\.\d+")
+        build = workflow.split("name: Build the MSI installer", 1)[1].split("      - name:", 1)[0]
+        self.assertIn("MSI_VERSION: ${{ steps.release-version.outputs.numeric }}", build)
+        self.assertIn("RELEASE_LABEL: ${{ steps.release-version.outputs.label }}", build)
+        self.assertIn('package-msi.ps1 -Version $env:MSI_VERSION', build)
+        self.assertIn('-OutputPath "dist/dish-$env:RELEASE_LABEL-windows-x86_64.msi"', build)
+        self.assertNotRegex(build, r"\d+\.\d+")
+        script = (ROOT / "scripts/package-msi.ps1").read_text()
+        self.assertIn('[Parameter(Mandatory)][string]$Version', script)
+        self.assertIn('[Parameter(Mandatory)][string]$OutputPath', script)
+        self.assertIn('Version="$Version"', script)
+        self.assertNotRegex(script, r'Version="[0-9]')
+        self.assertIn("'^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$'", script)
+        self.assertIn("throw 'MSI Version must be numeric with four parts", script)
+        self.assertIn("throw 'WiX not found", script)
+
+    def test_msi_upgrade_identity_is_fixed_across_builds(self):
+        script = (ROOT / "scripts/package-msi.ps1").read_text()
+        # Pin the product family's identity: changing this breaks installed upgrades.
+        codes = re.findall(r"^\$UpgradeCode\s*=\s*'([^']+)'", script, re.MULTILINE)
+        self.assertEqual(codes, ["8B5C069E-5489-43A7-92FC-A668810CD0DB"])
+        self.assertEqual(len(re.findall(r"\$UpgradeCode\s*=", script)), 1)
+        self.assertNotRegex(script.lower(), r"newguid|new-guid|uuid4|guidgen")
+        self.assertIn('UpgradeCode="$UpgradeCode"', script)
+        self.assertIn('<MajorUpgrade AllowSameVersionUpgrades="yes"', script)
+        self.assertIn('Schedule="afterInstallInitialize"', script)
+        self.assertNotIn('IgnoreRemoveFailure="yes"', script)
+
+    def test_msi_component_namespace_and_logical_names_are_stable(self):
+        script = (ROOT / 'scripts/package-msi.ps1').read_text()
+        namespaces = re.findall(r"^\$ComponentGuidNamespace\s*=\s*'([^']+)'", script, re.MULTILINE)
+        self.assertEqual(namespaces, ['E2829A7B-5D29-4FCC-989B-73EB8D15336E'])
+        self.assertEqual(len(re.findall(r'\$ComponentGuidNamespace\s*=', script)), 1)
+        helper = script.split('function Get-ComponentGuid', 1)[1].split('$componentRefs =', 1)[0]
+        for unstable in ('$Version', '$OutputPath', '$root', '$payload', 'GetRandomFileName', 'NewGuid'):
+            self.assertNotIn(unstable, helper)
+        for logical_name in ('file/$RelativePath', 'directory/$RelativePath', 'directory/install',
+                             'shortcut/start-menu', 'shortcut/desktop'):
+            self.assertIn('Get-ComponentGuid ' + ('"' + logical_name + '"' if '$' in logical_name
+                                                else "'" + logical_name + "'"), script)
+
+    def test_msi_templates_use_reviewed_wix4_elements_and_attributes(self):
+        script = (ROOT / 'scripts/package-msi.ps1').read_text()
+        # Reviewed subset of WiX 4's schema, not a full schema validator:
+        # https://docs.firegiant.com/wix/schema/wxs/feature/
+        # https://github.com/wixtoolset/web/blob/master/src/xsd4/wix.xsd
+        # Check every XML opening tag, including inline strings and here-strings.
+        # Newly used elements/attributes require review before joining this list.
+        allowed = {
+            'Wix': {'xmlns', 'xmlns:ui'},
+            'Package': {'Name', 'Manufacturer', 'Version', 'UpgradeCode', 'Scope', 'Language'},
+            'Component': {'Id', 'Guid'},
+            'RegistryValue': {'Root', 'Key', 'Name', 'Type', 'Value', 'KeyPath'},
+            'File': {'Id', 'Source', 'Name'},
+            'RemoveFolder': {'Id', 'Directory', 'On'},
+            'Directory': {'Id', 'Name'},
+            'MajorUpgrade': {'AllowSameVersionUpgrades', 'Schedule', 'DowngradeErrorMessage'},
+            'MediaTemplate': {'EmbedCab'},
+            'Icon': {'Id', 'SourceFile'},
+            'Property': {'Id', 'Value'},
+            'StandardDirectory': {'Id'},
+            'Shortcut': {'Id', 'Name', 'Target', 'WorkingDirectory', 'Icon'},
+            'Feature': {'Id', 'Title', 'Level', 'AllowAbsent', 'AllowAdvertise', 'Display', 'Description'},
+            'ComponentRef': {'Id'},
+            'ui:WixUI': {'Id'},
+            'WixVariable': {'Id', 'Value'},
+        }
+        tags = re.findall(r'<([A-Za-z_][\w:.-]*)\b((?:"[^"]*"|[^">])*)>',
+                          script.replace('`"', '"'))
+        self.assertTrue(tags, 'No MSI XML templates found')
+        self.assertEqual({tag for tag, _ in tags}, set(allowed))
+        for tag, attributes in tags:
+            with self.subTest(element=tag, attributes=attributes):
+                names = set(re.findall(r'([\w:.-]+)\s*=', attributes))
+                self.assertFalse(names - allowed[tag], f'Unreviewed WiX 4 attributes on {tag}: {names - allowed[tag]}')
+                if tag == 'Feature':
+                    self.assertNotRegex(attributes, r'\bAbsent\s*=')
+                    for attribute in ('AllowAbsent', 'AllowAdvertise'):
+                        value = re.search(r'\b' + attribute + r'="([^"]*)"', attributes)
+                        if value:
+                            self.assertIn(value.group(1), ('yes', 'no'))
+        self.assertIn('AllowAbsent="no"', script)
+        self.assertNotIn('http://schemas.microsoft.com/wix/2006/wi', script)
+        # Old sequence conditions were element text; v4 uses Condition=.
+        self.assertNotRegex(script, r'<(?:Custom|RemoveExistingProducts)\b[^>]*>\s*[^<\s]')
+
+    def test_msi_user_profile_components_have_explicit_stable_guids(self):
+        script = (ROOT / 'scripts/package-msi.ps1').read_text()
+        components = re.findall(r'<Component\s+([^>]+)>(.*?)</Component>', script, re.DOTALL)
+        self.assertTrue(components)
+        for attributes, body in components:
+            with self.subTest(component=attributes):
+                self.assertNotIn('Guid="*"', attributes)
+                self.assertIn('Root="HKCU"', body)
+                self.assertIn('KeyPath="yes"', body)
+        file_builder = script.split('function Add-PayloadFile', 1)[1].split('function Add-PayloadDirectory', 1)[0]
+        self.assertIn('Get-ComponentGuid "file/$RelativePath"', file_builder)
+        self.assertIn('Guid="$guid"', file_builder)
+        payload = re.search(r'<Component\s+[^>]+>(.*?)</Component>', file_builder, re.DOTALL).group(1)
+        self.assertEqual(len(re.findall(r'<File\s', payload)), 1)
+        self.assertRegex(payload, r'<RegistryValue\s+[^>]*Root="HKCU"[^>]*KeyPath="yes"')
+
+    def test_windows_compares_two_independently_generated_msi_sources(self):
+        workflow = (ROOT / '.github/workflows/windows.yml').read_text()
+        build = workflow.split('name: Build the MSI installer', 1)[1].split('      - name:', 1)[0]
+        guard = workflow.split('name: Verify MSI source determinism', 1)[1].split('      - name:', 1)[0]
+        self.assertIn('-SourcePath "$env:RUNNER_TEMP/dish-msi-first/Dish.wxs"', build)
+        self.assertIn('$first = "$env:RUNNER_TEMP/dish-msi-first/Dish.wxs"', guard)
+        self.assertIn('$second = "$env:RUNNER_TEMP/dish-msi-second/Dish.wxs"', guard)
+        self.assertIn('package-msi.ps1 -Version $env:MSI_VERSION', guard)
+        self.assertIn('-SourcePath $second -GenerateOnly', guard)
+        self.assertIn('MSI_VERSION: ${{ steps.release-version.outputs.numeric }}', guard)
+        for path in ('$first', '$second'):
+            self.assertIn('Get-FileHash -LiteralPath ' + path + ' -Algorithm SHA256', guard)
+            self.assertIn('[IO.File]::ReadAllBytes(' + path + ')', guard)
+        self.assertIn('if ($firstHash -cne $secondHash) { throw', guard)
+        self.assertIn('Compare-Object -ReferenceObject', guard)
+        self.assertIn('-SyncWindow 0', guard)
+        self.assertIn('if ($differences) { throw', guard)
+        self.assertLess(workflow.index('name: Build the MSI installer'),
+                        workflow.index('name: Verify MSI source determinism'))
+        self.assertLess(workflow.index('name: Verify MSI source determinism'),
+                        workflow.index('name: Sign and verify the MSI installer'))
+        script = (ROOT / 'scripts/package-msi.ps1').read_text()
+        self.assertIn('Id="WixUILicenseRtf" Value="license.rtf"', script)
+        self.assertIn('-b $work', script)
+        # Keep the actual WiX build's ICE validation enabled.
+        for text in (workflow, script):
+            self.assertNotRegex(text.lower(), r'-(?:sice|sval|suppressvalidation)\b')
+
+    @unittest.skipUnless(shutil.which('pwsh'), 'PowerShell is required to generate MSI source')
+    def test_msi_generation_is_identical_in_different_temporary_directories(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            scripts = root / 'scripts'
+            scripts.mkdir()
+            shutil.copyfile(ROOT / 'scripts/package-msi.ps1', scripts / 'package-msi.ps1')
+            (scripts / 'install-pi-windows.ps1').write_text('# fixture')
+            (root / 'assets').mkdir()
+            (root / 'assets/dish-icon.ico').write_bytes(b'fixture')
+            payload = root / 'dist/windows-payload'
+            licenses = payload / 'licenses/example'
+            licenses.mkdir(parents=True)
+            (licenses / 'LICENSE').write_text('dependency license')
+            for name in ('dish.exe', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'BUILD.json'):
+                (payload / name).write_text(name)
+            outputs = []
+            for name in ('first', 'second'):
+                source = root / name / 'Dish.wxs'
+                subprocess.run(['pwsh', '-NoProfile', '-NonInteractive', '-File',
+                                str(scripts / 'package-msi.ps1'), '-Version', '1.2.3.4',
+                                '-OutputPath', str(root / name / 'Dish.msi'),
+                                '-SourcePath', str(source), '-GenerateOnly'],
+                               check=True, capture_output=True, text=True)
+                self.assertFalse((source.parent / 'Dish.msi').exists())
+                self.assertTrue((source.parent / 'license.rtf').is_file())
+                outputs.append(source.read_bytes())
+            self.assertEqual(outputs[0], outputs[1])
+            ns = {'w': 'http://wixtoolset.org/schemas/v4/wxs'}
+            document = ET.fromstring(outputs[0])
+            files = document.findall('.//w:File/..', ns)
+            self.assertEqual(len(files), 6)
+            namespace = uuid.UUID('E2829A7B-5D29-4FCC-989B-73EB8D15336E')
+            for component in files:
+                registry = component.find('w:RegistryValue', ns)
+                self.assertEqual(registry.attrib['Root'], 'HKCU')
+                self.assertEqual(registry.attrib['KeyPath'], 'yes')
+                file = component.find('w:File', ns)
+                path = Path(file.attrib['Source'])
+                logical = path.relative_to(payload).as_posix() if path.is_relative_to(payload) else path.name
+                expected = uuid.uuid5(namespace, 'file/' + logical.lower())
+                self.assertEqual(component.attrib['Guid'], str(expected).upper())
+
+    @unittest.skipUnless(shutil.which('pwsh'), 'PowerShell is required to execute the UUID v5 helper')
+    def test_msi_component_guids_match_uuid5_and_normalize_paths(self):
+        script = (ROOT / 'scripts/package-msi.ps1').read_text()
+        # Execute the production helper, independently of WiX or Windows.
+        helper = script[script.index('$ComponentGuidNamespace ='):script.index('$componentRefs =')]
+        names = ['file/dish.exe', 'file/licenses/example/LICENSE',
+                 r'FILE\LICENSES\EXAMPLE\license', 'directory/install',
+                 'shortcut/start-menu', 'shortcut/desktop', 'file/dish.exe']
+        invocation = '\n'.join("Get-ComponentGuid '" + name + "'" for name in names)
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'guid-vectors.ps1'
+            path.write_text("$ErrorActionPreference = 'Stop'\n" + helper + invocation, encoding='utf-8')
+            output = subprocess.check_output(['pwsh', '-NoProfile', '-NonInteractive', '-File', str(path)],
+                                             text=True)
+        namespace = uuid.UUID('E2829A7B-5D29-4FCC-989B-73EB8D15336E')
+        expected = [str(uuid.uuid5(namespace, name.replace('\\', '/').lower())).upper() for name in names]
+        self.assertEqual(output.splitlines(), expected)
+        self.assertEqual(expected[1], expected[2])
+        self.assertEqual(expected[0], expected[-1])
+
+    def test_msi_installs_the_nsis_payload_per_user_with_optional_desktop_shortcut(self):
+        script = (ROOT / "scripts/package-msi.ps1").read_text()
+        for name in ('dish.exe', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'BUILD.json',
+                     'install-pi-windows.ps1', 'licenses'):
+            self.assertIn("'" + name + "'", script)
+        self.assertIn("dist/windows-payload", script)
+        self.assertIn('Scope="perUser"', script)
+        self.assertIn('-arch x64', script)
+        self.assertIn('<StandardDirectory Id="LocalAppDataFolder">', script)
+        self.assertIn('<Directory Id="UserProgramsFolder" Name="Programs">', script)
+        self.assertIn('<Directory Id="INSTALLFOLDER" Name="Dish">', script)
+        self.assertIn('<ComponentRef Id="StartMenuShortcut" />', script)
+        self.assertRegex(script, r'<Feature Id="DesktopShortcutFeature"[^>]+Level="2"')
+        self.assertIn('<Property Id="INSTALLLEVEL" Value="1" />', script)
+        self.assertIn('<ui:WixUI Id="WixUI_FeatureTree" />', script)
+        self.assertIn('Id="ARPPRODUCTICON" Value="DishIcon"', script)
+        self.assertIn('Root="HKCU"', script)
+        self.assertIn('<RemoveFolder', script)
+
+    def test_msi_is_signed_before_checksum_and_uploaded_with_nsis(self):
+        workflow = (ROOT / ".github/workflows/windows.yml").read_text()
+        stages = ['python3 scripts/package-windows.py', 'name: Install WiX',
+                  'name: Build the MSI installer', 'name: Sign and verify the MSI installer',
+                  'name: Checksum the final MSI installer', 'name: Save the Windows installer']
+        offsets = [workflow.index(stage) for stage in stages]
+        self.assertEqual(offsets, sorted(offsets))
+        sign = workflow.split('name: Sign and verify the MSI installer', 1)[1].split('      - name:', 1)[0]
+        for secret in ('WINDOWS_CERT_PFX_BASE64', 'WINDOWS_CERT_PASSWORD'):
+            self.assertIn('${{ secrets.' + secret + ' }}', sign)
+        self.assertIn('sign-windows.ps1 -Path "dist/dish-$env:RELEASE_LABEL-windows-x86_64.msi"', sign)
+        checksum = workflow.split('name: Checksum the final MSI installer', 1)[1].split('      - name:', 1)[0]
+        self.assertIn('Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256', checksum)
+        self.assertIn('"$hash  $($file.Name)`n"', checksum)
+        artifact = workflow.split('name: Save the Windows installer', 1)[1].split('  publish:', 1)[0]
+        for suffix in ('-setup.exe', '-setup.exe.sha256', '.msi', '.msi.sha256'):
+            self.assertIn('dist/*-windows-x86_64' + suffix, artifact)
+        self.assertIn('if-no-files-found: error', artifact)
+        self.assertNotIn('continue-on-error', workflow)
+        self.assertNotIn('|| true', workflow)
+
+    def test_msi_and_checksum_are_required_for_release_publication(self):
+        workflow = (ROOT / ".github/workflows/windows.yml").read_text()
+        publish = workflow.split('  publish:\n', 1)[1]
+        self.assertIn('needs: windows', publish)
+        self.assertIn('name: dish-windows-installer', publish)
+        self.assertIn('msi="dish-$version-windows-x86_64.msi"', publish)
+        self.assertIn('test -s "dist-win/$msi"', publish)
+        self.assertIn('sha256sum -c "$msi.sha256"', publish)
+        self.assertIn("printf 'MSI_ASSET=%s\\n'", publish)
+        upload = next(line for line in publish.splitlines() if 'gh release upload' in line)
+        for asset in ('$ASSET', '$ASSET.sha256', '$MSI_ASSET', '$MSI_ASSET.sha256'):
+            self.assertIn('"dist-win/' + asset + '"', upload)
+
+    def test_wix_and_ui_extension_are_pinned_and_fail_closed(self):
+        workflow = (ROOT / ".github/workflows/windows.yml").read_text()
+        install = workflow.split('name: Install WiX', 1)[1].split('      - name:', 1)[0]
+        self.assertIn('dotnet tool install --global wix --version 4.0.6', install)
+        self.assertIn('wix --version', install)
+        self.assertIn('wix extension add --global WixToolset.UI.wixext/4.0.6', install)
+        self.assertEqual(install.count('if ($LASTEXITCODE -ne 0) { throw'), 3)
+        script = (ROOT / 'scripts/package-msi.ps1').read_text()
+        self.assertIn('-ext WixToolset.UI.wixext/4.0.6', script)
+        self.assertIn('if ($LASTEXITCODE -ne 0) { throw', script)
 
     def test_installer_is_published_only_for_a_release(self):
         workflow = (ROOT / ".github/workflows/windows.yml").read_text(encoding="utf-8")
