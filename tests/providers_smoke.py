@@ -254,13 +254,21 @@ class Harness:
             time.sleep(0.5)
         raise AssertionError(f"{self.name}: faltou algo em {needles!r}:\n{self.capture()}")
 
-    def assert_absent(self, needle):
+    def assert_absent(self, needle, anchor):
         wanted = normalized(needle)
+        anchor_wanted = normalized(anchor)
+        anchored = 0
         for _ in range(6):
-            if wanted not in normalized(self.capture()):
-                return
+            text = normalized(self.capture())
+            if anchor_wanted in text:
+                anchored += 1
+                if wanted in text:
+                    raise AssertionError(f"{self.name}: {needle!r} continuou na tela")
+                if anchored >= 2:
+                    return
             time.sleep(0.4)
-        raise AssertionError(f"{self.name}: {needle!r} continuou na tela")
+        raise AssertionError(
+            f"{self.name}: âncora {anchor!r} não apareceu em duas capturas")
 
     def assert_masked_answer(self, key):
         """Confirma o estado pintado e que a chave não aparece na tela ou no trace."""
@@ -338,8 +346,8 @@ def check_login_and_logout():
         h.assert_masked_answer(key)
         h.click("Enviar")
         # O valor sai da tela ao ser enviado: nada dele fica renderizado.
-        h.assert_absent(key)
         h.wait_text(["Provedor anthropic conectado"])
+        h.assert_absent(key, "Provedor anthropic conectado")
         h.click("Voltar à lista")
         # A lista é relida do Pi: a credencial agora aparece como salva.
         h.wait_text(["credencial salva", "1 conectados"])
@@ -479,8 +487,7 @@ def check_real_pi_stale_catalog_and_reopen():
     """
     program = shutil.which("pi")
     if not program:
-        print("providers smoke: caso com Pi real ignorado — `pi` não está no PATH", flush=True)
-        return
+        return "pi ausente"
     assert_real_pi_model_not_found(program)
     with Harness("real", {}, real_pi=True) as h:
         # O __enter__ já abriu as Configurações; aqui a conversa precisa estar
@@ -517,7 +524,7 @@ def check_real_pi_stale_catalog_and_reopen():
         h.click("Reabrir esta conversa")
         # Histórico vem do mesmo --session; o rascunho nunca saiu do editor.
         h.wait_text(["pergunta anterior", "resposta anterior"], timeout=30)
-        h.assert_absent("desatualizado")
+        h.assert_absent("desatualizado", "pergunta anterior")
         wait_for(lambda: find_word(h.window, "rascunho"), "Rascunho perdido ao reabrir")
         # O processo novo calculou o snapshot com as duas credenciais.
         chord("Control_L", "Shift_L", "m")
@@ -528,11 +535,29 @@ def check_real_pi_stale_catalog_and_reopen():
         print("providers smoke ok: Pi real avisa o snapshot velho e reabre sem perder rascunho/histórico", flush=True)
 
 
-check_catalog()
-check_first_use()
-check_unavailable()
-check_npm_global()
-check_login_and_logout()
-check_provider_refreshes_open_conversation()
-check_real_pi_stale_catalog_and_reopen()
-print("Providers smoke passed: catálogo, npm global, primeiro uso, falha honesta, login, remoção, atualização da conversa e snapshot velho do Pi real")
+cases = [
+    ("catálogo", check_catalog),
+    ("primeiro uso", check_first_use),
+    ("falha honesta", check_unavailable),
+    ("npm global", check_npm_global),
+    ("login e remoção", check_login_and_logout),
+    ("atualização da conversa", check_provider_refreshes_open_conversation),
+    ("snapshot do Pi real", check_real_pi_stale_catalog_and_reopen),
+]
+results = []
+try:
+    for name, case in cases:
+        try:
+            skipped = case()
+        except Exception:
+            results.append(("FAIL", name, ""))
+            print(f"FAIL: {name}", flush=True)
+            raise
+        status = "SKIP" if skipped else "PASS"
+        results.append((status, name, skipped or ""))
+        print(f"{status}: {name}" + (f" ({skipped})" if skipped else ""), flush=True)
+finally:
+    summary = "; ".join(
+        f"{status}: {name}" + (f" ({reason})" if reason else "")
+        for status, name, reason in results)
+    print(f"Providers smoke: {summary}", flush=True)

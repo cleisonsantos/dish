@@ -228,7 +228,21 @@ fn find_installed() -> Option<PathBuf> {
 }
 
 // Fixed script: no project path, credentials or user input is interpolated.
-const OFFICIAL_SCRIPT: &str = "curl -fsSL https://pi.dev/install.sh | sh; result=$?; printf '\\nInstalador finalizado (status %s). Volte ao Dish e clique em Tentar novamente.\\nPressione Enter para fechar.\\n' \"$result\"; read answer";
+const OFFICIAL_SCRIPT: &str = r#"temp_file=$(mktemp /tmp/dish-pi-installer.XXXXXX)
+result=$?
+if [ "$result" -eq 0 ]; then
+    trap 'rm -f "$temp_file"' EXIT
+    curl -fsSL --proto '=https' --tlsv1.2 -o "$temp_file" https://pi.dev/install.sh
+    result=$?
+    if [ "$result" -eq 0 ]; then
+        sh "$temp_file"
+        result=$?
+    fi
+    rm -f "$temp_file"
+    trap - EXIT
+fi
+printf '\nInstalador finalizado (status %s). Volte ao Dish e clique em Tentar novamente.\nPressione Enter para fechar.\n' "$result"
+read answer"#;
 
 // O Dish não autentica: abre o Pi para a pessoa usar `/login`. Sem caminho,
 // sem credencial e sem entrada do usuário interpolados no script.
@@ -584,6 +598,15 @@ chmod +x "$7/bin/pi""#,
         command.args(["-c", "exec sleep 10"]);
         assert!(run(command, Duration::from_millis(50)).is_err());
     }
+    #[test]
+    fn official_installer_checks_download_before_execution() {
+        assert!(!OFFICIAL_SCRIPT.contains("| sh"));
+        assert!(OFFICIAL_SCRIPT.contains("curl -fsSL --proto '=https' --tlsv1.2 -o \"$temp_file\" https://pi.dev/install.sh\n    result=$?\n    if [ \"$result\" -eq 0 ]; then\n        sh \"$temp_file\""));
+        assert!(OFFICIAL_SCRIPT.contains("trap 'rm -f \"$temp_file\"' EXIT"));
+        // The fixed command contains only shell variables, not interpolated Rust input.
+        assert!(!OFFICIAL_SCRIPT.contains("{}"));
+    }
+
     #[test]
     fn external_terminal_receives_fixed_installer_arguments() {
         let f = Fixture::new();

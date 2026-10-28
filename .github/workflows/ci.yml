@@ -25,7 +25,7 @@ jobs:
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev libvulkan-dev libfontconfig-dev libfreetype-dev libssl-dev libegl1 libgl1-mesa-dri libvulkan1 mesa-vulkan-drivers binutils python3 nodejs
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev libvulkan-dev libfontconfig-dev libfreetype-dev libssl-dev libegl1 libgl1-mesa-dri libvulkan1 mesa-vulkan-drivers binutils python3 nodejs minisign
       - name: Install Rust
         id: rust
         run: |
@@ -54,6 +54,16 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_ui_test_support.py' -v
       - name: Release tooling tests
         run: python3 -m unittest discover -s tests -p 'test_release_package.py' -v
+      - name: Release manifest tests
+        run: python3 -m unittest discover -s tests -p 'test_release_manifest.py' -v
+      - name: Release version tests
+        run: python3 -m unittest discover -s tests -p 'test_release_version.py' -v
+      - name: Security audit tests
+        run: python3 -m unittest discover -s tests -p 'test_security_audit.py' -v
+      - name: Update public key tests
+        run: python3 -m unittest discover -s tests -p 'test_update_public_key.py' -v
+      - name: Window titlebar tests
+        run: python3 -m unittest discover -s tests -p 'test_window_titlebar.py' -v
       - name: Provider adapter contract
         # Rodam contra o SDK falso: sem Pi, sem rede e sem credencial real.
         run: |
