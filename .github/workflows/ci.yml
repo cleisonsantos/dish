@@ -83,13 +83,15 @@ jobs:
   # verified .deb instead of rebuilding the binary.
   package:
     runs-on: ubuntu-24.04
+    env:
+      DISH_VERSION: 0.1.0-beta.1
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install Linux build and packaging dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev libvulkan-dev libfontconfig-dev libfreetype-dev libssl-dev libegl1 libgl1-mesa-dri libvulkan1 mesa-vulkan-drivers binutils python3
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev libvulkan-dev libfontconfig-dev libfreetype-dev libssl-dev libegl1 libgl1-mesa-dri libvulkan1 mesa-vulkan-drivers binutils python3 rpm python3-rpm
       - name: Install Rust
         id: rust
         run: |
@@ -110,9 +112,24 @@ jobs:
             linux-package-v1-${{ steps.rust.outputs.version }}-${{ hashFiles('Cargo.lock') }}-
             linux-v1-${{ steps.rust.outputs.version }}-${{ hashFiles('Cargo.lock') }}-
       - name: Build and package candidate (with path remapping and license checks)
-        run: python3 scripts/package-linux.py --version 0.1.0-beta.1
+        run: python3 scripts/package-linux.py --version "$DISH_VERSION"
       - name: Build Debian package from the verified candidate
-        run: python3 scripts/package-deb.py --version 0.1.0-beta.1
+        run: python3 scripts/package-deb.py --version "$DISH_VERSION"
+      - name: Install pinned appimagetool
+        run: |
+          curl -fL --retry 3 -o "$RUNNER_TEMP/appimagetool" https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+          echo "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  $RUNNER_TEMP/appimagetool" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/appimagetool"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Verify RPM prerelease ordering
+        run: |
+          /usr/bin/python3 -c 'import os, rpm; label=os.environ["DISH_VERSION"]; base, sep, suffix=label.partition("-"); assert sep; a=("0", base+"~"+suffix.replace("-", "."), "1"); b=("0", base, "1"); result=rpm.labelCompare(a,b); print(f"{a[1]} vs {b[1]}: {result}"); assert result < 0'
+      - name: Build RPM and AppImage
+        run: |
+          python3 scripts/package-rpm.py --version "$DISH_VERSION"
+          python3 scripts/package-appimage.py --version "$DISH_VERSION"
+          python3 -m unittest discover -s tests -p 'test_rpm_package.py' -v
+          python3 -m unittest discover -s tests -p 'test_appimage_package.py' -v
       - name: Test the real archive and package metadata
         run: |
           export DISH_TEST_ARCHIVE="$(realpath dist/dish-*-linux-x86_64.tar.gz)"
@@ -151,8 +168,27 @@ jobs:
           name: dish-linux-x86_64-candidate
           path: |
             dist/*.tar.gz
-            dist/*.sha256
+            dist/*.tar.gz.sha256
+            dist/*.deb.sha256
             dist/*.deb
+          if-no-files-found: error
+          retention-days: 14
+      - name: Save RPM candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dish-rpm-candidate
+          path: |
+            dist/*.rpm
+            dist/*.rpm.sha256
+          if-no-files-found: error
+          retention-days: 14
+      - name: Save AppImage candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dish-appimage-candidate
+          path: |
+            dist/*.AppImage
+            dist/*.AppImage.sha256
           if-no-files-found: error
           retention-days: 14
       - name: Save Rust build cache, including failed test runs

@@ -19,8 +19,8 @@ x86_64 beta installer (`.exe`) is published alongside each Linux beta;
 macOS is not supported or validated. Sessions and tools can modify project
 files, so review agent actions and keep backups.
 
-Prebuilt Linux betas are published as a Debian/Ubuntu package (`.deb`) and a
-portable `.tar.gz`. The Windows beta is a per-user NSIS installer that needs
+Prebuilt Linux candidates are available as a Debian/Ubuntu package (`.deb`), an
+RPM (`.rpm`), a portable `.tar.gz` and an `.AppImage`. The Windows beta is a per-user NSIS installer that needs
 no administrator rights, registers its own uninstaller and offers the official
 Pi installer when Pi is missing. Every asset carries a SHA-256 checksum beside
 it.
@@ -45,8 +45,9 @@ Get-FileHash .\dish-<version>-windows-x86_64-setup.exe -Algorithm SHA256
 
 ### Other Linux distributions
 
-The portable `.tar.gz` is the supported path on Arch, Fedora and other glibc
-distributions; there is no package for them yet. Download the archive and its
+For Fedora and other RPM-based systems, use the `.rpm`; the `.AppImage` is the
+quickest way to try Dish and requires FUSE. The portable `.tar.gz` supports Arch
+and other glibc distributions without sudo. Download the archive and its
 `.sha256` sidecar, verify, extract and run the installer:
 
 ```bash

@@ -20,7 +20,31 @@ keep backups of projects and review agent actions. The app icon is provisional.
 - Python 3 is needed only by the portable archive installer; the Debian package
   and Dish itself do not require it.
 
+## Linux formats
+
+- Portable `.tar.gz`: use on Arch or other glibc distributions for a per-user install without sudo.
+- `.deb`: use on Debian and Ubuntu for package-manager installation.
+- `.rpm`: use on RPM-based distributions for package-manager installation.
+- `.AppImage`: the quickest way to try Dish without installing; running it requires FUSE.
+
+All formats use the system runtime libraries and the glibc minimum in `BUILD.json`;
+the AppImage does not bundle those libraries. Verify each download using its `.sha256`.
+
 ## Install
+
+### RPM
+
+Verify the `.rpm` and its checksum with `sha256sum -c`, then install it with
+`sudo dnf install ./dish-VERSION-1.x86_64.rpm`. The package is named `dish-pi`
+and installs `dish-pi` alongside any existing `dish` program. Remove it with
+`sudo dnf remove dish-pi`.
+
+### AppImage
+
+Verify the `.AppImage` with `sha256sum -c`, make it executable with `chmod +x`,
+and run it directly. It requires FUSE at runtime, along with the system libraries
+listed below. The build tool itself uses `--appimage-extract-and-run` in CI because
+the runner has no FUSE. Remove the AppImage file to uninstall it.
 
 ### Debian/Ubuntu package (recommended)
 
@@ -100,7 +124,7 @@ installation at those paths. It does not download Pi or run its installer.
 ### Running Dish
 
 Open Dish through your application menu, or run `dish-pi` (Debian package) or
-`dish` / `~/.local/bin/dish` (portable archive). If Pi is missing, follow the
+`dish` / `~/.local/bin/dish` (portable archive), or run the AppImage directly. If Pi is missing, follow the
 first-run setup. Set `DISH_PI_BIN` to select a custom Pi executable when
 launching from a terminal. Projects and conversations can modify files; this is
 not a sandbox.
