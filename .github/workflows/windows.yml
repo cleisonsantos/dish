@@ -17,6 +17,25 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Validate SignPath configuration
+        id: signpath-config
+        if: github.event_name == 'release' && vars.SIGNPATH_PROJECT_SLUG != ''
+        shell: pwsh
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+          SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          SIGNPATH_SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          SIGNPATH_ARTIFACT_CONFIGURATION_SLUG: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_API_TOKEN)) {
+            throw 'SIGNPATH_PROJECT_SLUG is set, but SIGNPATH_API_TOKEN is missing.'
+          }
+          foreach ($name in @('SIGNPATH_ORGANIZATION_ID', 'SIGNPATH_SIGNING_POLICY_SLUG', 'SIGNPATH_ARTIFACT_CONFIGURATION_SLUG')) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "$name is required when SIGNPATH_PROJECT_SLUG is set."
+            }
+          }
       - name: Install Rust stable
         run: |
           rustup update stable --no-self-update
@@ -70,11 +89,48 @@ jobs:
           if ($subsystem -ne 2) { throw "dish.exe uses subsystem $subsystem, expected GUI (2)" }
           Write-Host 'dish.exe is a GUI-subsystem binary (no console window)'
       - name: Sign and verify the executable (opt-in)
+        if: github.event_name != 'release' || vars.SIGNPATH_PROJECT_SLUG == ''
         shell: pwsh
         env:
           WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
           WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
         run: ./scripts/sign-windows.ps1 -Path 'target/release/dish.exe'
+      # Cada pedido SignPath envia um único arquivo cru, sem ZIP. O EXE precisa
+      # voltar assinado antes de ser copiado para o payload de ambos instaladores.
+      - name: Upload the executable for SignPath
+        id: signpath-exe-upload
+        if: github.event_name == 'release' && vars.SIGNPATH_PROJECT_SLUG != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dish-signpath-unsigned-exe
+          path: target/release/dish.exe
+          archive: false
+          if-no-files-found: error
+          retention-days: 1
+      - name: Sign the executable with SignPath
+        id: signpath-exe
+        if: github.event_name == 'release' && vars.SIGNPATH_PROJECT_SLUG != ''
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.signpath-exe-upload.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: ${{ runner.temp }}/signpath-exe
+          skip-decompress: true
+      - name: Restore and verify the SignPath executable
+        id: signpath-exe-verify
+        if: github.event_name == 'release' && vars.SIGNPATH_PROJECT_SLUG != ''
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $signed = @(Get-ChildItem -LiteralPath "$env:RUNNER_TEMP/signpath-exe" -File -Recurse)
+          if ($signed.Count -ne 1) { throw 'Expected exactly one signed executable from SignPath.' }
+          Copy-Item -LiteralPath $signed[0].FullName -Destination 'target/release/dish.exe' -Force
+          ./scripts/verify-signature.ps1 -Path 'target/release/dish.exe'
       - name: Install NSIS
         shell: pwsh
         run: |
@@ -118,6 +174,7 @@ jobs:
       - name: Build the installer and its license bundle
         run: python3 scripts/package-windows.py
       - name: Sign and verify the installer and refresh its checksum (opt-in)
+        if: github.event_name != 'release' || vars.SIGNPATH_PROJECT_SLUG == ''
         shell: pwsh
         env:
           WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
@@ -158,12 +215,88 @@ jobs:
           if ($differences) { throw 'MSI source differs between generations (byte comparison).' }
           Write-Host "Identical MSI sources in separate temporary directories: $firstHash"
       - name: Sign and verify the MSI installer (opt-in)
+        if: github.event_name != 'release' || vars.SIGNPATH_PROJECT_SLUG == ''
         shell: pwsh
         env:
           WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
           WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
           RELEASE_LABEL: ${{ steps.release-version.outputs.label }}
         run: ./scripts/sign-windows.ps1 -Path "dist/dish-$env:RELEASE_LABEL-windows-x86_64.msi"
+      - name: Upload the NSIS installer for SignPath
+        id: signpath-nsis-upload
+        if: github.event_name == 'release' && vars.SIGNPATH_PROJECT_SLUG != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dish-signpath-unsigned-nsis
+          path: dist/dish-${{ steps.release-version.outputs.label }}-windows-x86_64-setup.exe
+          archive: false
+          if-no-files-found: error
+          retention-days: 1
+      - name: Sign the NSIS installer with SignPath
+        id: signpath-nsis
+        if: github.event_name == 'release' && vars.SIGNPATH_PROJECT_SLUG != ''
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.signpath-nsis-upload.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: ${{ runner.temp }}/signpath-nsis
+          skip-decompress: true
+      - name: Restore and verify the SignPath NSIS installer and refresh its checksum
+        id: signpath-nsis-verify
+        if: github.event_name == 'release' && vars.SIGNPATH_PROJECT_SLUG != ''
+        shell: pwsh
+        env:
+          RELEASE_LABEL: ${{ steps.release-version.outputs.label }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $signed = @(Get-ChildItem -LiteralPath "$env:RUNNER_TEMP/signpath-nsis" -File -Recurse)
+          if ($signed.Count -ne 1) { throw 'Expected exactly one signed NSIS installer from SignPath.' }
+          Copy-Item -LiteralPath $signed[0].FullName -Destination "dist/dish-$env:RELEASE_LABEL-windows-x86_64-setup.exe" -Force
+          ./scripts/verify-signature.ps1 -Path "dist/dish-$env:RELEASE_LABEL-windows-x86_64-setup.exe"
+          $file = Get-Item -LiteralPath "dist/dish-$env:RELEASE_LABEL-windows-x86_64-setup.exe" -ErrorAction Stop
+          $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText($file.FullName + '.sha256', "$hash  $($file.Name)`n", [Text.UTF8Encoding]::new($false))
+      - name: Upload the MSI installer for SignPath
+        id: signpath-msi-upload
+        if: github.event_name == 'release' && vars.SIGNPATH_PROJECT_SLUG != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dish-signpath-unsigned-msi
+          path: dist/dish-${{ steps.release-version.outputs.label }}-windows-x86_64.msi
+          archive: false
+          if-no-files-found: error
+          retention-days: 1
+      - name: Sign the MSI installer with SignPath
+        id: signpath-msi
+        if: github.event_name == 'release' && vars.SIGNPATH_PROJECT_SLUG != ''
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.signpath-msi-upload.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: ${{ runner.temp }}/signpath-msi
+          skip-decompress: true
+      - name: Restore and verify the SignPath MSI installer
+        id: signpath-msi-verify
+        if: github.event_name == 'release' && vars.SIGNPATH_PROJECT_SLUG != ''
+        shell: pwsh
+        env:
+          RELEASE_LABEL: ${{ steps.release-version.outputs.label }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $signed = @(Get-ChildItem -LiteralPath "$env:RUNNER_TEMP/signpath-msi" -File -Recurse)
+          if ($signed.Count -ne 1) { throw 'Expected exactly one signed MSI installer from SignPath.' }
+          Copy-Item -LiteralPath $signed[0].FullName -Destination "dist/dish-$env:RELEASE_LABEL-windows-x86_64.msi" -Force
+          ./scripts/verify-signature.ps1 -Path "dist/dish-$env:RELEASE_LABEL-windows-x86_64.msi"
       - name: Checksum the final MSI installer
         shell: pwsh
         env:

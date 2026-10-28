@@ -419,6 +419,13 @@ Settings, shortcut search and preference persistence:
 after `cargo build --release`. This smoke test uses only a synthetic Pi and
 isolated configuration, not real provider credentials.
 
+## Code signing policy
+
+Free code signing provided by SignPath.io, certificate by SignPath Foundation
+
+See the [code signing policy](docs/code-signing.md) for signed artifacts,
+verification instructions and approval roles.
+
 ## Credits
 
 The text editor in `src/editor.rs` is adapted from the `Editor` in the
