@@ -52,6 +52,10 @@ jobs:
           fi
           echo "DISH_RELEASE_VERSION=$version" >> "$GITHUB_ENV"
           echo "label=$version" >> "$GITHUB_OUTPUT"
+          numeric="$(
+            RELEASE_LABEL="$version" python -c "import importlib.util as u; import os; s=u.spec_from_file_location('pw','scripts/package-windows.py'); m=u.module_from_spec(s); s.loader.exec_module(m); print(m.numeric_version(os.environ['RELEASE_LABEL']))"
+          )"
+          echo "numeric=$numeric" >> "$GITHUB_OUTPUT"
       - name: Build release
         env:
           DISH_RELEASE_VERSION: ${{ steps.release-version.outputs.label }}
@@ -119,6 +123,40 @@ jobs:
           WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
           WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
         run: ./scripts/sign-windows.ps1 -Path 'dist/*-windows-x86_64-setup.exe'
+      - name: Install WiX
+        shell: pwsh
+        env:
+          # WiX 4 targets .NET 6; allow the supported runtime on the runner.
+          DOTNET_ROLL_FORWARD: Major
+        run: |
+          dotnet tool install --global wix --version 4.0.6
+          if ($LASTEXITCODE -ne 0) { throw 'WiX installation failed' }
+          wix --version
+          if ($LASTEXITCODE -ne 0) { throw 'WiX version check failed' }
+          wix extension add --global WixToolset.UI.wixext/4.0.6
+          if ($LASTEXITCODE -ne 0) { throw 'WiX UI extension installation failed' }
+      - name: Build the MSI installer
+        shell: pwsh
+        env:
+          DOTNET_ROLL_FORWARD: Major
+          MSI_VERSION: ${{ steps.release-version.outputs.numeric }}
+          RELEASE_LABEL: ${{ steps.release-version.outputs.label }}
+        run: ./scripts/package-msi.ps1 -Version $env:MSI_VERSION -OutputPath "dist/dish-$env:RELEASE_LABEL-windows-x86_64.msi"
+      - name: Sign and verify the MSI installer (opt-in)
+        shell: pwsh
+        env:
+          WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+          RELEASE_LABEL: ${{ steps.release-version.outputs.label }}
+        run: ./scripts/sign-windows.ps1 -Path "dist/dish-$env:RELEASE_LABEL-windows-x86_64.msi"
+      - name: Checksum the final MSI installer
+        shell: pwsh
+        env:
+          RELEASE_LABEL: ${{ steps.release-version.outputs.label }}
+        run: |
+          $file = Get-Item -LiteralPath "dist/dish-$env:RELEASE_LABEL-windows-x86_64.msi" -ErrorAction Stop
+          $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText($file.FullName + '.sha256', "$hash  $($file.Name)`n", [Text.UTF8Encoding]::new($false))
       - name: Save Windows executable
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -133,6 +171,8 @@ jobs:
           path: |
             dist/*-windows-x86_64-setup.exe
             dist/*-windows-x86_64-setup.exe.sha256
+            dist/*-windows-x86_64.msi
+            dist/*-windows-x86_64.msi.sha256
           if-no-files-found: error
           retention-days: 14
 
@@ -169,11 +209,16 @@ jobs:
             exit 1
           fi
           (cd dist-win && sha256sum -c "$asset.sha256")
+          msi="dish-$version-windows-x86_64.msi"
+          test -s "dist-win/$msi"
+          (cd dist-win && sha256sum -c "$msi.sha256")
           printf 'ASSET=%s\n' "$asset" >> "$GITHUB_ENV"
+          printf 'MSI_ASSET=%s\n' "$msi" >> "$GITHUB_ENV"
       - name: Attach the installer to the release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
+          set -euo pipefail
           # Sem --clobber: asset publicado não é substituído (imutabilidade).
-          gh release upload "$GITHUB_REF_NAME" "dist-win/$ASSET" "dist-win/$ASSET.sha256"
+          gh release upload "$GITHUB_REF_NAME" "dist-win/$ASSET" "dist-win/$ASSET.sha256" "dist-win/$MSI_ASSET" "dist-win/$MSI_ASSET.sha256"

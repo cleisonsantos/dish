@@ -278,6 +278,105 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn('File /r "${SRCDIR}\\dist\\windows-payload\\licenses"', nsi)
         self.assertIn('RMDir /r "$INSTDIR\\licenses"', nsi)
 
+    def test_msi_version_is_derived_and_passed_to_the_builder(self):
+        workflow = (ROOT / ".github/workflows/windows.yml").read_text()
+        resolve = workflow.split("name: Resolve the release label", 1)[1].split("      - name:", 1)[0]
+        self.assertIn("release_version(None)", resolve)
+        self.assertIn("m.numeric_version(os.environ['RELEASE_LABEL'])", resolve)
+        self.assertIn('RELEASE_LABEL="$version" python', resolve)
+        self.assertIn('echo "numeric=$numeric" >> "$GITHUB_OUTPUT"', resolve)
+        self.assertNotRegex(resolve, r"\d+\.\d+")
+        build = workflow.split("name: Build the MSI installer", 1)[1].split("      - name:", 1)[0]
+        self.assertIn("MSI_VERSION: ${{ steps.release-version.outputs.numeric }}", build)
+        self.assertIn("RELEASE_LABEL: ${{ steps.release-version.outputs.label }}", build)
+        self.assertIn('package-msi.ps1 -Version $env:MSI_VERSION', build)
+        self.assertIn('-OutputPath "dist/dish-$env:RELEASE_LABEL-windows-x86_64.msi"', build)
+        self.assertNotRegex(build, r"\d+\.\d+")
+        script = (ROOT / "scripts/package-msi.ps1").read_text()
+        self.assertIn('[Parameter(Mandatory)][string]$Version', script)
+        self.assertIn('[Parameter(Mandatory)][string]$OutputPath', script)
+        self.assertIn('Version="$Version"', script)
+        self.assertNotRegex(script, r'Version="[0-9]')
+        self.assertIn("'^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$'", script)
+        self.assertIn("throw 'MSI Version must be numeric with four parts", script)
+        self.assertIn("throw 'WiX not found", script)
+
+    def test_msi_upgrade_identity_is_fixed_across_builds(self):
+        script = (ROOT / "scripts/package-msi.ps1").read_text()
+        # Pin the product family's identity: changing this breaks installed upgrades.
+        codes = re.findall(r"^\$UpgradeCode\s*=\s*'([^']+)'", script, re.MULTILINE)
+        self.assertEqual(codes, ["8B5C069E-5489-43A7-92FC-A668810CD0DB"])
+        self.assertEqual(len(re.findall(r"\$UpgradeCode\s*=", script)), 1)
+        self.assertNotRegex(script.lower(), r"newguid|new-guid|uuid|guidgen")
+        self.assertIn('UpgradeCode="$UpgradeCode"', script)
+        self.assertIn('<MajorUpgrade AllowSameVersionUpgrades="yes"', script)
+        self.assertIn('Schedule="afterInstallInitialize"', script)
+        self.assertNotIn('IgnoreRemoveFailure="yes"', script)
+
+    def test_msi_installs_the_nsis_payload_per_user_with_optional_desktop_shortcut(self):
+        script = (ROOT / "scripts/package-msi.ps1").read_text()
+        for name in ('dish.exe', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'BUILD.json',
+                     'install-pi-windows.ps1', 'licenses'):
+            self.assertIn("'" + name + "'", script)
+        self.assertIn("dist/windows-payload", script)
+        self.assertIn('Scope="perUser"', script)
+        self.assertIn('-arch x64', script)
+        self.assertIn('<StandardDirectory Id="LocalAppDataFolder">', script)
+        self.assertIn('<Directory Id="UserProgramsFolder" Name="Programs">', script)
+        self.assertIn('<Directory Id="INSTALLFOLDER" Name="Dish">', script)
+        self.assertIn('<ComponentRef Id="StartMenuShortcut" />', script)
+        self.assertRegex(script, r'<Feature Id="DesktopShortcutFeature"[^>]+Level="2"')
+        self.assertIn('<Property Id="INSTALLLEVEL" Value="1" />', script)
+        self.assertIn('<ui:WixUI Id="WixUI_FeatureTree" />', script)
+        self.assertIn('Id="ARPPRODUCTICON" Value="DishIcon"', script)
+        self.assertIn('Root="HKCU"', script)
+        self.assertIn('<RemoveFolder', script)
+
+    def test_msi_is_signed_before_checksum_and_uploaded_with_nsis(self):
+        workflow = (ROOT / ".github/workflows/windows.yml").read_text()
+        stages = ['python3 scripts/package-windows.py', 'name: Install WiX',
+                  'name: Build the MSI installer', 'name: Sign and verify the MSI installer',
+                  'name: Checksum the final MSI installer', 'name: Save the Windows installer']
+        offsets = [workflow.index(stage) for stage in stages]
+        self.assertEqual(offsets, sorted(offsets))
+        sign = workflow.split('name: Sign and verify the MSI installer', 1)[1].split('      - name:', 1)[0]
+        for secret in ('WINDOWS_CERT_PFX_BASE64', 'WINDOWS_CERT_PASSWORD'):
+            self.assertIn('${{ secrets.' + secret + ' }}', sign)
+        self.assertIn('sign-windows.ps1 -Path "dist/dish-$env:RELEASE_LABEL-windows-x86_64.msi"', sign)
+        checksum = workflow.split('name: Checksum the final MSI installer', 1)[1].split('      - name:', 1)[0]
+        self.assertIn('Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256', checksum)
+        self.assertIn('"$hash  $($file.Name)`n"', checksum)
+        artifact = workflow.split('name: Save the Windows installer', 1)[1].split('  publish:', 1)[0]
+        for suffix in ('-setup.exe', '-setup.exe.sha256', '.msi', '.msi.sha256'):
+            self.assertIn('dist/*-windows-x86_64' + suffix, artifact)
+        self.assertIn('if-no-files-found: error', artifact)
+        self.assertNotIn('continue-on-error', workflow)
+        self.assertNotIn('|| true', workflow)
+
+    def test_msi_and_checksum_are_required_for_release_publication(self):
+        workflow = (ROOT / ".github/workflows/windows.yml").read_text()
+        publish = workflow.split('  publish:\n', 1)[1]
+        self.assertIn('needs: windows', publish)
+        self.assertIn('name: dish-windows-installer', publish)
+        self.assertIn('msi="dish-$version-windows-x86_64.msi"', publish)
+        self.assertIn('test -s "dist-win/$msi"', publish)
+        self.assertIn('sha256sum -c "$msi.sha256"', publish)
+        self.assertIn("printf 'MSI_ASSET=%s\\n'", publish)
+        upload = next(line for line in publish.splitlines() if 'gh release upload' in line)
+        for asset in ('$ASSET', '$ASSET.sha256', '$MSI_ASSET', '$MSI_ASSET.sha256'):
+            self.assertIn('"dist-win/' + asset + '"', upload)
+
+    def test_wix_and_ui_extension_are_pinned_and_fail_closed(self):
+        workflow = (ROOT / ".github/workflows/windows.yml").read_text()
+        install = workflow.split('name: Install WiX', 1)[1].split('      - name:', 1)[0]
+        self.assertIn('dotnet tool install --global wix --version 4.0.6', install)
+        self.assertIn('wix --version', install)
+        self.assertIn('wix extension add --global WixToolset.UI.wixext/4.0.6', install)
+        self.assertEqual(install.count('if ($LASTEXITCODE -ne 0) { throw'), 3)
+        script = (ROOT / 'scripts/package-msi.ps1').read_text()
+        self.assertIn('-ext WixToolset.UI.wixext/4.0.6', script)
+        self.assertIn('if ($LASTEXITCODE -ne 0) { throw', script)
+
     def test_installer_is_published_only_for_a_release(self):
         workflow = (ROOT / ".github/workflows/windows.yml").read_text(encoding="utf-8")
         # O gatilho é publicar o Release; um push (mesmo de tag) não publica.
