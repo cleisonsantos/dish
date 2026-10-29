@@ -2,6 +2,15 @@
 use std::{collections::{BTreeMap, BTreeSet}, path::PathBuf, sync::{mpsc, OnceLock}};
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdatePolicy {
+    #[default]
+    Auto,
+    Notify,
+    Off,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Preferences {
@@ -52,6 +61,10 @@ pub struct Preferences {
     pub last_update_check: Option<i64>,
     pub last_update_etag: Option<String>,
     pub update_channel: Option<crate::update::UpdateChannel>,
+    /// Política de atualização do Dish. `Auto` é o padrão; `Notify` e `Off`
+    /// são escolhas explícitas.
+    #[serde(default)]
+    pub update_policy: UpdatePolicy,
 }
 
 fn env_path(name: &str) -> Option<PathBuf> {
@@ -153,6 +166,15 @@ mod tests {
         assert_eq!(preferences.last_update_check, None);
         assert_eq!(preferences.last_update_etag, None);
         assert_eq!(preferences.update_channel, None);
+        assert_eq!(preferences.update_policy, UpdatePolicy::Auto);
+    }
+
+    #[test]
+    fn old_preferences_without_update_policy_default_to_auto() {
+        let preferences: Preferences =
+            serde_json::from_str(r#"{"details_open":false,"last_update_check":1800000000}"#)
+                .unwrap();
+        assert_eq!(preferences.update_policy, UpdatePolicy::Auto);
     }
 
     #[test]
@@ -220,6 +242,7 @@ mod tests {
             last_update_check: Some(1_800_000_000),
             last_update_etag: Some("\"test-etag\"".to_string()),
             update_channel: Some(crate::update::UpdateChannel::Prerelease),
+            update_policy: UpdatePolicy::Notify,
         };
         let bytes = serde_json::to_vec(&preferences).unwrap();
         assert_eq!(serde_json::from_slice::<Preferences>(&bytes).unwrap(), preferences);
