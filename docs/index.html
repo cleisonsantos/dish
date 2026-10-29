@@ -3,157 +3,362 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Dish — a native desktop workbench for the Pi coding agent</title>
-<meta name="description" content="Dish is a desktop client for the Pi coding agent: a GPU-rendered workbench in Rust, with transcript, tool inspector and session history, for Linux and Windows.">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2314191f'/%3E%3Ccircle cx='16' cy='16' r='7' fill='none' stroke='%2376b9a5' stroke-width='2.5'/%3E%3C/svg%3E">
+<title>Dish — a desktop workbench for the Pi coding agent</title>
+<meta name="description" content="Dish is a desktop client for the Pi coding agent: a GPU-rendered window with transcript, tool inspector and session history. Rust, runs entirely on your machine.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2314191f'/%3E%3Ccircle cx='16' cy='15' r='7.5' fill='none' stroke='%2376b9a5' stroke-width='2'/%3E%3Cellipse cx='16' cy='26' rx='9' ry='2.2' fill='%2376b9a5' opacity='.35'/%3E%3C/svg%3E">
 <style>
   :root {
     color-scheme: light dark;
-    --bg: #fbfbfa;
-    --fg: #16181d;
-    --muted: #5c6270;
-    --line: #e2e2df;
-    --card: #ffffff;
-    --accent: #1f6f5c;
-    --accent-soft: #eaf3f0;
-    --code-bg: #f2f2ef;
+    --paper: #f8f8f5;
+    --panel: #ffffff;
+    --ink: #14161a;
+    --ink-2: #4a5057;
+    --ink-3: #6d747d;
+    --rule: #e4e4de;
+    --accent: #15604e;
+    --code: #f1f1ec;
+    --band: #f1f1ec;
+    --shadow: 0 1px 2px rgba(20, 22, 26, .06), 0 24px 48px -24px rgba(20, 22, 26, .28);
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #0f1216;
-      --fg: #e8e9ea;
-      --muted: #9aa1ad;
-      --line: #23272e;
-      --card: #151a20;
+      --paper: #0f1114;
+      --panel: #16191d;
+      --ink: #eceef0;
+      --ink-2: #a3aab2;
+      --ink-3: #8b929b;
+      --rule: #24282e;
       --accent: #7fcdb6;
-      --accent-soft: #16241f;
-      --code-bg: #13181e;
+      --code: #14171b;
+      --band: #14171b;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .5), 0 30px 60px -30px rgba(0, 0, 0, .8);
     }
   }
   * { box-sizing: border-box; }
-  html { -webkit-text-size-adjust: 100%; }
+  html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
   body {
     margin: 0;
-    background: var(--bg);
-    color: var(--fg);
-    font: 16px/1.65 ui-sans-serif, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: var(--paper);
+    color: var(--ink);
+    font: 400 17px/1.62 ui-sans-serif, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
   }
-  main { max-width: 46rem; margin: 0 auto; padding: 4rem 1.25rem 5rem; }
-  header { margin-bottom: 2.5rem; }
-  h1 { font-size: 2.4rem; line-height: 1.1; letter-spacing: -0.02em; margin: 0 0 .5rem; }
-  h2 { font-size: 1.15rem; letter-spacing: -0.01em; margin: 2.75rem 0 .9rem; padding-bottom: .45rem; border-bottom: 1px solid var(--line); }
-  p { margin: 0 0 1rem; }
-  .tagline { font-size: 1.2rem; color: var(--muted); margin: 0 0 1.5rem; }
-  .lede { font-size: 1.02rem; color: var(--muted); }
-  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
-  code, pre { font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace; font-size: .87em; }
-  code { background: var(--code-bg); padding: .12em .38em; border-radius: 4px; }
-  pre { background: var(--code-bg); padding: .85rem 1rem; border-radius: 8px; overflow-x: auto; margin: 0 0 1rem; }
-  pre code { background: none; padding: 0; }
-  .dl { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); margin: 1.25rem 0 .5rem; align-items: start; }
-  .dl section { align-self: start; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 1rem 1.1rem; }
-  .dl h3 { margin: 0 0 .55rem; font-size: .82rem; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); font-weight: 600; }
-  .dl ul { margin: 0; padding: 0; list-style: none; }
-  .dl li { display: flex; justify-content: space-between; gap: .5rem; padding: .28rem 0; font-size: .93rem; }
-  .dl li span { color: var(--muted); font-family: ui-monospace, Menlo, monospace; font-size: .82rem; }
-  .btn { display: inline-block; background: var(--accent); color: var(--bg); text-decoration: none; font-weight: 600; padding: .62rem 1.1rem; border-radius: 8px; margin: .35rem .5rem .35rem 0; }
-  .btn.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
-  .note { background: var(--accent-soft); border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0; padding: .85rem 1rem; font-size: .93rem; margin: 1.25rem 0; }
-  .note p:last-child { margin: 0; }
+  .mono, code, pre, .file {
+    font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+    font-feature-settings: "liga" 0;
+  }
+  a { color: inherit; }
+  a.link { color: var(--accent); text-decoration: none; border-bottom: 1px solid color-mix(in oklab, var(--accent) 35%, transparent); }
+  a.link:hover { border-bottom-color: var(--accent); }
+
+  .wrap { max-width: 72rem; margin: 0 auto; padding: 0 1.5rem; }
+
+  /* top bar */
+  .bar { border-bottom: 1px solid var(--rule); }
+  .bar .wrap { display: flex; align-items: baseline; gap: 1.5rem; padding: 1.1rem 1.5rem; }
+  .wordmark { font-size: 1.02rem; font-weight: 620; letter-spacing: -.01em; text-decoration: none; }
+  .bar nav { margin-left: auto; display: flex; gap: 1.4rem; font-size: .92rem; color: var(--ink-2); }
+  .bar nav a { text-decoration: none; }
+  .bar nav a:hover { color: var(--ink); }
+  .bar .ver { color: var(--ink-2); font-size: .84rem; text-decoration: none; }
+  .bar .ver:hover { color: var(--ink); }
+
+  /* hero */
+  .hero { display: grid; grid-template-columns: minmax(0, 27rem) minmax(0, 1fr); gap: 3.5rem; align-items: start; padding: 4rem 0 3.5rem; }
+  .hero h1 {
+    font-size: clamp(2.35rem, 4.6vw, 3.45rem);
+    line-height: 1.06;
+    letter-spacing: -.028em;
+    font-weight: 620;
+    margin: 0 0 1.1rem;
+    text-wrap: balance;
+  }
+  .hero p { margin: 0 0 1.35rem; color: var(--ink-2); max-width: 34ch; }
+  .hero .figure { position: relative; margin-right: calc(-1 * max(0px, (100vw - 72rem) / 2 + 1.5rem)); }
+  .hero .figure img {
+    display: block;
+    width: 100%;
+    max-width: none;
+    height: auto;
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    box-shadow: var(--shadow);
+    animation: settle .55s cubic-bezier(.22,.61,.36,1) both;
+  }
+  @keyframes settle { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) { .hero .figure img { animation: none; } html { scroll-behavior: auto; } }
+
+  .actions { display: flex; flex-wrap: wrap; gap: .6rem; margin: 1.6rem 0 1rem; }
+  .btn {
+    display: inline-block; text-decoration: none; font-weight: 560; font-size: .96rem;
+    padding: .66rem 1.05rem; border-radius: 7px; border: 1px solid transparent;
+  }
+  .btn.primary { background: var(--accent); color: #fff; }
+  @media (prefers-color-scheme: dark) { .btn.primary { color: #08120f; } }
+  .btn.primary:hover { filter: brightness(1.08); }
+  .btn.ghost { border-color: color-mix(in oklab, var(--ink-3) 55%, transparent); color: var(--ink); }
+  .btn.ghost:hover { border-color: var(--ink-3); }
+  .note-line { font-size: .9rem; color: var(--ink-3); margin: 0; }
+
+  /* sections */
+  section { padding: 2.6rem 0; border-top: 1px solid var(--rule); }
+  section.band {
+    background: var(--band);
+    border-top: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+    padding: 3rem max(0px, (100vw - 72rem) / 2 + 1.5rem);
+    margin-inline: calc(-1 * max(0px, (100vw - 72rem) / 2 + 1.5rem));
+  }
+  section.band > .wrap { }
+  .band-in { display: block; }
+  h2 { font-size: 1.28rem; letter-spacing: -.015em; font-weight: 600; margin: 0 0 .5rem; }
+  .sub { color: var(--ink-2); margin: 0 0 1.6rem; max-width: 62ch; }
+  p { max-width: 68ch; }
+
+  /* spec list */
+  dl.spec { margin: 0; display: grid; gap: 0; }
+  dl.spec > div { display: grid; grid-template-columns: 15rem minmax(0, 1fr); gap: 1.5rem; padding: 1rem 0; border-top: 1px solid var(--rule); }
+  dl.spec > div:first-child { border-top: 0; padding-top: 0; }
+  dl.spec dt { font-weight: 560; }
+  dl.spec dd { margin: 0; color: var(--ink-2); max-width: 60ch; }
+
+  /* downloads: manifest rows */
+  .group { margin-bottom: 2.4rem; }
+  .group h3 { font-size: 1.05rem; font-weight: 620; letter-spacing: -.01em; margin: 0 0 .5rem; color: var(--ink); }
+  .rows { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--rule); }
+  .rows li { border-bottom: 1px solid var(--rule); }
+  .rows a { display: grid; grid-template-columns: minmax(0, 1fr) 17.5rem; align-items: baseline; gap: 1.5rem; padding: .78rem 0; text-decoration: none; }
+  .rows a:hover .label { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+  .rows a:hover { background: color-mix(in oklab, var(--ink) 3.5%, transparent); }
+  .rows a { margin: 0 -0.6rem; padding-left: .6rem; padding-right: .6rem; }
+  .rows a:hover .file { color: var(--ink); }
+  .label { font-size: .98rem; }
+  .file { font-size: .855rem; color: var(--ink-2); }
+  .rows a:hover .file { color: var(--accent); }
+  .faint { font-size: .88rem; color: var(--ink-3); margin: .7rem 0 0; }
+
+  /* code */
+  pre {
+    background: var(--code); border: 1px solid var(--rule); border-radius: 8px;
+    padding: .9rem 1.05rem; overflow-x: auto; margin: 0 0 1rem;
+    font-size: .855rem; line-height: 1.7;
+  }
+  code { font-size: .88em; background: var(--code); padding: .1em .34em; border-radius: 4px; }
+  pre code { background: none; padding: 0; font-size: inherit; }
+
+  /* two-column block */
+  .split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 2.5rem; }
+  .split h3 { font-size: 1rem; font-weight: 580; margin: 0 0 .6rem; }
+  .policy { border-left: 2px solid var(--accent); padding-left: 1rem; }
+
+  ol.steps { margin: 0 0 1.2rem; padding-left: 1.15rem; }
+  ol.steps li { margin-bottom: .45rem; color: var(--ink-2); }
+  ol.steps li strong { color: var(--ink); font-weight: 560; }
+
+  section.closing { padding-bottom: 3.5rem; }
+  footer { border-top: 1px solid var(--rule); padding: 2rem 0 3.5rem; color: var(--ink-3); font-size: .88rem; }
+  footer p { margin: .25rem 0; }
+
+  @media (max-width: 60rem) {
+    .hero { grid-template-columns: 1fr; gap: 2rem; padding-top: 3rem; }
+    .hero .figure { margin-right: 0; }
+    .hero .figure img { width: 100%; }
+    .hero p { max-width: 52ch; }
+    .split { grid-template-columns: 1fr; gap: 1.8rem; }
+    dl.spec > div { grid-template-columns: 1fr; gap: .2rem; }
+  }
   @media (max-width: 34rem) {
-    pre { font-size: .9em; }
-    body { font-size: 15.5px; }
+    body { font-size: 16px; }
+    .wrap { padding: 0 1.1rem; }
+    section.band { padding: 2.4rem 1.1rem; margin-inline: -1.1rem; }
+    .bar nav { gap: 1rem; font-size: .88rem; }
+    .bar .ver { display: none; }
+    pre { font-size: .8rem; }
+    .rows a { grid-template-columns: 1fr; gap: .12rem; }
+    .file { font-size: .82rem; }
   }
-  footer { margin-top: 3.5rem; padding-top: 1.25rem; border-top: 1px solid var(--line); font-size: .88rem; color: var(--muted); }
-  footer p { margin: .3rem 0; }
 </style>
 </head>
 <body>
-<main>
-  <header>
-    <h1>Dish</h1>
-    <p class="tagline">A native desktop workbench for the Pi coding agent.</p>
-    <p class="lede">
-      Dish speaks the Pi CLI's JSON-RPC protocol over stdio and renders the session in a
-      GPU-accelerated window: transcript, tool-call inspector, session history, workspace
-      navigation, themes and reduced-motion support. No browser, no webview, no embedded
-      Node runtime. Everything runs on your machine — no backend, no account, no telemetry.
-    </p>
-    <p>
-      <a class="btn" href="https://github.com/cleisonsantos/dish/releases/latest">Download the latest release</a>
-      <a class="btn secondary" href="https://github.com/cleisonsantos/dish">Source on GitHub</a>
-    </p>
-  </header>
 
-  <h2>Download</h2>
-  <p>All builds are produced from tagged commits by GitHub Actions, and every file publishes a matching <code>.sha256</code>.</p>
-  <div class="dl">
-    <section>
-      <h3>Windows</h3>
-      <ul>
-        <li><a href="https://github.com/cleisonsantos/dish/releases/latest">NSIS setup installer</a> <span>.exe</span></li>
-        <li><a href="https://github.com/cleisonsantos/dish/releases/latest">Windows Installer package</a> <span>.msi</span></li>
-      </ul>
-    </section>
-    <section>
+<div class="bar">
+  <div class="wrap">
+    <a class="wordmark" href="/">Dish</a>
+    <nav>
+      <a href="#download">Download</a>
+      <a href="#verify">Verify</a>
+      <a href="https://github.com/cleisonsantos/dish">GitHub</a>
+      <a class="ver mono" href="https://github.com/cleisonsantos/dish/releases">v0.1.0-beta.1</a>
+    </nav>
+  </div>
+</div>
+
+<main class="wrap">
+
+  <div class="hero">
+    <div>
+      <h1>A window for the agent you already run.</h1>
+      <p>
+        Dish speaks the Pi CLI's JSON-RPC protocol over stdio and renders the session in a
+        GPU-accelerated window: transcript, tool-call inspector, session history and workspace
+        navigation. No browser, no webview, no embedded Node runtime.
+      </p>
+      <div class="actions">
+        <a class="btn primary" href="#download">Download Dish</a>
+        <a class="btn ghost" href="https://github.com/cleisonsantos/dish">Source on GitHub</a>
+      </div>
+      <p class="note-line">Linux and Windows · Apache-2.0 · runs entirely on your machine</p>
+    </div>
+    <div class="figure">
+      <img src="dish-window.png" width="1240" height="860"
+           alt="The Dish window: session list on the left, a conversation with the coding agent in the middle, tool calls collapsed into single lines.">
+    </div>
+  </div>
+
+  <section>
+    <h2>What it is, and what it isn't</h2>
+    <p class="sub">A thin window in front of a program you already trust — not another agent runtime.</p>
+    <dl class="spec">
+      <div>
+        <dt>A client, not an agent</dt>
+        <dd>Pi stays installed and stays in charge of models, tools and sessions. Dish reads and writes the same session files the terminal does, so a session started in one opens in the other.</dd>
+      </div>
+      <div>
+        <dt>Nothing leaves the machine</dt>
+        <dd>No backend, no account, no telemetry. The only network calls are the ones Pi makes and the update check, which fetches a signed manifest and nothing else.</dd>
+      </div>
+      <div>
+        <dt>Native, on purpose</dt>
+        <dd>Rust and GPU-rendered text. It starts in a fraction of a second, follows the system theme, and respects reduced motion rather than animating regardless.</dd>
+      </div>
+    </dl>
+  </section>
+
+  <section id="download" class="band">
+    <h2>Download</h2>
+    <p class="sub">
+      Every build comes from a tagged commit through GitHub Actions, and each file publishes a
+      matching <code>.sha256</code>. Pick the one that fits your system:
+    </p>
+
+    <div class="group">
       <h3>Linux</h3>
-      <ul>
-        <li><a href="https://github.com/cleisonsantos/dish/releases/latest">Portable tarball</a> <span>.tar.gz</span></li>
-        <li><a href="https://github.com/cleisonsantos/dish/releases/latest">Debian package</a> <span>.deb</span></li>
-        <li><a href="https://github.com/cleisonsantos/dish/releases/latest">Fedora package</a> <span>.rpm</span></li>
-        <li><a href="https://github.com/cleisonsantos/dish/releases/latest">Single-file app</a> <span>.AppImage</span></li>
+      <ul class="rows">
+        <li><a href="https://github.com/cleisonsantos/dish/releases/latest"><span class="label">Portable tarball — installs into <code>~/.local/bin</code>, no root needed</span><span class="file">dish-*-linux-x86_64.tar.gz</span></a></li>
+        <li><a href="https://github.com/cleisonsantos/dish/releases/latest"><span class="label">Debian, Ubuntu and derivatives</span><span class="file">dish_*.deb</span></a></li>
+        <li><a href="https://github.com/cleisonsantos/dish/releases/latest"><span class="label">Fedora, openSUSE and derivatives</span><span class="file">dish-*.rpm</span></a></li>
+        <li><a href="https://github.com/cleisonsantos/dish/releases/latest"><span class="label">Single-file app, no installation</span><span class="file">dish-*.AppImage</span></a></li>
       </ul>
-    </section>
-  </div>
-  <p><small>The <code>.deb</code> and <code>.rpm</code> packages install the binary as <code>dish-pi</code>, because <code>dish</code> is already taken by an unrelated package in both distributions.</small></p>
+    </div>
 
-  <h2>Install</h2>
-  <p>The portable tarball needs no package manager and no root. It installs into <code>~/.local/bin</code>:</p>
-  <pre><code>tar xzf dish-*-linux-x86_64.tar.gz
+    <div class="group">
+      <h3>Windows</h3>
+      <ul class="rows">
+        <li><a href="https://github.com/cleisonsantos/dish/releases/latest"><span class="label">Setup installer, per-user, no admin prompt</span><span class="file">dish-*-setup.exe</span></a></li>
+        <li><a href="https://github.com/cleisonsantos/dish/releases/latest"><span class="label">Windows Installer package, for managed machines</span><span class="file">dish-*.msi</span></a></li>
+      </ul>
+    </div>
+
+    <p class="faint">
+      The <code>.deb</code> and <code>.rpm</code> packages install the binary as
+      <code>dish-pi</code>, because <code>dish</code> is already taken by an unrelated package in
+      both distributions. The <code>*</code> in a file name stands for the release version, and the
+      builds are <code>x86_64</code> for now. All
+      releases, including older betas, live on
+      <a class="link" href="https://github.com/cleisonsantos/dish/releases">the releases page</a>.
+    </p>
+  </section>
+
+  <section>
+    <h2>Install</h2>
+    <p class="sub">The portable tarball is the shortest path, and it needs neither a package manager nor root.</p>
+    <ol class="steps">
+      <li><strong>Unpack the tarball</strong> and run the installer. It puts <code>dish</code> in <code>~/.local/bin</code> and adds a launcher to your application menu.</li>
+      <li><strong>Install Pi</strong>, if you don't have it yet. Dish drives the <code>pi</code> that is already on your <code>PATH</code> and nothing else.</li>
+    </ol>
+    <pre><code>tar xzf dish-*-linux-x86_64.tar.gz
 cd dish-*-linux-x86_64/
-./install.sh</code></pre>
-  <p>Dish drives the Pi CLI, so Pi has to be installed and on your <code>PATH</code> (this needs Node.js):</p>
-  <pre><code>npm install -g @earendil-works/pi-coding-agent</code></pre>
+./install.sh
 
-  <h2>Verify a download</h2>
-  <pre><code>sha256sum -c dish-*.tar.gz.sha256</code></pre>
-  <p>On Windows, check the checksum and then the signature (see below).</p>
+# Pi, if it is not installed yet (needs Node.js)
+npm install -g @earendil-works/pi-coding-agent</code></pre>
+  </section>
 
-  <h2>Code signing policy</h2>
-  <div class="note">
-    <p><strong>Free code signing provided by <a href="https://about.signpath.io">SignPath.io</a>, certificate by <a href="https://signpath.org">SignPath Foundation</a>.</strong></p>
-  </div>
-  <p>
-    The Windows installers and the <code>dish.exe</code> inside them carry an Authenticode
-    signature, so you can confirm where the binary came from before running it. Signing
-    happens in the release workflow on GitHub-hosted runners, and every signing request is
-    approved by a maintainer before the certificate is used.
-  </p>
-  <p>
-    To verify a download, compare it against the published <code>.sha256</code>, then check
-    the signature on the installer (or on the installed <code>dish.exe</code>):
-  </p>
-  <pre><code>Get-AuthenticodeSignature .\dish-*-setup.exe | Format-List
+  <section id="verify">
+    <h2>Verify a download</h2>
+    <div class="split">
+      <div>
+        <h3>Checksums</h3>
+        <p>Each release publishes a <code>.sha256</code> next to every asset. Compare before running anything:</p>
+        <pre><code>sha256sum -c dish-*.tar.gz.sha256</code></pre>
+        <p class="faint">
+          The app also verifies a minisign-signed manifest before it offers an update, so an
+          update is never accepted from an unsigned source.
+        </p>
+      </div>
+      <div>
+        <h3>Windows signatures</h3>
+        <p>The installers and the <code>dish.exe</code> inside them carry an Authenticode signature:</p>
+        <pre><code>Get-AuthenticodeSignature .\dish-*-setup.exe
 signtool verify /pa /v .\dish-*.msi</code></pre>
-  <p>
-    Linux builds are not Authenticode-signed, because that mechanism does not exist on the
-    platform; integrity comes from the published SHA-256 and from the minisign-signed update
-    manifest that the app verifies before offering an update. The full policy, including
-    team roles, is in
-    <a href="https://github.com/cleisonsantos/dish/blob/main/docs/code-signing.md">docs/code-signing.md</a>.
-  </p>
+        <p class="faint">Linux builds are not Authenticode-signed, because that mechanism does not exist on the platform.</p>
+      </div>
+    </div>
+  </section>
 
-  <h2>Build from source</h2>
-  <pre><code>git clone https://github.com/cleisonsantos/dish
+  <section>
+    <h2>Code signing policy</h2>
+    <div class="split">
+      <div class="policy">
+        <p>
+          <strong>Free code signing provided by <a class="link" href="https://about.signpath.io">SignPath.io</a>,
+          certificate by <a class="link" href="https://signpath.org">SignPath Foundation</a>.</strong>
+        </p>
+        <p class="faint">
+          Signing happens inside the release workflow on GitHub-hosted runners, and every signing
+          request is approved by a maintainer before the certificate is used.
+        </p>
+      </div>
+      <div>
+        <p>
+          The point of the signature is to answer one question before you run a binary: where did
+          this come from, and did it change after it was built? A valid signature answers both.
+        </p>
+        <p class="faint">
+          The full policy — which files are signed, who holds the roles, and how the certificate is
+          kept — is in
+          <a class="link" href="https://github.com/cleisonsantos/dish/blob/main/docs/code-signing.md">docs/code-signing.md</a>.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Build from source</h2>
+    <p class="sub">Rust stable, and a working Vulkan driver. That's the whole list.</p>
+    <pre><code>git clone https://github.com/cleisonsantos/dish
 cd dish
 cargo build --release --locked</code></pre>
+  </section>
 
-  <footer>
-    <p>Apache-2.0 licensed. Issues and pull requests live on
-      <a href="https://github.com/cleisonsantos/dish">GitHub</a>.</p>
-    <p>Dish is an independent project and is not affiliated with the Pi maintainers.</p>
-  </footer>
+  <section class="closing">
+    <h2>Ready when you are.</h2>
+    <p class="sub">One download, no account, no installer phoning home. Pi keeps doing the work; Dish just gives it a window.</p>
+    <div class="actions">
+      <a class="btn primary" href="#download">Download Dish</a>
+      <a class="btn ghost" href="https://github.com/cleisonsantos/dish/releases">All releases</a>
+    </div>
+  </section>
+
 </main>
+
+<footer>
+  <div class="wrap">
+    <p>Apache-2.0 licensed. Issues and pull requests live on <a class="link" href="https://github.com/cleisonsantos/dish">GitHub</a>.</p>
+    <p>Dish is an independent project and is not affiliated with the Pi maintainers.</p>
+  </div>
+</footer>
+
 </body>
 </html>
