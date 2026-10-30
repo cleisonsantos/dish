@@ -658,6 +658,7 @@ impl Workspace {
             "hits": self.content_search.results.hits.iter().map(|hit| serde_json::json!({
                 "title": hit.title, "snippet": hit.snippet,
             })).collect::<Vec<_>>(),
+            "selected": self.content_search.selected,
         })))
     }
 }
