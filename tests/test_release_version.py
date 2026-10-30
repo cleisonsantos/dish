@@ -40,7 +40,7 @@ class ReleaseVersionTests(unittest.TestCase):
 
 class WindowsReleaseLabelTests(unittest.TestCase):
     def test_repository_ci_label_keeps_the_prerelease_suffix(self):
-        self.assertEqual(windows.release_version(None), "0.1.0-beta.1")
+        self.assertEqual(windows.release_version(None), "0.1.0-beta.2")
 
     def test_dish_version_environment_spelling(self):
         with tempfile.TemporaryDirectory(prefix="dish-ci-") as temporary:
