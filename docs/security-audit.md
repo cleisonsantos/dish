@@ -1,5 +1,147 @@
 # Auditoria de segurança — issue #90
 
+## Rodada 3 — fechamento (2026-10-30)
+
+Data: 2026-10-30 (America/Sao_Paulo). Worktree `dish-audit`, branch
+`chore/90-closing`, base `24c8ee3c0c24133f42aa673069d5316559081ee6`.
+SHA-256 do `Cargo.lock`: `c42c386577bb9895afffe72ce12613b4a140d90a4d0d652e961ef40273a17bbc`
+(710 pacotes, 709 dependências de crates.io). O lock mudou desde a rodada 2
+(auto-update, PR #139); os números abaixo substituem os da rodada 2 para esta base.
+Máquina: AMD Ryzen 7 5700X (16 threads), 31 GiB RAM, Linux 7.3.0-4-cachyos.
+
+**Resultado: nenhuma ferramenta de auditoria RustSec disponível; consulta OSV
+encontrou 1 vulnerabilidade (block-buffer, GHSA, severidade baixa), 1 aviso unsound
+e 5 unmaintained. Não se afirma ausência de vulnerabilidades.**
+
+### Dependências
+
+`cargo-audit`, `cargo-deny`, Gitleaks e TruffleHog não estão instalados nesta
+máquina e não foram instalados. `scripts/security_audit.py` reporta
+`DEPENDENCIES INCOMPLETE: cargo-audit unavailable`. O advisory DB local
+(`~/.cargo/advisory-db`) continua no commit `21d909e4` de 2026-10-24, sem
+atualização.
+
+Substituto medido: consulta à API pública do OSV (`/v1/querybatch` e
+`/v1/vulns/<id>`) com os 709 pacotes crates.io do lock, por script fora do
+repositório. 7 ocorrências, 7 IDs distintos:
+
+| ID | Crate | Natureza | Decisão |
+| --- | --- | --- | --- |
+| GHSA-qwgh-2vcv-g2f7 | block-buffer 0.10.4 | vulnerabilidade, CVSS 4.0 `AV:N/AC:L/AT:P/PR:N/UI:N/VC:L/VI:L/VA:N` (baixa) | Novo desde a rodada 2 (publicado 2026-08-19, só GitHub Advisory DB; não está no RustSec, por isso o cargo-audit não o mostrava). Exige pânico capturado (`catch_unwind`) dentro do callback de compressão e reuso do buffer. Caminho: `gpui_ce_linux → oo7 → digest 0.10.7 / sha2 / md-5 / hmac → block-buffer`. Correção só em 0.12.1, incompatível com `digest 0.10`; não há upgrade dentro do lock. Aceitar e acompanhar migração upstream do `oo7`. |
+| RUSTSEC-2026-0386 | tokio 1.53.1 | unsound | Inalterado em relação à rodada 2. |
+| RUSTSEC-2024-0436 | paste 1.0.15 | unmaintained | Inalterado. |
+| RUSTSEC-2026-0192 | ttf-parser 0.25.1 | unmaintained | Inalterado. |
+| RUSTSEC-2026-0371 | zbus_names 4.3.4 | unmaintained | Inalterado. |
+| RUSTSEC-2026-0370 | zvariant 5.15.0 | unmaintained | Inalterado. |
+| RUSTSEC-2026-0372 | zvariant_derive 5.15.0 | unmaintained | Inalterado. |
+
+O OSV não distingue no campo de tipo os avisos informativos do RustSec; a
+classificação acima vem do texto de cada advisory. Crates yanked não foram
+verificadas.
+
+### Licenças
+
+Com a base atual, `cargo metadata --locked --offline` sem filtro de plataforma
+funciona: o script audita **709 de 709** dependências (`unverified=0`).
+`LICENSES lock_dependencies=709 inventory=709 collected=695 unverified=0 status=1`.
+
+- 14 `LICENSE_GAP` (sem texto de licença no crate): dispatch2, dwrote, leaky-cow,
+  mac-notification-sys, objc2-app-kit 0.3.2, objc2-core-foundation,
+  objc2-core-location, objc2-metal 0.3.2, objc2-quartz-core 0.3.2,
+  objc2-user-notifications, r-efi 5.3.0/6.0.0, winapi-i686-pc-windows-gnu,
+  winapi-x86_64-pc-windows-gnu. **Nenhum está no grafo Linux
+  (`x86_64-unknown-linux-gnu`) nem Windows (`x86_64-pc-windows-msvc`)**,
+  conferido com `cargo metadata --filter-platform`. São de macOS, UEFI ou
+  Windows GNU, alvos que não são publicados.
+- 4 `LICENSE_REVIEW`: cbindgen (MPL-2.0) e libfuzzer-sys (`... AND NCSA`), fora
+  dos alvos publicados; dwrote (MPL-2.0), fora dos alvos publicados;
+  **webpki-roots 1.0.11 (CDLA-Permissive-2.0), presente em Linux e Windows**,
+  trazido pelo auto-update. É licença permissiva de dados que exige
+  acompanhar o texto; o coletor de release coleta esse texto. Fica pendente de
+  decisão do mantenedor incluí-la na lista `PERMISSIVE` do script.
+
+Coleta real (`license_bundle.build`, a mesma rotina do empacotador), em
+diretório temporário:
+
+- Linux: 521 dependências coletadas, 956 arquivos, `rust-toolchain/` presente.
+- Windows MSVC: 389 dependências coletadas, 711 arquivos, `rust-toolchain/` presente.
+
+A coleta das dependências usa só as fontes locais do Cargo. A parte do
+toolchain (`LICENSE-APACHE`, `LICENSE-MIT`, `COPYRIGHT`) baixa de
+`raw.githubusercontent.com/rust-lang/rust/<commit>` com cache em
+`~/.cache/dish/licenses` (`DISH_LICENSE_CACHE`); depende de rede na primeira
+execução. Expressões encontradas nos alvos publicados: só licenças permissivas,
+MPL-2.0 em `option-ext` (já prevista, com fonte embarcada), `self_cell`
+(`Apache-2.0 OR GPL-2.0-only`, escolhida Apache-2.0) e CDLA-Permissive-2.0 em
+`webpki-roots`. Nenhuma licença incompatível identificada. Não é parecer jurídico.
+
+### Segredos
+
+`SECRETS tracked_files=200 binary_files_skipped=4 commits=261 candidates=59 shallow=False`.
+Novos candidatos desde a rodada 2, todos revisados como material sintético de teste:
+
+- `tests/fixtures/update/test-private.pem` (`private-key`): chave Ed25519 fixa
+  de teste, documentada em `tests/fixtures/update/README.md`. A chave pública
+  correspondente (`test.pub`) não aparece em `src/` fora de testes; a chave de
+  produção é outra.
+- `src/update/tests.rs:371` (`url-password`): URL de teste com usuário e senha
+  embutidos, no formato `usuario:senha@host`, usada para exercitar a rejeição.
+- `src/editor.rs:1744` e `tests/providers_smoke.py` (linhas 50, 344, 422, 461, 511):
+  valores de chave falsos com prefixo `sk-`, montados como literais de teste.
+
+Nenhum segredo real confirmado. Os limites da rodada 2 continuam valendo
+(sem Gitleaks, sem reflogs/objetos inalcançáveis, só regex).
+
+### Artefato real: v0.1.0-beta.1
+
+Baixado da release publicada (`gh release download`) para diretório isolado;
+os checksums `.sha256` conferem para o tar e o Debian.
+
+- Tar: 1521 membros, 964 arquivos; nenhum link, device, setuid/setgid,
+  caminho absoluto ou `..`. `BUILD.json`: versão `0.1.0-beta.1`,
+  `x86_64-unknown-linux-gnu`, 521 dependências, rustc 1.99.1.
+  `strings bin/dish | grep -c /home/` = 0.
+- `DISH_TEST_ARCHIVE=... python3 -m unittest test_release_package.CandidateArchiveTests -v`
+  (em `tests/`): **OK**, 1 teste — checksum, licenças, `option-ext`, FreeType,
+  licenças do toolchain, install/uninstall em HOME temporário.
+- Debian (leitura somente, sem dpkg): ar com `debian-binary`, `control.tar.zst`,
+  `data.tar.zst`; control sem scripts de manutenção; 1528 membros, 964 arquivos,
+  nada suspeito; `usr/bin/dish-pi` idêntico byte a byte a `bin/dish` do tar.
+  O Debian continua sem `BUILD.json`.
+- O artefato foi construído da tag `v0.1.0-beta.1`, 22 commits antes da base
+  auditada, com lock diferente (`8af1f502...`). Ele valida a esteira de
+  release, não esta base.
+
+### Testes desta rodada
+
+| Comando | Resultado |
+| --- | --- |
+| `cargo check --locked` | passou |
+| `cargo test --locked` | passou com `TMPDIR=/tmp`: 255 ok, 1 ignored (benchmark manual). Com `TMPDIR` dentro de outro repositório Git, `git_context::tests::handles_missing_git_and_non_repo` falha (o teste descobre o repositório pai) |
+| `cargo clippy --locked --all-targets -- -D warnings` | passou |
+| `test_security_audit.py` | 9 ok |
+| `test_release_package.py` | 66 testes: 1 failure, 1 error, 6 skipped. As duas falhas são `DebianPackageTests` e vêm de `dpkg-deb`/`dpkg-query` ausentes nesta máquina |
+| `test_provider_adapter.py` | 10 ok |
+| `diagnostic_privacy_smoke.py` (Xvfb) | passou |
+| `desktop_smoke.py` (Xvfb) | não concluiu: falta `eng.traineddata` do Tesseract nesta máquina |
+| `benchmark_large_history` (release, `--ignored`) | 22,7 MB / 20 000 mensagens: busca fria 70,1 ms, quente 7,4 ms. Só "depois"; não há medida "antes" comparável |
+
+### Pendências que continuam abertas
+
+- Rodar cargo-audit/cargo-deny com advisory DB atualizado e Gitleaks em ambiente
+  controlado.
+- Benchmark antes/depois com p95 de interação e RSS: não existe instrumentação;
+  só a busca tem medida, e só de depois.
+- Teste `git_context` depende de `TMPDIR` fora de repositórios Git
+  (proposta: isolar com `GIT_CEILING_DIRECTORIES` no teste).
+- Smoke gráfico completo e testes Debian numa máquina com Tesseract `eng` e dpkg
+  (o CI Ubuntu tem os dois).
+- Decidir `CDLA-Permissive-2.0` na política do script e restringir o check de
+  licenças aos alvos publicados, para que gaps de macOS não mascarem achados reais.
+- Incluir `BUILD.json` no Debian.
+
+## Rodada 2 — 2026-10-25 (histórico)
+
 Data: 2026-10-25 (America/Sao_Paulo). Worktree: `dish-issue90`, branch
 `fix/90-dependency-audit`, base auditada `e6bc9f8bd60982e6ba701b02ba3130b65b706caa`.
 SHA-256 do `Cargo.lock`: `449752b0b7767371ca809ece422450d127c97b004631aa2ee41a5bf8c0ad86c4`.
