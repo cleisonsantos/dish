@@ -28,7 +28,8 @@ with tempfile.TemporaryDirectory(prefix="dish-search-stability-") as temporary:
     env = dict(os.environ, HOME=str(temp / "home"), DISH_PI_BIN=str(wrapper),
                PI_CODING_AGENT_DIR=str(agent), XDG_CONFIG_HOME=str(temp / "config"),
                XDG_DATA_HOME=str(temp / "data"), DISH_FAKE_PI_LOG=str(log_path),
-               DISH_FAKE_PI_STREAM_GATE_DIR=str(gates), XDG_SESSION_TYPE="x11")
+               DISH_FAKE_PI_STREAM_GATE_DIR=str(gates), XDG_SESSION_TYPE="x11",
+               DISH_TEST_UI_LOG=str(temp / "ui.jsonl"))
     env.pop("WAYLAND_DISPLAY", None)
     env.pop("PI_CODING_AGENT_SESSION_DIR", None)
     log = open(temp / "dish.log", "w")
@@ -54,6 +55,7 @@ with tempfile.TemporaryDirectory(prefix="dish-search-stability-") as temporary:
     try:
         wait_for(lambda: find_window(), "Search stability window not created")
         window = find_window()
+        UI_TRACES[window] = UiTrace(temp / "ui.jsonl")
         wait_for(lambda: any(event.get("command", {}).get("type") == "get_messages" for event in events()),
                  "Pi did not initialize")
         x11.XSetInputFocus(display, window, 1, 0)
@@ -61,7 +63,16 @@ with tempfile.TemporaryDirectory(prefix="dish-search-stability-") as temporary:
         def composer_ready():
             # Xvfb has no WM; mapping may follow the first title notification.
             expose_window(window)
-            return find_word(window, "Pergunte")
+            node = UI_TRACES[window].node("composer-input")
+            return node and visible_point(node)
+
+        def settled_search(query):
+            # Paint state, not OCR: one tesseract pass can outlast the whole wait
+            # under load, while the panel is already painted (issue #136).
+            node = UI_TRACES[window].node("content-search")
+            if node and visible_point(node) and node["data"]["query"] == query and not node["data"]["loading"]:
+                return node["data"]["hits"]
+            return None
 
         wait_for(composer_ready, "Composer did not render")
         chord("Control_L", "l")
@@ -70,8 +81,8 @@ with tempfile.TemporaryDirectory(prefix="dish-search-stability-") as temporary:
         wait_for(lambda: (gates / "ready-0").exists(), "Streaming fixture did not pause")
         chord("Control_L", "Shift_L", "f")
         type_text("needle")
-        wait_for(lambda: find_word(window, "ARCHIVEONLY"), "Archived search results missing")
-        press("Tab")  # Keep the first result selected throughout streaming.
+        wait_for(lambda: any("ARCHIVEONLY" in hit["snippet"] for hit in settled_search("needle") or []),
+                 "Archived search results missing")
         # Move the pointer without park_mouse(): that helper deliberately uses
         # Ctrl+L, which would move keyboard focus out of the search editor.
         root_x, root_y, child = ctypes.c_int(), ctypes.c_int(), ctypes.c_ulong()
@@ -79,22 +90,20 @@ with tempfile.TemporaryDirectory(prefix="dish-search-stability-") as temporary:
                                   ctypes.byref(root_x), ctypes.byref(root_y), ctypes.byref(child))
         xtst.XTestFakeMotionEvent(display, -1, root_x.value, root_y.value, 0)
         x11.XFlush(display)
-        counter = find_word(window, "resultados")
-        close = find_word(window, "Fechar")
-        assert counter and close, "Search panel anchors missing"
-        # Sample only status + first result, excluding the editor caret and any
-        # changing transcript behind the panel. Bounds follow rendered text.
-        x = max(0, counter[0] - 4)
-        y = max(0, counter[1] - 3)
-        width = close[0] + close[2] - x
-        height = 10 * max(counter[3], close[3])
+        # Assert state, not pixels: anchor_scroll keeps the painted crop a
+        # moving target while the text flows (#136). The probe exposes query,
+        # loading, hits and the selection, so every claim here reads state.
+        def selection_of(id):
+            node = UI_TRACES[window].node(id)
+            return node["data"]["selected"] if node else None
 
-        def panel_pixels():
-            return subprocess.check_output(["import", "-window", str(window), "-crop",
-                                            f"{width}x{height}+{x}+{y}", "-depth", "8", "rgb:-"])
-
-        baseline = panel_pixels()
-        wait_for(lambda: panel_pixels() == baseline, "Search selection did not settle")
+        press("Tab")  # Keep the first result selected throughout streaming.
+        # Tab is picked up on the next painted frame, so wait for the state.
+        wait_for(lambda: selection_of("content-search") == 0,
+                 "Tab did not select the first result")
+        selected = selection_of("content-search")
+        assert selected == 0, f"Tab selected {selected!r}, expected the first result"
+        expected = wait_for(lambda: settled_search("needle"), "Search results missing after Tab")
         samples = 0
         for index in range(5):
             wait_for(lambda: (gates / f"ready-{index}").exists(), "Next stream delta did not pause")
@@ -102,22 +111,28 @@ with tempfile.TemporaryDirectory(prefix="dish-search-stability-") as temporary:
             wait_for(lambda: deltas() >= index + 1, "Stream delta was not emitted")
             deadline = time.monotonic() + 0.4
             while time.monotonic() < deadline:
-                assert panel_pixels() == baseline, "Streaming cleared/rebuilt the search results or selection"
+                assert settled_search("needle") == expected, "Search results rebuilt during streaming"
+                assert selection_of("content-search") == 0, "Search selection lost during streaming"
                 samples += 1
         wait_for(lambda: any(event.get("record", {}).get("type") == "agent_end" for event in events()),
                  "Streaming agent did not finish")
-        assert panel_pixels() == baseline, "Agent completion refreshed the open search"
+        assert settled_search("needle") == expected, "Agent completion refreshed the open search"
+        assert selection_of("content-search") == 0, "Search selection lost after completion"
         # An actual edit must still refresh the snapshot.
         chord("Control_L", "a")
         type_text("no-such-content")
-        wait_for(lambda: not find_word(window, "ARCHIVEONLY"), "Editing the query did not replace results")
+        wait_for(lambda: (hits := settled_search("no-such-content")) is not None and
+                 not any("ARCHIVEONLY" in hit["snippet"] for hit in hits),
+                 "Editing the query did not replace results")
         press("Escape")
         assert process.poll() is None, (temp / "dish.log").read_text()
-        print(f"Search stability smoke passed: {samples} frames across streaming, completion and query edits")
+        print(f"Search stability smoke passed: {samples} state samples across streaming, completion and query edits")
     except Exception:
         screenshot = tempfile.mktemp(prefix="dish-search-stability-failure-", suffix=".png")
         subprocess.run(["import", "-window", str(window) if window else "root", screenshot], check=False)
         print("Search stability failure screenshot:", screenshot)
+        if window:
+            save_ui_trace(window, "dish-search-stability")
         print(log_path.read_text() if log_path.exists() else "No fixture events")
         print((temp / "dish.log").read_text())
         raise
