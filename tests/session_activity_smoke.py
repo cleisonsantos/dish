@@ -35,10 +35,15 @@ with tempfile.TemporaryDirectory(prefix="dish-activity-") as temporary:
     log_path = temp / "events.jsonl"
     preferences_path = temp / "config/dish/state.json"
     preferences_path.parent.mkdir(parents=True, exist_ok=True)
-    preferences_path.write_text(json.dumps({"appearance": "dark"}))
+    preferences_path.write_text(json.dumps({"appearance": "dark", "completion_sound": True}))
+    # Tocador sintético: registra cada som em vez de abrir áudio de verdade.
+    sound_log = temp / "sound.log"
+    player = temp / "fake-sound"
+    player.write_text(f'#!/bin/sh\necho done >> "{sound_log}"\n')
+    player.chmod(0o700)
     env = dict(os.environ, HOME=str(temp / "home"), DISH_PI_BIN=str(wrapper),
                PI_CODING_AGENT_DIR=str(agent), XDG_CONFIG_HOME=str(temp / "config"),
-               XDG_DATA_HOME=str(temp / "data"), DISH_FAKE_PI_LOG=str(log_path), DISH_FAKE_PI_RUN_GATE_DIR=str(gates), XDG_SESSION_TYPE="x11")
+               XDG_DATA_HOME=str(temp / "data"), DISH_FAKE_PI_LOG=str(log_path), DISH_FAKE_PI_RUN_GATE_DIR=str(gates), DISH_SOUND_CMD=str(player), XDG_SESSION_TYPE="x11")
     env.pop("WAYLAND_DISPLAY", None)
     env.pop("PI_CODING_AGENT_SESSION_DIR", None)
     screenshot = temp / "navigation.png"
@@ -66,6 +71,9 @@ with tempfile.TemporaryDirectory(prefix="dish-activity-") as temporary:
             return json.loads(preferences_path.read_text())
         except (FileNotFoundError, json.JSONDecodeError):
             return {}
+
+    def sounds():
+        return len(sound_log.read_text().splitlines()) if sound_log.exists() else 0
 
     def error_mentions():
         """Quantas vezes o erro sintético aparece na janela (banner + transcript)."""
@@ -171,6 +179,8 @@ with tempfile.TemporaryDirectory(prefix="dish-activity-") as temporary:
     try:
         start()
         assert len(commands("get_messages")) == 1, "Catalog started extra processes"
+        time.sleep(1)
+        assert sounds() == 0, "Loading history played a completion sound"
         cycle_filter()  # Precisa de você
         wait_for(lambda: "nenhuma" in nav_text(), "Attention filter included idle/saved sessions")
         cycle_filter()  # Não lidas
@@ -186,6 +196,9 @@ with tempfile.TemporaryDirectory(prefix="dish-activity-") as temporary:
         alpha_path = str(sessions / "alpha.jsonl")
         beta_path = str(sessions / "beta.jsonl")
         wait_for(lambda: alpha_path in preferences().get("unread_sessions", {}), "Background response not persisted")
+        wait_for(lambda: sounds() == 1, "Background completion did not play exactly one sound")
+        time.sleep(1)
+        assert sounds() == 1, "Background completion played more than once"
         wait_for(lambda: "resposta nova" in nav_text(), "Unread response not shown")
 
         # Two queued beta runs: the first response remains unread while the next runs.
@@ -257,6 +270,7 @@ with tempfile.TemporaryDirectory(prefix="dish-activity-") as temporary:
         chord("Control_L", "Shift_L", "b")
         wait_for(lambda: "1n" in rail_text().replace(" ", ""), "Collapsed rail lacks aggregate count")
         chord("Control_L", "Shift_L", "b")
+        sounds_before_restart = sounds()
         process.terminate()
         process.wait(timeout=5)
         wait_for(lambda: not find_window(), "Old window did not close")
@@ -270,6 +284,8 @@ with tempfile.TemporaryDirectory(prefix="dish-activity-") as temporary:
         before = len(commands("get_messages"))
         start()
         wait_for(lambda: "beta saved" in nav_text() and "alpha saved" not in nav_text(), "Unread saved response lost on restart")
+        time.sleep(1)
+        assert sounds() == sounds_before_restart, "Restart replayed completion sounds"
         assert len(commands("get_messages")) == before + 1, "Unread history started a process automatically"
         assert beta_path in preferences().get("unread_sessions", {})
         select_title("beta saved")
