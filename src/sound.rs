@@ -82,7 +82,8 @@ fn play_native() -> anyhow::Result<()> {
 #[cfg(windows)]
 fn play_native() -> anyhow::Result<()> {
     use anyhow::Context;
-    use windows::Win32::UI::WindowsAndMessaging::{MessageBeep, MB_ICONASTERISK};
+    use windows::Win32::System::Diagnostics::Debug::MessageBeep;
+    use windows::Win32::UI::WindowsAndMessaging::MB_ICONASTERISK;
     // SAFETY: MessageBeep só toca um som do sistema; sem ponteiros ou estado.
     unsafe { MessageBeep(MB_ICONASTERISK) }.context("falha ao tocar o som do sistema")?;
     Ok(())
