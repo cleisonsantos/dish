@@ -36,6 +36,17 @@ fn word(text: &str, offset: usize) -> Range<usize> {
         .unwrap_or(offset..offset)
 }
 
+/// Logical line around `offset` (split on `\n`, not on visual wrapping).
+/// The terminating `\n` is included when present, so a copy keeps the line
+/// break as editors do. An offset exactly on a `\n` belongs to the line that
+/// `\n` terminates (clicking past the end of a line lands on its `\n`).
+fn line(text: &str, offset: usize) -> Range<usize> {
+    let offset = boundary(text, offset);
+    let start = text[..offset].rfind('\n').map_or(0, |index| index + 1);
+    let end = text[offset..].find('\n').map_or(text.len(), |index| offset + index + 1);
+    start..end
+}
+
 impl Selection {
     fn range(&self) -> Range<usize> {
         boundary(&self.text, self.anchor.min(self.head))
@@ -346,15 +357,24 @@ impl Element for SelectedText {
                         .min(len);
                 selection.update(cx, |state, cx| {
                     state.focus.focus(window, cx);
-                    if event.click_count >= 2 {
-                        let range = word(&state.text, index);
-                        state.anchor = range.start;
-                        state.head = range.end;
-                    } else {
-                        if !event.modifiers.shift {
-                            state.anchor = index;
+                    match event.click_count {
+                        2 => {
+                            let range = word(&state.text, index);
+                            state.anchor = range.start;
+                            state.head = range.end;
                         }
-                        state.head = index;
+                        // 4+ clicks stay on the line instead of jumping back to a word.
+                        3.. => {
+                            let range = line(&state.text, index);
+                            state.anchor = range.start;
+                            state.head = range.end;
+                        }
+                        _ => {
+                            if !event.modifiers.shift {
+                                state.anchor = index;
+                            }
+                            state.head = index;
+                        }
                     }
                     state.dragging = true;
                     cx.notify();
@@ -395,7 +415,7 @@ impl Element for SelectedText {
 
 #[cfg(test)]
 mod tests {
-    use super::{boundary, highlighted_runs, word, SelectionBuilder};
+    use super::{boundary, highlighted_runs, line, word, SelectionBuilder};
     use crate::theme;
     use gpui::{Font, TextRun};
     #[test]
@@ -403,6 +423,30 @@ mod tests {
         assert_eq!(word("ação e café", 2), 0..6);
         assert_eq!(word("ação e café", 10), 9..14);
         assert_eq!(boundary("😀á", 3), 0);
+    }
+    #[test]
+    fn line_selection_follows_newlines() {
+        assert_eq!(line("abc def", 4), 0..7);
+        let text = "um\ndois\ntrês";
+        assert_eq!(line(text, 1), 0..3);
+        assert_eq!(line(text, 5), 3..8);
+        assert_eq!(line(text, 9), 8..text.len());
+    }
+    #[test]
+    fn line_selection_of_empty_text_is_empty() {
+        assert_eq!(line("", 0), 0..0);
+        assert_eq!(line("", 5), 0..0);
+    }
+    #[test]
+    fn line_selection_snaps_to_char_boundaries() {
+        // "ação" = 6 bytes, `\n` at 6, emoji 7..11, "á" 11..13.
+        let text = "ação\n😀á";
+        assert_eq!(line(text, 2), 0..7);
+        assert_eq!(line(text, 9), 7..13);
+    }
+    #[test]
+    fn offset_on_newline_belongs_to_previous_line() {
+        assert_eq!(line("um\ndois", 2), 0..3);
     }
     #[test]
     fn selection_highlight_preserves_runs() {
