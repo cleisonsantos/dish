@@ -286,6 +286,8 @@ fn code_block(language: Option<&str>, code: &str, style: &MarkdownStyle, selecti
                 .id(("md-code", index))
                 .max_h(px(420.))
                 .overflow_y_scroll()
+                .overflow_x_scroll()
+                .restrict_scroll_to_axis()
                 .px(px(12.))
                 .py(px(10.))
                 .text_size(px(13.))
