@@ -406,6 +406,8 @@ impl Workspace {
         for (cwd, items) in groups {
             let collapsed = self.collapsed.contains(&cwd);
             let click_cwd = cwd.clone();
+            let new_cwd = cwd.clone();
+            let key_cwd = cwd.clone();
             let running = items
                 .iter()
                 .filter(|(_, _, live, _)| match live {
@@ -475,6 +477,32 @@ impl Workspace {
                                     .text_size(px(theme::TEXT_SM))
                                     .text_color(theme::dim())
                                     .child(SharedString::from(folder_of(&cwd))),
+                            )
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("project-new-{cwd:?}")))
+                                    .flex_none()
+                                    .px(px(theme::S1))
+                                    .rounded(theme::r_control())
+                                    .cursor_pointer()
+                                    .focusable()
+                                    .tab_index(0)
+                                    .text_size(px(theme::TEXT_SM))
+                                    .text_color(theme::faint())
+                                    .hover(|s| s.text_color(theme::text()))
+                                    .focus(|s| s.bg(theme::hover()).border_1().border_color(theme::accent()))
+                                    .tooltip(|_, cx| cx.new(|_| crate::ui::copy_button::TextTooltip("Nova sessão nesta pasta".to_string())).into())
+                                    .on_click(cx.listener(move |workspace, _: &ClickEvent, _, cx| {
+                                        cx.stop_propagation();
+                                        workspace.open_project(new_cwd.clone(), cx);
+                                    }))
+                                    .on_key_down(cx.listener(move |workspace, event: &KeyDownEvent, _, cx| {
+                                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                            cx.stop_propagation();
+                                            workspace.open_project(key_cwd.clone(), cx);
+                                        }
+                                    }))
+                                    .child("+"),
                             )
                             .when(needs_input > 0, |el| {
                                 el.child(div().text_size(px(theme::TEXT_SM)).text_color(theme::warn())
