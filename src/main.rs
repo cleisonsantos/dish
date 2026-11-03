@@ -36,6 +36,7 @@ mod sessions;
 mod content_search;
 mod git_context;
 mod session_activity;
+mod sound;
 mod workspace;
 mod theme;
 mod ui;

@@ -79,6 +79,7 @@ pub struct Settings {
     navigation: bool,
     thinking: bool,
     titles: bool,
+    sound: bool,
     appearance: AppearanceMode,
     /// Id do tema fixado, ou `None` para o padrão da aparência.
     theme: Option<String>,
@@ -110,8 +111,8 @@ pub struct Settings {
 
 /// O que a tela de configurações precisa mostrar quando abre.
 pub struct SettingsView {
-    /// `[detalhes, navegação, raciocínio, títulos]`.
-    pub options: [bool; 4],
+    /// `[detalhes, navegação, raciocínio, títulos, som]`.
+    pub options: [bool; 5],
     pub appearance: AppearanceMode,
     /// Tema fixado pelo usuário, se houver.
     pub theme: Option<String>,
@@ -143,7 +144,7 @@ impl Settings {
         Self {
             open: false, section: Section::App, focus: cx.focus_handle(),
             previous_focus: None, search,
-            details: true, navigation: true, thinking: true, titles: false,
+            details: true, navigation: true, thinking: true, titles: false, sound: false,
             appearance: AppearanceMode::System,
             theme: None,
             models: Vec::new(), hidden: BTreeSet::new(),
@@ -170,7 +171,7 @@ impl Settings {
         if !self.open { self.previous_focus = window.focused(cx); }
         self.open = true;
         self.section = section;
-        [self.details, self.navigation, self.thinking, self.titles] = view.options;
+        [self.details, self.navigation, self.thinking, self.titles, self.sound] = view.options;
         self.appearance = view.appearance;
         self.theme = view.theme;
         self.models = view.models;
@@ -1031,6 +1032,7 @@ impl Render for Settings {
                     ("navigation", "Navegação de sessões", self.navigation),
                     ("thinking", "Raciocínio expandido", self.thinking),
                     ("generated_titles", "Títulos gerados por modelo", self.titles),
+                    ("completion_sound", "Som ao concluir em segundo plano", self.sound),
                 ] {
                     // Linha inteira clicável — o interruptor é o estado, não
                     // o único alvo.
@@ -1045,7 +1047,8 @@ impl Render for Settings {
                                     "details" => this.details = !current,
                                     "navigation" => this.navigation = !current,
                                     "thinking" => this.thinking = !current,
-                                    _ => this.titles = !current,
+                                    "generated_titles" => this.titles = !current,
+                                    _ => this.sound = !current,
                                 }
                                 cx.emit(SettingsEvent::Preference(id, !current)); cx.notify();
                             }))
@@ -1059,7 +1062,8 @@ impl Render for Settings {
                                         "details" => this.details = !current,
                                         "navigation" => this.navigation = !current,
                                         "thinking" => this.thinking = !current,
-                                        _ => this.titles = !current,
+                                        "generated_titles" => this.titles = !current,
+                                        _ => this.sound = !current,
                                     }
                                     cx.emit(SettingsEvent::Preference(id, !current)); cx.notify();
                                 }))),

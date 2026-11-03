@@ -899,6 +899,10 @@ impl Workspace {
                             this.preferences.pi_auto_install = *value;
                             crate::preferences::save(this.preferences.clone());
                         }
+                        if *name == "completion_sound" {
+                            this.preferences.completion_sound = *value;
+                            crate::preferences::save(this.preferences.clone());
+                        }
                         if matches!(*name, "pi_auto_check" | "pi_auto_install") {
                             this.sync_pi_settings(cx);
                         }
@@ -1068,7 +1072,7 @@ impl Workspace {
         let state = self.conversations[self.active].state.read(cx);
         let pi = self.pi_status();
         let view = crate::settings::SettingsView {
-            options: [state.sidebar, self.visible, state.show_thinking, state.generated_titles],
+            options: [state.sidebar, self.visible, state.show_thinking, state.generated_titles, self.preferences.completion_sound],
             appearance: self.preferences.appearance,
             theme: self.preferences.theme.clone(),
             models: state
@@ -2214,6 +2218,9 @@ impl Render for Workspace {
             if newly_completed {
                 conversation.unread_completion = index != self.active || !active_viewed;
                 conversation.seen_completed_runs = completed;
+                if crate::sound::should_play(self.preferences.completion_sound, newly_completed, conversation.unread_completion) {
+                    crate::sound::play();
+                }
             }
             if index == self.active && active_viewed { conversation.unread_completion = false; }
             if let Some(path) = &conversation.path {

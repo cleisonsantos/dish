@@ -23,6 +23,9 @@ pub struct Preferences {
     /// Títulos de sessão gerados pelo modelo da sessão. Gasta tokens, então
     /// começa desligado e é escolha explícita do usuário.
     pub generated_titles: bool,
+    /// Som curto quando um turno termina numa sessão que não está à vista.
+    /// Começa desligado: é escolha explícita do usuário.
+    pub completion_sound: bool,
     /// Modelos ocultos no seletor do Dish, como `provider/id`.
     /// O Dish nunca altera a lista de modelos do Pi: isto é só apresentação.
     pub hidden_models: BTreeSet<String>,
@@ -162,6 +165,7 @@ mod tests {
         assert!(preferences.dismissed_notifications.is_empty());
         assert!(!preferences.pi_auto_check, "automatic Pi checks are opt-in");
         assert!(!preferences.pi_auto_install, "automatic Pi installs are opt-in");
+        assert!(!preferences.completion_sound, "completion sound is opt-in");
         assert_eq!(preferences.last_pi_update_check, None);
         assert_eq!(preferences.last_update_check, None);
         assert_eq!(preferences.last_update_etag, None);
@@ -223,6 +227,7 @@ mod tests {
             navigation_width: Some(264.),
             show_thinking: Some(false),
             generated_titles: true,
+            completion_sound: true,
             hidden_models: ["anthropic/claude-sonnet-4".to_string()].into(),
             collapsed_projects: [PathBuf::from("/tmp/projeto-á")].into(),
             last_project: Some("/tmp/projeto-á".into()), last_session: Some("/tmp/session.jsonl".into()),
