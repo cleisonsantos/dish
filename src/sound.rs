@@ -157,6 +157,34 @@ mod tests {
         path
     }
 
+    /// Executar um script recém-escrito pode falhar com `ETXTBSY`: outro teste do
+    /// mesmo binário pode ter feito `fork` enquanto o arquivo ainda estava aberto
+    /// para escrita, e o filho segura o descritor até o `exec`. Repetimos algumas
+    /// vezes — só esse erro — em vez de tratar a corrida como falha do tocador.
+    #[cfg(unix)]
+    fn text_file_busy(error: &anyhow::Error) -> bool {
+        const ETXTBSY: i32 = 26;
+        error
+            .chain()
+            .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+            .any(|io_error| io_error.raw_os_error() == Some(ETXTBSY))
+    }
+
+    #[cfg(unix)]
+    fn play_written_script(path: &std::ffi::OsStr) -> anyhow::Result<()> {
+        const ATTEMPTS: usize = 50;
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            match play_blocking(Some(path)) {
+                Err(error) if attempt < ATTEMPTS && text_file_busy(&error) => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                result => return result,
+            }
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn missing_or_failing_player_is_an_error() {
@@ -164,7 +192,7 @@ mod tests {
         let missing = directory.join("nao-existe");
         assert!(play_blocking(Some(missing.as_os_str())).is_err());
         let failing = write_script(&directory, "falha", "#!/bin/sh\nexit 1\n");
-        assert!(play_blocking(Some(failing.as_os_str())).is_err());
+        assert!(play_written_script(failing.as_os_str()).is_err());
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -178,7 +206,7 @@ mod tests {
             "toca",
             &format!("#!/bin/sh\nprintf 'x\\n' >> '{}'\n", log.display()),
         );
-        play_blocking(Some(script.as_os_str())).unwrap();
+        play_written_script(script.as_os_str()).unwrap();
         let lines = std::fs::read_to_string(&log).unwrap();
         assert_eq!(lines.lines().count(), 1, "o tocador roda exatamente uma vez");
         std::fs::remove_dir_all(directory).unwrap();
