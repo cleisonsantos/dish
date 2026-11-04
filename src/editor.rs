@@ -162,6 +162,29 @@ pub struct TextGeometry {
     line_height: Pixels,
 }
 
+impl TextGeometry {
+    /// Absolute byte ranges of every visual row in the last painted text.
+    ///
+    /// Visual rows come from the most recent paint, so this returns `None` for
+    /// stale geometry; callers fall back to logical lines before the first
+    /// paint and in masked mode.
+    fn visual_rows(&self, content_len: usize) -> Option<Vec<Range<usize>>> {
+        let last = self.lines.last()?;
+        if last.end() != content_len {
+            return None;
+        }
+        let mut rows = Vec::new();
+        for line in &self.lines {
+            let starts = line.row_starts();
+            for (index, start) in starts.iter().enumerate() {
+                let end = starts.get(index + 1).copied().unwrap_or(line.len);
+                rows.push(line.start + start..line.start + end.min(line.len));
+            }
+        }
+        Some(rows)
+    }
+}
+
 /// One logical line of the buffer. Soft wrapping lives *inside* it: a single
 /// logical line can occupy several visual rows, and the byte offsets stay
 /// relative to the line's first character.
@@ -182,6 +205,28 @@ struct LogicalLine {
 impl LogicalLine {
     fn end(&self) -> usize {
         self.start + self.len
+    }
+
+    /// Relative byte offset where each visual row of this line starts. Always
+    /// begins with 0; a line without a shape has a single row.
+    fn row_starts(&self) -> Vec<usize> {
+        let Some(shape) = &self.shape else {
+            return vec![0];
+        };
+        let mut starts = vec![0];
+        for boundary in shape.wrap_boundaries() {
+            let Some(run) = shape.unwrapped_layout.runs.get(boundary.run_ix) else {
+                break;
+            };
+            let Some(glyph) = run.glyphs.get(boundary.glyph_ix) else {
+                break;
+            };
+            let start = glyph.index.min(self.len);
+            if starts.last().map(|last| start > *last).unwrap_or(true) {
+                starts.push(start);
+            }
+        }
+        starts
     }
 
     /// The visual row (relative to this line) and x offset of a byte index.
@@ -586,34 +631,35 @@ impl Editor {
         (start, end)
     }
 
-    fn column(&self, cx: &App) -> usize {
+    /// Rows Up/Down move through: visual rows from the last paint when they
+    /// match the current text, otherwise logical lines (before the first
+    /// paint, or while masked).
+    fn rows(&self, cx: &App) -> Vec<Range<usize>> {
+        let content = self.value.read(cx);
+        let visual = if self.masked {
+            None
+        } else {
+            self.geometry.borrow().visual_rows(content.len())
+        };
+        visual.unwrap_or_else(|| logical_rows(content))
+    }
+
+    fn on_edge_row(&self, forward: bool, cx: &App) -> bool {
         let content = self.value.read(cx);
         let head = self.selection.head.min(content.len());
-        let line_start = content[..head].rfind('\n').map(|i| i + 1).unwrap_or(0);
-        content[line_start..head].graphemes(true).count()
+        vertical_target(content, &self.rows(cx), head, None, forward).is_none()
     }
 
     fn move_line(&mut self, forward: bool, extend: bool, cx: &mut Context<Self>) {
-        let column = self.goal_column.0.unwrap_or_else(|| self.column(cx));
-        self.goal_column = GoalColumn(Some(column));
-
         let content = self.text(cx);
-        let head = self.selection.head;
-        let line = content[..head].matches('\n').count();
-        let total_lines = content.matches('\n').count();
-        let target_line = if forward {
-            if line >= total_lines {
-                head
-            } else {
-                line + 1
-            }
-        } else if line == 0 {
-            head
-        } else {
-            line - 1
-        };
-        let (start, end) = self.line_bounds(cx, target_line);
-        let target = index_at_column(&content, start, end, column);
+        let head = self.selection.head.min(content.len());
+        let rows = self.rows(cx);
+        let column = self
+            .goal_column
+            .0
+            .unwrap_or_else(|| row_column(&content, &rows, head));
+        self.goal_column = GoalColumn(Some(column));
+        let target = vertical_target(&content, &rows, head, Some(column), forward).unwrap_or(head);
         self.place(target, extend, cx);
     }
 
@@ -658,7 +704,7 @@ impl Editor {
     }
 
     pub fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
-        if self.cursor_line(cx) == 0 {
+        if self.on_edge_row(false, cx) {
             let current = self.text(cx);
             if let Some(text) = self.history.previous(&current) {
                 self.set_text(text, cx);
@@ -669,7 +715,7 @@ impl Editor {
     }
 
     pub fn down(&mut self, _: &Down, _: &mut Window, cx: &mut Context<Self>) {
-        if self.cursor_line(cx) == self.text(cx).matches('\n').count() {
+        if self.on_edge_row(true, cx) {
             if let Some(text) = self.history.next() {
                 self.set_text(text, cx);
                 return;
@@ -1105,6 +1151,69 @@ fn index_at_column(content: &str, start: usize, end: usize, column: usize) -> us
         index += grapheme.len();
     }
     index.min(end)
+}
+
+/// One range per logical line, the fallback when no paint geometry is usable.
+fn logical_rows(content: &str) -> Vec<Range<usize>> {
+    let mut rows = Vec::new();
+    let mut start = 0;
+    for line in content.split('\n') {
+        let end = start + line.len();
+        rows.push(start..end);
+        start = end + 1;
+    }
+    rows
+}
+
+/// Index of the row containing `head`: the last row whose start is at or
+/// before it.
+fn row_of(rows: &[Range<usize>], head: usize) -> usize {
+    rows.iter().rposition(|row| row.start <= head).unwrap_or(0)
+}
+
+/// Grapheme column of `head` inside its row, used to keep a straight path.
+fn row_column(content: &str, rows: &[Range<usize>], head: usize) -> usize {
+    let Some(row) = rows.get(row_of(rows, head)) else {
+        return 0;
+    };
+    let head = head.clamp(row.start, row.end);
+    content[row.start..head].graphemes(true).count()
+}
+
+/// Caret on the visual row above/below `head`, keeping `column` in graphemes.
+/// `None` means the caret is already on the first/last row, where Up/Down
+/// consult the prompt history.
+fn vertical_target(
+    content: &str,
+    rows: &[Range<usize>],
+    head: usize,
+    column: Option<usize>,
+    forward: bool,
+) -> Option<usize> {
+    let row = row_of(rows, head);
+    let target_index = if forward {
+        row.checked_add(1)?
+    } else {
+        row.checked_sub(1)?
+    };
+    let target = rows.get(target_index)?;
+    let column = column.unwrap_or_else(|| row_column(content, rows, head));
+
+    // A soft-wrapped row ends where the next visual row starts. Keeping the
+    // caret before that boundary stops it from slipping onto the next row.
+    let mut end = target.end;
+    if rows
+        .get(target_index + 1)
+        .is_some_and(|next| next.start == target.end)
+    {
+        end = previous_boundary(content, target.end);
+    }
+    Some(index_at_column(
+        content,
+        target.start,
+        end.max(target.start),
+        column,
+    ))
 }
 
 fn offset_from_utf16(content: &str, offset: usize) -> usize {
@@ -1701,8 +1810,8 @@ pub fn standard_actions<E: InteractiveElement>(editor: Entity<Editor>) -> impl F
 #[cfg(test)]
 mod tests {
     use super::{
-        horizontal_target, masked_offset, masked_text, source_offset, trim_snapshots, PromptHistory,
-        Selection, Snapshot,
+        horizontal_target, logical_rows, masked_offset, masked_text, row_of, source_offset,
+        trim_snapshots, vertical_target, PromptHistory, Selection, Snapshot,
     };
 
     #[test]
@@ -1737,6 +1846,71 @@ mod tests {
         history.push("segundo");
         history.push("primeiro");
         assert_eq!(history.entries(), ["primeiro", "segundo", "primeiro"]);
+    }
+
+    #[test]
+    fn history_restores_a_long_draft_after_moving_up() {
+        let mut history = PromptHistory::default();
+        history.push("anterior");
+        assert_eq!(
+            history.previous("rascunho longo").as_deref(),
+            Some("anterior")
+        );
+        assert_eq!(history.next().as_deref(), Some("rascunho longo"));
+    }
+
+    #[test]
+    fn vertical_move_follows_visual_rows_inside_one_long_line() {
+        let content = "aaaa bbbb cccc";
+        let rows = [0..5, 5..10, 10..14];
+
+        // Caret in the middle of the third visual row keeps its column.
+        assert_eq!(vertical_target(content, &rows, 12, None, false), Some(7));
+        assert_eq!(vertical_target(content, &rows, 7, None, false), Some(2));
+        assert_eq!(vertical_target(content, &rows, 2, None, false), None);
+
+        assert_eq!(vertical_target(content, &rows, 2, None, true), Some(7));
+        assert_eq!(vertical_target(content, &rows, 12, None, true), None);
+    }
+
+    #[test]
+    fn long_column_on_wrapped_row_stays_out_of_the_next_row() {
+        let content = "aaaa bbbb cccc";
+        let rows = [0..5, 5..10, 10..14];
+        let target = vertical_target(content, &rows, 12, Some(100), false);
+        assert_eq!(target, Some(9));
+        assert!(target.unwrap_or_default() < rows[2].start);
+    }
+
+    #[test]
+    fn row_of_a_wrap_boundary_belongs_to_the_next_row() {
+        let rows = [0..5, 5..10, 10..14];
+        assert_eq!(row_of(&rows, 4), 0);
+        assert_eq!(row_of(&rows, 5), 1);
+        assert_eq!(row_of(&rows, 10), 2);
+    }
+
+    #[test]
+    fn vertical_move_uses_logical_lines_and_clamps_short_rows() {
+        let content = "um\ndois\ntres";
+        let rows = logical_rows(content);
+        assert_eq!(rows, vec![0..2, 3..7, 8..12]);
+        assert_eq!(vertical_target(content, &rows, 5, None, true), Some(10));
+        assert_eq!(vertical_target(content, &rows, 7, None, true), Some(12));
+        assert_eq!(vertical_target(content, &rows, 12, None, false), Some(7));
+
+        let short = "um\ndois\nt";
+        let short_rows = logical_rows(short);
+        assert_eq!(vertical_target(short, &short_rows, 7, None, true), Some(9));
+        assert_eq!(logical_rows(""), vec![0..0]);
+    }
+
+    #[test]
+    fn single_short_line_still_reaches_prompt_history() {
+        let content = "oi";
+        let rows = logical_rows(content);
+        assert_eq!(vertical_target(content, &rows, 0, None, false), None);
+        assert_eq!(vertical_target(content, &rows, 2, None, true), None);
     }
 
     #[test]
