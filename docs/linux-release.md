@@ -56,7 +56,7 @@ then extracts to a temporary directory and delegates to the packaged installer.
 
 Options:
 
-- `--version <tag>`: install a specific release (`v0.1.0-beta.1` or `0.1.0-beta.1`).
+- `--version <tag>`: install a specific release (`v0.1.0-beta.2` or `0.1.0-beta.2`).
 - `--prefix <dir>`: install under `<dir>` instead of `$HOME`. The packaged
   installer runs with `HOME=<dir>` and `XDG_DATA_HOME=<dir>/.local/share`, so
   the executable goes to `<dir>/.local/bin/dish` and the desktop entry, icon and
