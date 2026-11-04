@@ -32,6 +32,45 @@ the AppImage does not bundle those libraries. Verify each download using its `.s
 
 ## Install
 
+### Install without sudo (one command)
+
+On Linux x86_64, the bootstrap installer downloads the portable archive from
+GitHub Releases, verifies its SHA-256 and runs the archive's own `install.sh`, so
+the result is the same as the portable archive section below:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/cleisonsantos/dish/main/scripts/install.sh | sh
+```
+
+Install a specific version by passing the tag (with or without the leading `v`):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/cleisonsantos/dish/main/scripts/install.sh | sh -s -- --version v0.1.0-beta.1
+```
+
+The installer refuses to run as root, because it writes only to your home
+directory and never needs sudo. Without `--version` it resolves the newest
+release from the GitHub API, including prereleases. It checks the downloaded
+archive against the `.sha256` from the same release before extracting anything,
+then extracts to a temporary directory and delegates to the packaged installer.
+
+Options:
+
+- `--version <tag>`: install a specific release (`v0.1.0-beta.1` or `0.1.0-beta.1`).
+- `--prefix <dir>`: install under `<dir>` instead of `$HOME`. The packaged
+  installer runs with `HOME=<dir>` and `XDG_DATA_HOME=<dir>/.local/share`, so
+  the executable goes to `<dir>/.local/bin/dish` and the desktop entry, icon and
+  licenses to `<dir>/.local/share`.
+- `--no-desktop`: install the program without leaving an application-menu entry.
+- `-y`, `--yes`: do not ask for confirmation.
+- `--uninstall`: remove the installed files.
+
+Verification is checksum-only for now. The checksum comes from the same release,
+so it protects against corrupted or truncated downloads, not against a
+compromised release. Minisign signature verification will be added once signed
+manifests are published. The `.deb`, `.rpm`, AppImage and manual `.tar.gz`
+downloads remain available.
+
 ### RPM
 
 Verify the `.rpm` and its checksum with `sha256sum -c`, then install it with
@@ -135,6 +174,8 @@ GNOME users can set `DISH_BACKEND=x11` to use XWayland and native window borders
 ## Uninstall
 
 With the Debian package: `sudo apt remove dish-pi`.
+
+With the one-command installer, run `curl -fsSL https://raw.githubusercontent.com/cleisonsantos/dish/main/scripts/install.sh | sh -s -- --uninstall`.
 
 With the portable archive: run `./install.sh uninstall` (or `./uninstall.sh`)
 from the extracted directory. It removes the installed Dish executable,
