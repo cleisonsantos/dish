@@ -187,6 +187,80 @@ binary with a newer glibc requirement. Inspect its `BUILD.json`, dynamic library
 requirements, privacy scan and license bundle. Test on a real Ubuntu 24.04
 desktop (Wayland and X11) before claiming support beyond the local Xvfb tests.
 
+## Publishing a complete release
+
+The Linux assets are produced by `ci.yml` on Ubuntu 24.04 but are not attached
+by that workflow. Publish them in this order from a clean checkout:
+
+1. Wait for green CI, then download the verified candidate that the maintainer
+   will attach:
+
+   ```sh
+   gh run download RUN_ID -n dish-linux-x86_64-candidate -D /tmp/dish-release-assets
+   ```
+
+2. Create the Release as a draft. Keep it a prerelease when the version has a
+   prerelease suffix:
+
+   ```sh
+   gh release create v0.1.0-alpha.6 --draft --prerelease \
+     --title "Dish v0.1.0-alpha.6" --notes-file /tmp/dish-release-notes.md
+   ```
+
+3. Run the publisher on that directory:
+
+   ```sh
+   scripts/publish-release.sh v0.1.0-alpha.6 /tmp/dish-release-assets
+   ```
+
+   The secret key comes from `MINISIGN_SECRET_KEY`, or from
+   `--secret-key-file PATH` when it lives on disk. The script checks its inputs
+   before touching GitHub: the tag and the four files, both local SHA-256
+   sidecars, the required tools, and a key pair proof against the public key in
+   `src/update.rs` (`--public-key PATH` overrides it for tests). Without a key,
+   or when the private key does not match `UPDATE_PUBLIC_KEY`, it exits before
+   any GitHub call. It also runs an unsigned trial of the manifest generator
+   over the local files (`BUILD.json`, version, target, glibc and checksums), so
+   an asset the generator refuses never reaches the point of publishing the
+   draft.
+
+   It then uploads the two Linux packages and their `.sha256` files without
+   `--clobber`. An asset already present on the Release must have the same size
+   and, when GitHub reports a digest, the same SHA-256; otherwise it aborts. If
+   the Release is still a draft, it publishes it and re-reads the final
+   `publishedAt`, because draft download URLs are `untagged-...` and cannot be
+   used in the manifest.
+
+   The manifest is generated only after the Release is public and its assets
+   can be downloaded: the script downloads the four Linux files again, checks
+   their sidecars, generates and signs `latest.json` over those exact bytes, and
+   runs `package-manifest.py --check-release` so that every asset name, size,
+   URL and digest matches the Release. Only then does it upload `latest.json`
+   and `latest.json.minisig`, as the last two assets. Finally it downloads both
+   files into a fresh directory, compares them with the signed copies, verifies
+   the signature again and repeats the release check. It refuses to start when
+   either manifest asset already exists, and never replaces an asset.
+
+4. Publishing the draft also starts the `publish` job in
+   `.github/workflows/windows.yml`, which builds and attaches the Windows
+   `.exe`/`.msi` and their `.sha256` files. Those Windows artifacts are not part
+   of `latest.json`; the Linux assets are the only update payload.
+
+The manifest is not generated inside a workflow. The Linux assets are
+attached by hand outside the workflow, and the Windows `publish` job runs on the
+publication event with no guarantee that the Linux assets exist yet. Draft URLs
+also contain `untagged-...`, so the final asset URLs and `published_at` are only
+known after publication. Generating earlier would produce a manifest that the
+client rejects.
+
+There is a short window between publishing the draft and attaching the manifest.
+During it the client finds the Release but no `latest.json`, so its update check
+fails and it tries again on a later check; it shows no incorrect update. The
+release is complete only when the script prints the final confirmation and exits
+successfully. If it fails after publication, remove `latest.json` and
+`latest.json.minisig` from the Release by hand and run it again; the script says
+so explicitly and will not overwrite the partial result.
+
 ## Before publication
 
 - Review the final staged files and scan the resulting Git history with Gitleaks.
@@ -195,5 +269,8 @@ desktop (Wayland and X11) before claiming support beyond the local Xvfb tests.
   lockfile. A new dependency with missing license text makes packaging fail.
 - Scan the extracted candidate, including source archives, with redacted output.
 - Require the CI checks to pass and verify downloaded artifact checksums.
-- Publish `v0.1.0-alpha.1` explicitly as a prerelease, with compatibility details
-  and known limitations. No stable-release promise is implied by this candidate.
+- Publish `v0.1.0-alpha.1` explicitly as a prerelease with
+  `scripts/publish-release.sh`, including compatibility details and known
+  limitations. The script refuses to run without the release key and only
+  finishes after `latest.json` matches the published assets. No stable-release
+  promise is implied by this candidate.
