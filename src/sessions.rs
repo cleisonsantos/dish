@@ -195,6 +195,161 @@ pub fn restore(trashed: &Path, original: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+impl SessionInfo {
+    /// Tamanho do arquivo no último scan; não faz I/O.
+    #[allow(dead_code)] // Consumido pela exclusão em lote na UI (próxima etapa).
+    pub fn file_len(&self) -> u64 {
+        self.scan.file_len
+    }
+}
+
+/// Rejects a path that is not a regular, canonical session file inside one of
+/// `canonical_roots`.  Fails closed: a symlink, a non-`.jsonl` file or a path
+/// outside the known roots is never accepted.
+#[allow(dead_code)] // Consumido pela exclusão em lote na UI (próxima etapa).
+pub fn validate_session_file(path: &Path, canonical_roots: &[PathBuf]) -> io::Result<()> {
+    if path.extension().is_none_or(|ext| ext != "jsonl") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("não é um arquivo de sessão: {}", path.display()),
+        ));
+    }
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("não foi possível inspecionar {}: {error}", path.display()),
+        )
+    })?;
+    // `metadata` do symlink em si: um link para fora das raízes nunca passa.
+    if !metadata.file_type().is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("não é um arquivo regular: {}", path.display()),
+        ));
+    }
+    let canonical = path.canonicalize().map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("não foi possível resolver {}: {error}", path.display()),
+        )
+    })?;
+    if canonical != path {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "caminho não canônico (link simbólico no meio?): {}",
+                path.display()
+            ),
+        ));
+    }
+    if !canonical_roots
+        .iter()
+        .any(|root| path.starts_with(root) && path != root)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("sessão fora das pastas conhecidas: {}", path.display()),
+        ));
+    }
+    Ok(())
+}
+
+/// Resultado de uma remoção em lote.  O que já foi movido continua desfazível.
+#[derive(Debug)]
+#[allow(dead_code)] // Consumido pela exclusão em lote na UI (próxima etapa).
+pub struct BatchTrash {
+    pub moved: Vec<(SessionInfo, TrashedSession)>,
+    pub failed: Option<(PathBuf, io::Error)>,
+}
+
+/// Moves every session to `trash` as one all-or-nothing validation step.
+///
+/// Every path is validated before the first file moves, so an invalid, open or
+/// duplicated session leaves the whole batch untouched.  A failure while moving
+/// stops the batch and reports the files already moved (still restorable).
+#[allow(dead_code)] // Consumido pela exclusão em lote na UI (próxima etapa).
+pub fn trash_batch_into(
+    trash: &Path,
+    roots: &[PathBuf],
+    sessions: &[SessionInfo],
+    in_use: &std::collections::BTreeSet<PathBuf>,
+) -> io::Result<BatchTrash> {
+    if sessions.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Nenhuma sessão nesta pasta.",
+        ));
+    }
+    // Raízes inexistentes são ignoradas: elas não podem legitimar nenhum path.
+    let canonical_roots: Vec<PathBuf> = roots
+        .iter()
+        .filter_map(|root| root.canonicalize().ok())
+        .collect();
+    if canonical_roots.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Nenhuma pasta de sessões disponível.",
+        ));
+    }
+    // A lixeira dentro de uma raiz de descoberta faria a sessão "apagada"
+    // reaparecer na lista, então isso é recusado antes de qualquer movimento.
+    if roots
+        .iter()
+        .chain(canonical_roots.iter())
+        .any(|root| trash.starts_with(root))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "A lixeira está dentro de uma pasta de sessões: {}",
+                trash.display()
+            ),
+        ));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for info in sessions {
+        if !seen.insert(info.path.clone()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Sessão repetida: {}", info.path.display()),
+            ));
+        }
+        if in_use.contains(&info.path) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Sessão aberta ou em execução: {}", info.path.display()),
+            ));
+        }
+        validate_session_file(&info.path, &canonical_roots)?;
+    }
+    let mut moved = Vec::with_capacity(sessions.len());
+    for info in sessions {
+        match trash_into(trash, info) {
+            Ok(entry) => moved.push((info.clone(), entry)),
+            Err(error) => {
+                return Ok(BatchTrash {
+                    moved,
+                    failed: Some((info.path.clone(), error)),
+                });
+            }
+        }
+    }
+    Ok(BatchTrash {
+        moved,
+        failed: None,
+    })
+}
+
+/// Restores every `(trashed, original)` pair, reporting one outcome per item in
+/// the same order.  A failure never stops the remaining restorations.
+#[allow(dead_code)] // Consumido pela exclusão em lote na UI (próxima etapa).
+pub fn restore_batch(items: &[(PathBuf, PathBuf)]) -> Vec<(PathBuf, io::Result<()>)> {
+    items
+        .iter()
+        .map(|(trashed, original)| (original.clone(), restore(trashed, original)))
+        .collect()
+}
+
 fn unique_trash_name() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -851,6 +1006,222 @@ mod tests {
         let result = discover(std::slice::from_ref(&root));
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].title, "refatorar o parser de markdown");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn batch_session_info(path: &Path) -> SessionInfo {
+        SessionInfo {
+            path: path.to_path_buf(),
+            cwd: PathBuf::from("/project/test"),
+            title: "Session".into(),
+            named: false,
+            modified: fs::metadata(path).unwrap().modified().unwrap(),
+            scan: SessionScan::default(),
+        }
+    }
+
+    #[test]
+    fn batch_trashes_every_session_and_restores_all() {
+        let root = std::env::temp_dir().join(format!("dish-batch-{}", std::process::id()));
+        let project = root.join("project");
+        let trash = root.join("trash");
+        fs::create_dir_all(root.join("sessions/--proj--")).unwrap();
+        fs::create_dir_all(&project).unwrap();
+        // temp_dir pode ser um link simbólico; validate exige paths canônicos.
+        let sessions = root.join("sessions").canonicalize().unwrap();
+        let subdir = sessions.join("--proj--");
+        fs::write(sessions.join("settings.json"), "{}").unwrap();
+        fs::write(project.join("keep.txt"), "keep").unwrap();
+
+        let mut infos = Vec::new();
+        let mut originals = Vec::new();
+        for index in 0..3 {
+            let path = subdir.join(format!("s{index}.jsonl"));
+            fs::write(
+                &path,
+                format!("{{\"type\":\"session\",\"cwd\":\"/project/{index}\"}}\n"),
+            )
+            .unwrap();
+            infos.push(batch_session_info(&path));
+            originals.push(path);
+        }
+
+        let result = trash_batch_into(
+            &trash,
+            std::slice::from_ref(&sessions),
+            &infos,
+            &std::collections::BTreeSet::new(),
+        )
+        .unwrap();
+        assert_eq!(result.moved.len(), 3);
+        assert!(result.failed.is_none());
+        for path in &originals {
+            assert!(!path.exists(), "original must be gone");
+        }
+        for (_, entry) in &result.moved {
+            assert!(entry.trashed.exists());
+            assert!(entry.trashed.with_extension("json").exists());
+        }
+        assert_eq!(
+            fs::read_to_string(sessions.join("settings.json")).unwrap(),
+            "{}"
+        );
+        assert_eq!(
+            fs::read_to_string(project.join("keep.txt")).unwrap(),
+            "keep"
+        );
+
+        let items: Vec<(PathBuf, PathBuf)> = result
+            .moved
+            .iter()
+            .map(|(info, entry)| (entry.trashed.clone(), info.path.clone()))
+            .collect();
+        let restored = restore_batch(&items);
+        assert_eq!(restored.len(), 3);
+        for (index, (original, outcome)) in restored.iter().enumerate() {
+            assert!(outcome.is_ok(), "restore must succeed for {original:?}");
+            assert_eq!(original, &originals[index]);
+            assert!(original.exists());
+        }
+        let leftovers: Vec<_> = fs::read_dir(&trash)
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "jsonl"))
+            .collect();
+        assert!(leftovers.is_empty(), "trash must keep no session behind");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn batch_refuses_file_outside_roots() {
+        let root = std::env::temp_dir().join(format!("dish-batch-outside-{}", std::process::id()));
+        let trash = root.join("trash");
+        fs::create_dir_all(root.join("sessions")).unwrap();
+        fs::create_dir_all(root.join("elsewhere")).unwrap();
+        let sessions = root.join("sessions").canonicalize().unwrap();
+        let elsewhere = root.join("elsewhere").canonicalize().unwrap();
+        let valid = sessions.join("a.jsonl");
+        let outside = elsewhere.join("b.jsonl");
+        fs::write(&valid, "session").unwrap();
+        fs::write(&outside, "session").unwrap();
+
+        let infos = [batch_session_info(&valid), batch_session_info(&outside)];
+        let error = trash_batch_into(
+            &trash,
+            std::slice::from_ref(&sessions),
+            &infos,
+            &std::collections::BTreeSet::new(),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(valid.exists(), "nothing may move when one path is refused");
+        assert!(outside.exists());
+        assert!(!trash.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn batch_refuses_symlink_escaping_roots() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!("dish-batch-link-{}", std::process::id()));
+        let trash = root.join("trash");
+        fs::create_dir_all(root.join("sessions")).unwrap();
+        fs::create_dir_all(root.join("outside")).unwrap();
+        let sessions = root.join("sessions").canonicalize().unwrap();
+        let outside = root.join("outside").canonicalize().unwrap();
+        let secret = outside.join("secret.jsonl");
+        fs::write(&secret, "secret").unwrap();
+        let link = sessions.join("link.jsonl");
+        symlink(&secret, &link).unwrap();
+
+        for path in [&link, &secret] {
+            let info = batch_session_info(path);
+            let error = trash_batch_into(
+                &trash,
+                std::slice::from_ref(&sessions),
+                std::slice::from_ref(&info),
+                &std::collections::BTreeSet::new(),
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        }
+        assert!(secret.exists(), "the target must stay in place");
+        assert!(fs::symlink_metadata(&secret).unwrap().file_type().is_file());
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the link must not be removed"
+        );
+        assert!(!trash.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn batch_refuses_open_session() {
+        let root = std::env::temp_dir().join(format!("dish-batch-open-{}", std::process::id()));
+        let trash = root.join("trash");
+        fs::create_dir_all(root.join("sessions")).unwrap();
+        let sessions = root.join("sessions").canonicalize().unwrap();
+        let first = sessions.join("a.jsonl");
+        let second = sessions.join("b.jsonl");
+        fs::write(&first, "a").unwrap();
+        fs::write(&second, "b").unwrap();
+
+        let infos = [batch_session_info(&first), batch_session_info(&second)];
+        let mut in_use = std::collections::BTreeSet::new();
+        in_use.insert(second.clone());
+        let error =
+            trash_batch_into(&trash, std::slice::from_ref(&sessions), &infos, &in_use).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(first.exists());
+        assert!(second.exists());
+        assert!(!trash.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn batch_refuses_empty_folder() {
+        let root = std::env::temp_dir().join(format!("dish-batch-empty-{}", std::process::id()));
+        let trash = root.join("trash");
+        fs::create_dir_all(root.join("sessions")).unwrap();
+        let sessions = root.join("sessions").canonicalize().unwrap();
+
+        let error = trash_batch_into(
+            &trash,
+            std::slice::from_ref(&sessions),
+            &[],
+            &std::collections::BTreeSet::new(),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(!trash.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn batch_refuses_non_session_extension() {
+        let root = std::env::temp_dir().join(format!("dish-batch-ext-{}", std::process::id()));
+        let trash = root.join("trash");
+        fs::create_dir_all(root.join("sessions")).unwrap();
+        let sessions = root.join("sessions").canonicalize().unwrap();
+        let path = sessions.join("auth.json");
+        fs::write(&path, "{}").unwrap();
+
+        let infos = [batch_session_info(&path)];
+        let error = trash_batch_into(
+            &trash,
+            std::slice::from_ref(&sessions),
+            &infos,
+            &std::collections::BTreeSet::new(),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(path.exists());
+        assert!(!trash.exists());
         fs::remove_dir_all(root).unwrap();
     }
 }

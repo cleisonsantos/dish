@@ -58,12 +58,48 @@ struct ClosingConversation {
     _client: PiClient,
 }
 
-/// A session sitting in the trash while the undo window is open.
-struct DeletedSession {
+/// One session file sitting in the trash.
+#[derive(Clone)]
+struct DeletedItem {
     info: SessionInfo,
     trashed: PathBuf,
-    id: u64,
     pinned: bool,
+}
+
+/// The last deleted batch (one session or a whole folder) while the undo
+/// window is open.
+struct DeletedSession {
+    items: Vec<DeletedItem>,
+    id: u64,
+}
+
+/// Mensagem quando a restauração não devolveu tudo. Uma sessão mantém o texto
+/// de sempre; um lote diz quantas voltaram e quais ficaram na lixeira.
+fn restore_failure_message(total: usize, failed: &[(DeletedItem, std::io::Error)]) -> String {
+    let exists = |error: &std::io::Error| error.kind() == std::io::ErrorKind::AlreadyExists;
+    if total == 1 {
+        if let Some((_, error)) = failed.first() {
+            return if exists(error) {
+                "Não foi possível restaurar: já existe um arquivo no caminho original. A sessão continua na lixeira; mova o arquivo atual e tente novamente.".into()
+            } else {
+                format!("Não foi possível restaurar a sessão: {error}")
+            };
+        }
+    }
+    let names: Vec<String> = failed
+        .iter()
+        .map(|(item, error)| {
+            let name = item.info.path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if exists(error) { format!("{name} (já existe um arquivo no caminho original)") } else { format!("{name} ({error})") }
+        })
+        .collect();
+    format!(
+        "Restauradas {} de {total} sessões. Não voltaram: {}",
+        total - failed.len(),
+        names.join(", "),
+    )
 }
 
 /// Identity must survive removal/reordering of other live conversations.
@@ -109,6 +145,65 @@ fn catalog_snapshot(catalog: Vec<SessionInfo>, started: u64, current: u64,
     deleting: &BTreeSet<PathBuf>) -> Option<Vec<SessionInfo>> {
     (started == current).then(|| catalog.into_iter()
         .filter(|info| !deleting.contains(&info.path)).collect())
+}
+
+/// Uma conversa aberta: arquivo da sessão (se já existe), pasta e se executa.
+type LiveSession = (Option<PathBuf>, PathBuf, bool);
+
+/// A conversa aberta usa esta pasta ou um dos arquivos dela?
+fn live_matches(entry: &LiveSession, folder: &std::path::Path, folder_paths: &[PathBuf]) -> bool {
+    let (path, cwd, _) = entry;
+    cwd.as_path() == folder || path.as_ref().is_some_and(|path| folder_paths.contains(path))
+}
+
+/// Agrupa o catálogo por pasta de projeto para a seção Sessões, da atividade
+/// mais recente para a mais antiga.
+fn session_folders(catalog: &[SessionInfo], live: &[LiveSession]) -> Vec<crate::settings::SessionFolder> {
+    let mut groups: BTreeMap<&std::path::Path, Vec<&SessionInfo>> = BTreeMap::new();
+    for info in catalog {
+        groups.entry(info.cwd.as_path()).or_default().push(info);
+    }
+    let mut folders: Vec<crate::settings::SessionFolder> = groups
+        .into_iter()
+        .map(|(cwd, infos)| {
+            let paths: Vec<PathBuf> = infos.iter().map(|info| info.path.clone()).collect();
+            let matching = || live.iter().filter(|entry| live_matches(entry, cwd, &paths));
+            crate::settings::SessionFolder {
+                cwd: cwd.to_path_buf(),
+                count: infos.len(),
+                bytes: infos.iter().map(|info| info.file_len()).sum(),
+                last: infos.iter().map(|info| info.modified).max().unwrap_or(std::time::UNIX_EPOCH),
+                open: matching().next().is_some(),
+                running: matching().any(|(_, _, busy)| *busy),
+            }
+        })
+        .collect();
+    folders.sort_by(|a, b| b.last.cmp(&a.last).then_with(|| a.cwd.cmp(&b.cwd)));
+    folders
+}
+
+/// Por que a pasta não pode ser esvaziada agora, ou `None` se pode.
+fn folder_delete_blocker(
+    folder: &std::path::Path,
+    folder_paths: &[PathBuf],
+    live: &[LiveSession],
+    closing: &[Option<PathBuf>],
+    deleting: &BTreeSet<PathBuf>,
+) -> Option<&'static str> {
+    if live.iter().any(|entry| live_matches(entry, folder, folder_paths)) {
+        return Some("Feche as conversas desta pasta antes de excluir — o Pi pode estar usando os arquivos.");
+    }
+    // Um encerramento sem arquivo conhecido pode ser de qualquer pasta.
+    if closing.iter().any(|path| path.as_ref().is_none_or(|path| folder_paths.contains(path))) {
+        return Some("Pi ainda está encerrando. Aguarde antes de excluir.");
+    }
+    if folder_paths.iter().any(|path| deleting.contains(path)) {
+        return Some("Exclusão em andamento.");
+    }
+    if folder_paths.is_empty() {
+        return Some("Nenhuma sessão nesta pasta.");
+    }
+    None
 }
 
 fn lifecycle_label(live: bool, active: bool) -> &'static str {
@@ -323,6 +418,8 @@ pub struct Workspace {
     /// Restauração em andamento; mantém o "Desfazer" visível até o resultado.
     restoring: Option<u64>,
     undo_seq: u64,
+    sessions_notice: Option<String>,
+    deleting_folder: Option<PathBuf>,
     confirm_close: bool,
     close_target: Option<EntityId>,
     pending: Option<(OpeningSession, PiClient)>,
@@ -858,6 +955,8 @@ impl Workspace {
             undo_delete: None,
             restoring: None,
             undo_seq: 0,
+            sessions_notice: None,
+            deleting_folder: None,
             confirm_close: false,
             close_target: None,
             pending: None,
@@ -1131,6 +1230,8 @@ impl Workspace {
                     }
                     SettingsEvent::RequestPiCheck => this.check_pi_updates(false, cx),
                     SettingsEvent::RequestPiUpdate => this.request_pi_update(false, cx),
+                    SettingsEvent::DeleteFolderSessions(cwd) => this.delete_folder_sessions(cwd.clone(), cx),
+                    SettingsEvent::UndoFolderDelete => this.undo_delete(cx),
                     SettingsEvent::Navigation(choice) => {
                         this.preferences.session_order = choice.session_order;
                         this.preferences.session_layout = choice.session_layout;
@@ -1138,7 +1239,7 @@ impl Workspace {
                         crate::preferences::save(this.preferences.clone());
                         cx.notify();
                     }
-                    SettingsEvent::Closed => {}
+                    SettingsEvent::Closed => this.refresh(cx),
                 }
                 cx.notify();
             }).detach();
@@ -1162,6 +1263,7 @@ impl Workspace {
                 .collect(),
             hidden: self.preferences.hidden_models.clone(),
             pi,
+            sessions: Default::default(),
         };
         self.conversations[self.active].state.update(cx, |state, _| {
             state.visible = false;
@@ -1170,6 +1272,7 @@ impl Workspace {
             state.effort_menu = false;
         });
         self.settings.as_ref().unwrap().update(cx, |settings, cx| settings.show(section, view, window, cx));
+        self.sync_settings_sessions(cx);
         self.settings_models = self
             .settings
             .as_ref()
@@ -1198,6 +1301,7 @@ impl Workspace {
                     return;
                 };
                 workspace.catalog = catalog;
+                workspace.sync_settings_sessions(cx);
                 // Refresh navigation only. The open content search keeps its
                 // query snapshot until edited, reopened or moved to a new scope.
                 cx.notify();
@@ -2055,11 +2159,10 @@ impl Workspace {
                         workspace.undo_seq += 1;
                         let id = workspace.undo_seq;
                         workspace.undo_delete = Some(DeletedSession {
-                            info,
-                            trashed: trashed.trashed,
+                            items: vec![DeletedItem { info, trashed: trashed.trashed, pinned }],
                             id,
-                            pinned,
                         });
+                        workspace.sync_settings_sessions(cx);
                         cx.notify();
                         Self::schedule_undo_expiry(id, cx);
                     }
@@ -2078,9 +2181,10 @@ impl Workspace {
         .detach();
     }
 
-    /// Devolve a última sessão excluída para o lugar de onde saiu.  A
+    /// Devolve o último lote excluído para o lugar de onde saiu.  A
     /// restauração é no-clobber: se o caminho original foi recriado, nada é
-    /// sobrescrito e a sessão continua recuperável na lixeira.
+    /// sobrescrito e a sessão continua recuperável na lixeira.  O que não
+    /// voltou continua desfazível.
     fn undo_delete(&mut self, cx: &mut Context<Self>) {
         let Some(undo) = self.undo_delete.as_ref() else {
             return;
@@ -2089,56 +2193,169 @@ impl Workspace {
             return;
         }
         let id = undo.id;
-        let trashed = undo.trashed.clone();
-        let original = undo.info.path.clone();
-        let info = undo.info.clone();
-        let pinned = undo.pinned;
+        let items = undo.items.clone();
+        let pairs: Vec<(PathBuf, PathBuf)> = items
+            .iter()
+            .map(|item| (item.trashed.clone(), item.info.path.clone()))
+            .collect();
         self.restoring = Some(id);
+        self.sync_settings_sessions(cx);
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let result = cx
+            let results = cx
                 .background_executor()
-                .spawn(async move { sessions::restore(&trashed, &original) })
+                .spawn(async move { sessions::restore_batch(&pairs) })
                 .await;
             let _ = this.update(cx, |workspace, cx| {
                 if workspace.restoring != Some(id) {
                     return;
                 }
                 workspace.restoring = None;
-                match result {
-                    Ok(()) => {
-                        if workspace
-                            .undo_delete
-                            .as_ref()
-                            .is_some_and(|undo| undo.id == id)
-                        {
-                            workspace.undo_delete = None;
+                let total = items.len();
+                let mut pinned_changed = false;
+                let mut failed: Vec<(DeletedItem, std::io::Error)> = Vec::new();
+                for (item, (_, result)) in items.into_iter().zip(results) {
+                    match result {
+                        Ok(()) => {
+                            if item.pinned {
+                                workspace.preferences.pinned_sessions.insert(item.info.path.clone());
+                                pinned_changed = true;
+                            }
+                            add_to_catalog(&mut workspace.catalog, item.info);
                         }
-                        workspace.catalog_generation += 1;
-                        if pinned {
-                            workspace.preferences.pinned_sessions.insert(info.path.clone());
-                            crate::preferences::save(workspace.preferences.clone());
-                        }
-                        add_to_catalog(&mut workspace.catalog, info);
-                        workspace.invalidate_content_search(cx);
-                        workspace.refresh(cx);
+                        Err(error) => failed.push((item, error)),
                     }
-                    Err(error) => {
-                        workspace.error = Some(if error.kind() == std::io::ErrorKind::AlreadyExists
-                        {
-                            "Não foi possível restaurar: já existe um arquivo no caminho original. A sessão continua na lixeira; mova o arquivo atual e tente novamente.".into()
-                        } else {
-                            format!("Não foi possível restaurar a sessão: {error}")
+                }
+                if pinned_changed {
+                    crate::preferences::save(workspace.preferences.clone());
+                }
+                workspace.sessions_notice = Some(if failed.is_empty() {
+                    format!("{total} sessões restauradas; 0 falharam.")
+                } else {
+                    format!("{} sessões restauradas; {} falharam. {}", total - failed.len(), failed.len(), restore_failure_message(total, &failed))
+                });
+                let current = workspace.undo_delete.as_ref().is_some_and(|undo| undo.id == id);
+                if failed.is_empty() {
+                    if current {
+                        workspace.undo_delete = None;
+                    }
+                } else {
+                    workspace.error = Some(restore_failure_message(total, &failed));
+                    if current {
+                        workspace.undo_delete = Some(DeletedSession {
+                            items: failed.into_iter().map(|(item, _)| item).collect(),
+                            id,
                         });
                         // O prazo original pode ter expirado enquanto a
                         // restauração estava em andamento.
                         Self::schedule_undo_expiry(id, cx);
                     }
                 }
+                workspace.catalog_generation += 1;
+                workspace.invalidate_content_search(cx);
+                workspace.refresh(cx);
+                workspace.sync_settings_sessions(cx);
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    /// Envia à tela de Configurações o estado da seção Sessões.
+    fn live_sessions(&self, cx: &Context<Self>) -> Vec<LiveSession> {
+        let mut live: Vec<_> = self.conversations.iter().map(|conversation| {
+            let state = conversation.state.read(cx);
+            (conversation.path.clone().or_else(|| state.session.file.as_ref().map(PathBuf::from)),
+                state.cwd.clone(), state.is_busy())
+        }).collect();
+        for opening in self.opening.iter().chain(self.pending.iter().map(|(opening, _)| opening)) {
+            live.push((opening.path.clone(), opening.cwd.clone(), true));
+        }
+        for closing in self.closing.values() {
+            if let Some(info) = self.catalog.iter().find(|info| closing.path.as_ref() == Some(&info.path)) {
+                live.push((closing.path.clone(), info.cwd.clone(), true));
+            } else {
+                // Unknown closing files fence every folder until shutdown is confirmed.
+                for folder in self.catalog.iter().map(|info| &info.cwd) {
+                    live.push((closing.path.clone(), folder.clone(), true));
+                }
+            }
+        }
+        live
+    }
+
+    fn sync_settings_sessions(&self, cx: &mut Context<Self>) {
+        let Some(settings) = &self.settings else { return; };
+        let live = self.live_sessions(cx);
+        let view = crate::settings::SessionsView {
+            folders: session_folders(&self.catalog, &live),
+            deleting: self.deleting_folder.clone().or_else(|| self.catalog.iter()
+                .find(|info| self.deleting.contains(&info.path)).map(|info| info.cwd.clone())),
+            undo: self.undo_delete.as_ref().map(|undo| (undo.items.len(), self.restoring == Some(undo.id))),
+            notice: self.sessions_notice.clone(),
+        };
+        settings.update(cx, |settings, cx| settings.set_sessions(view, cx));
+    }
+
+    fn delete_folder_sessions(&mut self, cwd: PathBuf, cx: &mut Context<Self>) {
+        let infos: Vec<_> = self.catalog.iter().filter(|info| info.cwd == cwd).cloned().collect();
+        let paths: Vec<_> = infos.iter().map(|info| info.path.clone()).collect();
+        let live = self.live_sessions(cx);
+        let closing: Vec<_> = self.closing.values().map(|entry| entry.path.clone()).collect();
+        let blocker = folder_delete_blocker(&cwd, &paths, &live, &closing, &self.deleting)
+            .or_else(|| self.deleting_folder.as_ref().map(|_| "Exclusão em andamento."));
+        if let Some(reason) = blocker {
+            self.sessions_notice = Some(reason.into());
+            self.error = Some(reason.into());
+            self.sync_settings_sessions(cx);
+            cx.notify();
+            return;
+        }
+        let in_use = live.into_iter().filter_map(|(path, _, _)| path).collect();
+        let roots = self.roots.clone();
+        self.deleting_folder = Some(cwd);
+        self.deleting.extend(paths.iter().cloned());
+        self.sessions_notice = None;
+        self.sync_settings_sessions(cx);
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_executor().spawn(async move {
+                let trash = sessions::trash_root().ok_or_else(|| std::io::Error::new(
+                    std::io::ErrorKind::NotFound, "Pasta de dados do Dish indisponível."))?;
+                sessions::trash_batch_into(&trash, &roots, &infos, &in_use)
+            }).await;
+            let _ = this.update(cx, |workspace, cx| {
+                workspace.deleting_folder = None;
+                for path in paths { workspace.deleting.remove(&path); }
+                match result {
+                    Ok(batch) => {
+                        let count = batch.moved.len();
+                        if count > 0 {
+                            let items = batch.moved.into_iter().map(|(info, trashed)| {
+                                drop_from_catalog(&mut workspace.catalog, &info.path);
+                                let pinned = workspace.preferences.pinned_sessions.remove(&info.path);
+                                DeletedItem { info, trashed: trashed.trashed, pinned }
+                            }).collect();
+                            workspace.catalog_generation += 1;
+                            workspace.undo_seq += 1;
+                            let id = workspace.undo_seq;
+                            workspace.undo_delete = Some(DeletedSession { items, id });
+                            crate::preferences::save(workspace.preferences.clone());
+                            workspace.invalidate_content_search(cx);
+                            Self::schedule_undo_expiry(id, cx);
+                        }
+                        workspace.sessions_notice = Some(match batch.failed {
+                            Some((path, error)) => format!("{count} sessões movidas para a lixeira. Falha em {}: {error}", path.display()),
+                            None => format!("{count} sessões movidas para a lixeira."),
+                        });
+                    }
+                    Err(error) => workspace.sessions_notice = Some(format!("Nenhuma sessão movida: {error}")),
+                }
+                workspace.sync_settings_sessions(cx);
+                workspace.refresh(cx);
+                cx.notify();
+            });
+        }).detach();
     }
 
     fn schedule_undo_expiry(id: u64, cx: &mut Context<Self>) {
@@ -2154,6 +2371,7 @@ impl Workspace {
                     && workspace.restoring != Some(id)
                 {
                     workspace.undo_delete = None;
+                    workspace.sync_settings_sessions(cx);
                     cx.notify();
                 }
             })
@@ -2167,7 +2385,10 @@ impl Workspace {
         let Some(undo) = &self.undo_delete else {
             return div().into_any_element();
         };
-        let title = undo.info.title.clone();
+        let label = match undo.items.as_slice() {
+            [item] => format!("“{}” excluída", item.info.title),
+            items => format!("{} sessões excluídas", items.len()),
+        };
         let restoring = self.restoring == Some(undo.id);
         let weak = cx.entity().downgrade();
         div()
@@ -2197,7 +2418,7 @@ impl Workspace {
                     .truncate()
                     .text_size(px(theme::TEXT_XS))
                     .text_color(theme::dim())
-                    .child(SharedString::from(format!("“{title}” excluída"))),
+                    .child(SharedString::from(label)),
             )
             .child(
                 div()
@@ -2293,6 +2514,7 @@ impl Render for Workspace {
                 if settings.read(cx).open { settings.update(cx, |settings, cx| settings.suspend(cx)); }
             }
         }
+        self.sync_settings_sessions(cx);
         let active_viewed = window.is_window_active() && !self.blocking_confirmation() && !self.settings.as_ref().is_some_and(|settings| settings.read(cx).open);
         for (index, conversation) in self.conversations.iter_mut().enumerate() {
             let completed = conversation.state.read(cx).completed_content_runs;
@@ -3094,6 +3316,7 @@ impl Render for Workspace {
             "nav_query": self.query.read(cx).text(cx),
             "confirming_close": self.confirm_close,
             "session_menu": self.session_menu.is_some(),
+            "undo_sessions": self.undo_delete.as_ref().map(|undo| undo.items.len()),
         }))
     }
 }
@@ -3119,6 +3342,8 @@ fn folder_of(cwd: &std::path::Path) -> String {
 mod tests {
     use super::{add_to_catalog, drop_from_catalog, select_item, sort_session_rows, row_key, attention_summary, filter_counts, nav_position, NavEntry, SessionSignals, SessionFilter};
     use super::{compare_projects, sort_project_groups, ProjectRank, SessionOrder, ProjectOrder};
+    use super::{folder_delete_blocker, restore_failure_message, session_folders, DeletedItem};
+    use std::collections::BTreeSet;
     use crate::sessions::SessionInfo;
     use std::path::PathBuf;
 
@@ -3131,6 +3356,73 @@ mod tests {
             modified: std::time::UNIX_EPOCH + std::time::Duration::from_secs(modified),
             scan: Default::default(),
         }
+    }
+
+    #[test]
+    fn session_folders_group_catalog_by_project() {
+        let mut other = info("/s/b.jsonl", 30);
+        other.cwd = PathBuf::from("/other");
+        let catalog = vec![info("/s/a.jsonl", 10), other, info("/s/c.jsonl", 20)];
+        let folders = session_folders(&catalog, &[]);
+        assert_eq!(folders.len(), 2);
+        assert_eq!(folders[0].cwd, PathBuf::from("/other"));
+        assert_eq!(folders[1].cwd, PathBuf::from("/project"));
+        assert_eq!(folders[1].count, 2);
+        assert_eq!(folders[1].bytes, 0);
+        assert_eq!(folders[1].last, std::time::UNIX_EPOCH + std::time::Duration::from_secs(20));
+        assert!(!folders[1].open && !folders[1].running);
+    }
+
+    #[test]
+    fn session_folders_detect_open_and_running_conversations() {
+        let catalog = vec![info("/s/a.jsonl", 10)];
+        let by_cwd = session_folders(&catalog, &[(None, PathBuf::from("/project"), false)]);
+        assert!(by_cwd[0].open && !by_cwd[0].running);
+        // A conversa pode estar em outra pasta; o arquivo ainda é desta.
+        let by_path = session_folders(
+            &catalog,
+            &[(Some(PathBuf::from("/s/a.jsonl")), PathBuf::from("/elsewhere"), true)],
+        );
+        assert!(by_path[0].open && by_path[0].running);
+        let unrelated = session_folders(&catalog, &[(None, PathBuf::from("/elsewhere"), true)]);
+        assert!(!unrelated[0].open && !unrelated[0].running);
+    }
+
+    #[test]
+    fn folder_delete_blocker_refuses_open_closing_busy_or_empty_folders() {
+        let folder = PathBuf::from("/project");
+        let paths = vec![PathBuf::from("/s/a.jsonl")];
+        let none = BTreeSet::new();
+        assert_eq!(folder_delete_blocker(&folder, &paths, &[], &[], &none), None);
+        assert!(folder_delete_blocker(&folder, &paths, &[(None, folder.clone(), false)], &[], &none)
+            .is_some_and(|reason| reason.starts_with("Feche")));
+        assert!(folder_delete_blocker(&folder, &paths, &[], &[Some(paths[0].clone())], &none)
+            .is_some_and(|reason| reason.starts_with("Pi ainda")));
+        assert!(folder_delete_blocker(&folder, &paths, &[], &[None], &none)
+            .is_some_and(|reason| reason.starts_with("Pi ainda")));
+        let busy: BTreeSet<PathBuf> = paths.iter().cloned().collect();
+        assert_eq!(folder_delete_blocker(&folder, &paths, &[], &[], &busy), Some("Exclusão em andamento."));
+        assert_eq!(folder_delete_blocker(&folder, &[], &[], &[], &none), Some("Nenhuma sessão nesta pasta."));
+        // Outra pasta encerrando não bloqueia esta.
+        assert_eq!(
+            folder_delete_blocker(&folder, &paths, &[], &[Some(PathBuf::from("/s/z.jsonl"))], &none),
+            None,
+        );
+    }
+
+    #[test]
+    fn restore_failure_message_names_files_left_in_trash() {
+        let item = |path: &str| DeletedItem { info: info(path, 1), trashed: PathBuf::from("/trash/x"), pinned: false };
+        let exists = || std::io::Error::from(std::io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            restore_failure_message(3, &[(item("/s/a.jsonl"), exists())]),
+            "Restauradas 2 de 3 sessões. Não voltaram: a.jsonl (já existe um arquivo no caminho original)",
+        );
+        let denied = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "acesso negado");
+        assert!(restore_failure_message(2, &[(item("/s/b.jsonl"), denied)])
+            .contains("b.jsonl (acesso negado)"));
+        assert!(restore_failure_message(1, &[(item("/s/a.jsonl"), exists())])
+            .starts_with("Não foi possível restaurar: já existe"));
     }
 
     #[test]

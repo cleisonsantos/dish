@@ -5,11 +5,12 @@ use gpui::{prelude::*, *};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 #[derive(Clone, Copy, PartialEq)]
-pub enum Section { App, Appearance, Navigation, Providers, Models, Keys, About }
+pub enum Section { App, Appearance, Navigation, Providers, Models, Sessions, Keys, About }
 
 pub enum SettingsEvent {
     Closed,
@@ -36,6 +37,11 @@ pub enum SettingsEvent {
     RequestPiCheck,
     /// Abrir o instalador oficial do Pi (ação manual).
     RequestPiUpdate,
+    /// Pede ao Workspace a exclusão em lote das sessões desta pasta.
+    /// Settings não toca em arquivo.
+    DeleteFolderSessions(PathBuf),
+    /// Desfazer o último lote excluído.
+    UndoFolderDelete,
     /// Uma credencial de provedor foi adicionada ou removida no Pi.
     ///
     /// `catalog` é o estado lido do adaptador depois da mudança. As conversas
@@ -45,6 +51,38 @@ pub enum SettingsEvent {
     ProvidersChanged { catalog: Option<crate::providers::ProviderCatalog> },
 }
 impl EventEmitter<SettingsEvent> for Settings {}
+
+/// Uma pasta de projeto com sessões salvas pelo Pi.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SessionFolder {
+    pub cwd: PathBuf,
+    pub count: usize,
+    pub bytes: u64,
+    pub last: std::time::SystemTime,
+    pub open: bool,
+    pub running: bool,
+}
+
+/// O que a seção Sessões mostra; quem calcula é o Workspace.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SessionsView {
+    pub folders: Vec<SessionFolder>,
+    /// Pasta em exclusão.
+    pub deleting: Option<PathBuf>,
+    /// Sessões do último lote ainda desfazíveis e se a restauração está em andamento.
+    pub undo: Option<(usize, bool)>,
+    pub notice: Option<String>,
+}
+
+/// Confirmação pendente de "Excluir todas as sessões desta pasta".
+#[derive(Clone, Debug, PartialEq)]
+struct FolderConfirm {
+    cwd: PathBuf,
+    /// Caixa "Entendi que os arquivos vão para a lixeira".
+    checked: bool,
+    /// O botão destrutivo tem o foco do teclado.
+    confirm_selected: bool,
+}
 
 /// Estado da consulta ao Pi sobre provedores.
 ///
@@ -154,6 +192,11 @@ pub struct Settings {
     pi: PiStatus,
     /// Consulta de versão em andamento (não é a checagem de rede).
     pi_version_loading: bool,
+    /// Pastas com sessões, recebidas do Workspace.
+    sessions: SessionsView,
+    /// Confirmação de exclusão em lote aberta, se houver.
+    confirm_folder: Option<FolderConfirm>,
+    confirm_focus: FocusHandle,
 }
 
 /// O que a tela de configurações precisa mostrar quando abre.
@@ -169,6 +212,7 @@ pub struct SettingsView {
     pub models: Vec<(String, String)>,
     pub hidden: BTreeSet<String>,
     pub pi: PiStatus,
+    pub sessions: SessionsView,
 }
 
 /// Estado apresentado na seção Sobre / Pi. A versão instalada é consultada com
@@ -228,6 +272,9 @@ impl Settings {
             endpoint_models,
             pi: PiStatus::default(),
             pi_version_loading: false,
+            sessions: SessionsView::default(),
+            confirm_folder: None,
+            confirm_focus: cx.focus_handle(),
         }
     }
 
@@ -248,6 +295,8 @@ impl Settings {
         self.models = view.models;
         self.hidden = view.hidden;
         self.pi = view.pi;
+        self.sessions = view.sessions;
+        self.confirm_folder = None;
         self.focus.focus(window, cx);
         if section == Section::Keys { self.search.read(cx).focus_handle.clone().focus(window, cx); } else { self.focus.focus(window, cx); }
         self.provider_notice = None;
@@ -262,6 +311,18 @@ impl Settings {
     /// Atualiza os dados de Pi vindos de quem executa a checagem de rede.
     pub fn set_pi_status(&mut self, status: PiStatus, cx: &mut Context<Self>) {
         self.pi = status;
+        cx.notify();
+    }
+
+    /// Atualiza a lista de pastas com sessões enquanto a tela está aberta.
+    pub fn set_sessions(&mut self, view: SessionsView, cx: &mut Context<Self>) {
+        if self.sessions == view { return; }
+        if let Some(confirm) = &self.confirm_folder {
+            if !view.folders.iter().any(|folder| folder.cwd == confirm.cwd) {
+                self.confirm_folder = None;
+            }
+        }
+        self.sessions = view;
         cx.notify();
     }
 
@@ -449,6 +510,204 @@ impl Settings {
     /// Cópia da lista em exibição, usada para evitar atualizações repetidas.
     pub fn visible_models(&self) -> Vec<(String, String)> {
         self.models.clone()
+    }
+
+    fn cancel_folder_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.confirm_folder = None;
+        self.focus.focus(window, cx);
+        cx.notify();
+    }
+
+    /// Só emite se a caixa foi marcada e a pasta continua livre agora: o
+    /// estado pode ter mudado enquanto a confirmação estava aberta.
+    fn confirm_folder_delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(confirm) = self.confirm_folder.take() else { return; };
+        let free = self.sessions.deleting.is_none()
+            && self.sessions.folders.iter()
+                .any(|folder| folder.cwd == confirm.cwd && !folder.open && !folder.running);
+        if confirm.checked && free {
+            cx.emit(SettingsEvent::DeleteFolderSessions(confirm.cwd));
+        }
+        self.focus.focus(window, cx);
+        cx.notify();
+    }
+
+    /// Confirmação da exclusão em lote, sobre o cartão de configurações.
+    fn folder_confirmation_element(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let confirm = self.confirm_folder.as_ref()?;
+        let folder = self.sessions.folders.iter().find(|folder| folder.cwd == confirm.cwd)?;
+        let checked = confirm.checked;
+        let selected = confirm.confirm_selected;
+        let mut controls = div().flex().justify_end().flex_wrap().gap(px(theme::S2));
+        for (is_confirm, label) in [(false, "Cancelar"), (true, "Excluir sessões")] {
+            let enabled = !is_confirm || checked;
+            controls = controls.child(div().id(if is_confirm { "confirm-folder-delete" } else { "cancel-folder-delete" })
+                .px(px(theme::S3)).py(px(theme::S2)).rounded(theme::r_control())
+                .border_1().border_color(theme::line_strong()).text_size(px(theme::TEXT_SM))
+                .text_color(if is_confirm { theme::danger() } else { theme::text() })
+                .when(selected == is_confirm, |el| el.shadow(theme::focus_ring()))
+                .when(!enabled, |el| el.opacity(0.5))
+                .when(enabled, |el| el.cursor_pointer().hover(|style| style.bg(theme::hover()))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        cx.stop_propagation();
+                        if is_confirm { this.confirm_folder_delete(window, cx); } else { this.cancel_folder_confirm(window, cx); }
+                    })))
+                .child(label));
+        }
+        let checkbox = div().id("folder-delete-ack").flex().flex_row().items_center().gap(px(theme::S2))
+            .cursor_pointer()
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                cx.stop_propagation();
+                if let Some(confirm) = this.confirm_folder.as_mut() { confirm.checked = !confirm.checked; }
+                cx.notify();
+            }))
+            .child(div().flex_none().size(px(14.)).rounded(theme::r_small()).border_1()
+                .border_color(theme::line_strong()).flex().items_center().justify_center()
+                .text_size(px(theme::TEXT_XS)).text_color(theme::text())
+                .when(checked, |el| el.child("✓")))
+            .child(div().text_size(px(theme::TEXT_SM)).text_color(theme::text())
+                .child("Entendi que os arquivos vão para a lixeira"));
+        Some(div().id("folder-delete-scrim").occlude().absolute().inset(px(0.))
+            .p(px(theme::S4)).flex().items_center().justify_center()
+            .bg(theme::scrim()).track_focus(&self.confirm_focus)
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
+                cx.stop_propagation();
+                this.cancel_folder_confirm(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &crate::ui::Dismiss, window, cx| {
+                cx.stop_propagation();
+                this.cancel_folder_confirm(window, cx);
+            }))
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                match event.keystroke.key.as_str() {
+                    "escape" => this.cancel_folder_confirm(window, cx),
+                    "space" => {
+                        if let Some(confirm) = this.confirm_folder.as_mut() { confirm.checked = !confirm.checked; }
+                        cx.notify();
+                    }
+                    "tab" | "left" | "right" => {
+                        if let Some(confirm) = this.confirm_folder.as_mut() { confirm.confirm_selected = !confirm.confirm_selected; }
+                        cx.notify();
+                    }
+                    "enter" => {
+                        if this.confirm_folder.as_ref().is_some_and(|confirm| confirm.checked && confirm.confirm_selected) {
+                            this.confirm_folder_delete(window, cx);
+                        } else {
+                            this.cancel_folder_confirm(window, cx);
+                        }
+                    }
+                    _ => {}
+                }
+                cx.stop_propagation();
+            }))
+            .child(div().id("folder-delete-card").w(px(theme::NAV_WIDTH * 2.))
+                .max_w(window.viewport_size().width - px(theme::S6))
+                .p(px(theme::S5)).rounded(theme::r_surface()).bg(theme::surface())
+                .border_1().border_color(theme::line_strong()).shadow(theme::shadow_overlay())
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .flex().flex_col().gap(px(theme::S4))
+                .child(div().text_size(px(theme::TEXT)).font_weight(FontWeight::MEDIUM)
+                    .text_color(theme::text()).child("Excluir todas as sessões desta pasta?"))
+                .child(div().text_size(px(theme::TEXT_SM)).text_color(theme::text())
+                    .child(SharedString::from(format!("Excluir {} de", session_count_label(folder.count)))))
+                .child(div().font_family(theme::FONT_MONO).text_size(px(theme::TEXT_XS))
+                    .text_color(theme::dim()).overflow_hidden()
+                    .child(SharedString::from(format!("{} — {}", folder.cwd.display(), format_size(folder.bytes)))))
+                .child(div().text_size(px(theme::TEXT_SM)).line_height(px(19.)).text_color(theme::dim())
+                    .child("Os arquivos vão para a lixeira do Dish. Desfazer fica disponível por 10 segundos e restaura todas as sessões do lote."))
+                .child(checkbox)
+                .child(controls))
+            .into_any_element())
+    }
+
+    /// A seção Sessões: pastas com sessões salvas pelo Pi e a exclusão em lote.
+    /// Nada aqui toca em arquivo; o Workspace executa e responde com `set_sessions`.
+    fn sessions_page(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let view = &self.sessions;
+        let mut page = column()
+            .test_probe(|| "settings-sessions".into(), || serde_json::json!({
+                "folders": view.folders.iter().map(|folder| serde_json::json!({
+                    "cwd": folder.cwd.display().to_string(),
+                    "count": folder.count,
+                    "bytes": folder.bytes,
+                    "open": folder.open,
+                    "running": folder.running,
+                })).collect::<Vec<_>>(),
+                "confirming": self.confirm_folder.as_ref().map(|confirm| confirm.cwd.display().to_string()),
+                "checked": self.confirm_folder.as_ref().is_some_and(|confirm| confirm.checked),
+                "deleting": view.deleting.is_some(),
+                "undo": view.undo.map(|(count, _)| count),
+                "notice": view.notice.clone(),
+            }))
+            .child(page_title("Sessões"))
+            .child(note(
+                "Pastas com sessões salvas pelo Pi. Excluir move apenas os arquivos de sessão (.jsonl) para a lixeira do Dish; a pasta do projeto e a configuração do Pi não são tocadas.",
+            ));
+        if let Some(notice) = &view.notice {
+            page = page.child(note(notice));
+        }
+        if let Some((count, restoring)) = view.undo {
+            let label = if count == 1 {
+                "1 sessão movida para a lixeira".to_string()
+            } else {
+                format!("{count} sessões movidas para a lixeira")
+            };
+            page = page.child(div().flex().flex_row().items_center().gap(px(theme::S3))
+                .child(note(&label))
+                .child(control("sessions-undo", if restoring { "Restaurando…" } else { "Desfazer" }, cx.listener(
+                    move |_, _, _, cx| {
+                        if !restoring { cx.emit(SettingsEvent::UndoFolderDelete); }
+                    },
+                ))));
+        }
+        if view.folders.is_empty() {
+            page = page.child(note("Nenhuma sessão salva pelo Pi."));
+        }
+        let now = std::time::SystemTime::now();
+        for (index, folder) in view.folders.iter().enumerate() {
+            let blocked = folder.open || folder.running;
+            let badge = if folder.running { Some("Executando") } else if folder.open { Some("Aberta") } else { None };
+            let reason = if blocked {
+                Some("Feche as conversas desta pasta antes de excluir — o Pi pode estar usando os arquivos.")
+            } else if view.deleting.is_some() {
+                Some("Exclusão em andamento.")
+            } else {
+                None
+            };
+            let detail = format!(
+                "{} · {} · {}",
+                session_count_label(folder.count),
+                format_size(folder.bytes),
+                crate::session_activity::relative_time(folder.last, now),
+            );
+            let id = SharedString::from(format!("delete-folder-{index}"));
+            let label = "Excluir todas as sessões desta pasta";
+            let button = if reason.is_some() {
+                disabled_control(id, label)
+            } else {
+                let cwd = folder.cwd.clone();
+                control(id, label, cx.listener(move |this, _, window, cx| {
+                    this.confirm_folder = Some(FolderConfirm { cwd: cwd.clone(), checked: false, confirm_selected: false });
+                    this.confirm_focus.focus(window, cx);
+                    cx.notify();
+                }))
+            };
+            page = page.child(div().flex().flex_col().gap(px(theme::S2)).pt(px(theme::S3))
+                .border_t_1().border_color(theme::line_soft())
+                .child(div().flex().flex_row().items_center().gap(px(theme::S2)).min_w(px(0.))
+                    .child(div().flex_1().min_w(px(0.)).truncate().font_family(theme::FONT_MONO)
+                        .text_size(px(theme::TEXT_SM)).text_color(theme::text())
+                        .child(SharedString::from(folder.cwd.display().to_string())))
+                    .when_some(badge, |el, badge| el.child(div().flex_none().px(px(6.)).py(px(1.))
+                        .rounded(theme::r_small()).border_1().border_color(theme::line())
+                        .text_size(px(theme::TEXT_XS)).text_color(theme::dim()).child(badge))))
+                .child(div().text_size(px(theme::TEXT_XS)).text_color(theme::dim())
+                    .child(SharedString::from(detail)))
+                .child(div().flex().child(button))
+                .when_some(reason, |el, reason| el.child(note(reason))));
+        }
+        page.into_any_element()
     }
 
     /// A seção Provedores: a lista, ou o login em andamento.
@@ -1570,6 +1829,14 @@ fn control(id: impl Into<ElementId>, label: impl Into<SharedString>, click: impl
         .cursor_pointer().hover(|s| s.bg(theme::hover()).text_color(theme::text()))
         .on_click(click).child(label.into())
 }
+/// Mesma caixa de `control`, sem clique: a ação existe mas está bloqueada.
+fn disabled_control(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
+    div().id(id).px(px(11.)).py(px(7.)).rounded(theme::r_control())
+        .bg(theme::surface_2()).border_1().border_color(theme::line_soft())
+        .text_color(theme::dim()).opacity(0.5)
+        .child(label.into())
+}
+
 /// Uma linha do catálogo de temas: amostras, nome, aparência e a escolha.
 fn theme_row(item: &theme::Theme, selected: bool, cx: &mut Context<Settings>) -> AnyElement {
     let mut swatches = div().flex().flex_row().gap(px(2.)).flex_none();
@@ -1671,6 +1938,32 @@ fn appearance_segment(
         .into_any_element()
 }
 
+/// Tamanho em base 1024, uma casa decimal, com vírgula decimal.
+fn format_size(bytes: u64) -> String {
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let mut value = bytes as f64;
+    let mut unit = "B";
+    for next in ["KB", "MB", "GB", "TB"] {
+        if value < 1024.0 {
+            break;
+        }
+        value /= 1024.0;
+        unit = next;
+    }
+    format!("{value:.1} {unit}").replace('.', ",")
+}
+
+/// "1 sessão" / "N sessões".
+fn session_count_label(count: usize) -> String {
+    if count == 1 {
+        "1 sessão".to_string()
+    } else {
+        format!("{count} sessões")
+    }
+}
+
 /// "1 modelo" não é "1 modelos": a contagem aparece em toda linha.
 fn model_count(models: usize) -> String {
     if models == 1 {
@@ -1704,6 +1997,7 @@ impl Render for Settings {
             (Section::Navigation, "Navegação", "settings-navigation"),
             (Section::Providers, "Provedores", "settings-providers"),
             (Section::Models, "Modelos", "settings-models"),
+            (Section::Sessions, "Sessões", "settings-sessions"),
             (Section::Keys, "Atalhos de teclado", "settings-keys"),
             (Section::About, "Sobre / Pi", "settings-about"),
         ] {
@@ -1989,6 +2283,7 @@ impl Render for Settings {
                 }
                 page.into_any_element()
             }
+            Section::Sessions => self.sessions_page(cx),
             Section::Keys => {
                 let focus = self.search.read(cx).focus_handle.clone();
                 let click_focus = focus.clone();
@@ -2139,6 +2434,8 @@ impl Render for Settings {
                 .child(div().id("settings-content").flex_1().min_w(px(0.)).min_h(px(0.)).overflow_y_scroll()
                     .child(crate::ui::motion::reveal(div().child(content),
                         ElementId::NamedInteger("settings-page-enter".into(), self.section as u64)))));
+        let confirmation = self.folder_confirmation_element(window, cx);
+
         div().id("settings-scrim").occlude()
             // Overlays are input boundaries: the page behind must not scroll.
             .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
@@ -2181,7 +2478,9 @@ impl Render for Settings {
                     cx.stop_propagation();
                 }
             })
-            .child(crate::ui::motion::reveal(card, "settings-enter")).into_any_element()
+            .child(crate::ui::motion::reveal(card, "settings-enter"))
+            .children(confirmation)
+            .into_any_element()
     }
 }
 
@@ -2428,5 +2727,26 @@ mod model_grouping_tests {
         assert_eq!(root_label("http://127.0.0.1:11434"), "127.0.0.1:11434");
         assert_eq!(root_label("https://exemplo.test/"), "exemplo.test");
         assert_eq!(root_label("127.0.0.1:1234"), "127.0.0.1:1234");
+    }
+}
+
+#[cfg(test)]
+mod sessions_page_tests {
+    use super::{format_size, session_count_label};
+
+    #[test]
+    fn formats_sizes_in_base_1024_with_comma() {
+        assert_eq!(format_size(0), "0 B");
+        assert_eq!(format_size(512), "512 B");
+        assert_eq!(format_size(1536), "1,5 KB");
+        assert_eq!(format_size(35_861_708), "34,2 MB");
+        assert_eq!(format_size(3 * 1024 * 1024 * 1024), "3,0 GB");
+    }
+
+    #[test]
+    fn counts_sessions_in_portuguese() {
+        assert_eq!(session_count_label(1), "1 sessão");
+        assert_eq!(session_count_label(0), "0 sessões");
+        assert_eq!(session_count_label(12), "12 sessões");
     }
 }
