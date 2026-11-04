@@ -178,6 +178,20 @@ fn looks_like_path(argument: &str) -> bool {
 }
 
 fn main() {
+    logging::init();
+    // `DISH_TEST_PANIC` existe só para o smoke de privacidade dos diagnósticos
+    // (tests/diagnostic_privacy_smoke.py), no mesmo espírito de `DISH_TEST_UI_LOG`:
+    // provoca um pânico numa thread nomeada antes do GPUI subir e encerra, para
+    // conferir o relatório redigido em `crash.log`.
+    if let Ok(value) = std::env::var("DISH_TEST_PANIC") {
+        let spawned = std::thread::Builder::new()
+            .name("dish-test-panic".into())
+            .spawn(move || panic!("dish: pânico de teste: {value}"));
+        if let Ok(handle) = spawned {
+            let _ = handle.join();
+        }
+        std::process::exit(101);
+    }
     ui::test_probe::init();
     // `DISH_BACKEND=x11` força o XWayland no Linux: é o caminho para ter as
     // decorações do sistema onde o compositor Wayland não as fornece (GNOME).
