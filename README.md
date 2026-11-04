@@ -418,6 +418,7 @@ Settings, shortcut search and preference persistence:
 `xvfb-run -a -s "-screen 0 1280x960x24" python3 tests/settings_smoke.py`
 after `cargo build --release`. This smoke test uses only a synthetic Pi and
 isolated configuration, not real provider credentials.
+See [the UI smoke test guide](docs/smoke-tests.md) for prerequisites, commands, and failures.
 
 ## Code signing policy
 
