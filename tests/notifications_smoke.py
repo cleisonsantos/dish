@@ -4,6 +4,8 @@ DISH_TEST_NOTIFY points at a JSON array of {id,title,detail}. The app polls it
 at runtime and writes the accepted ids to the sibling .ack file for a race-free
 smoke. This hook does not add product UI.
 """
+import http.server
+import threading
 from pathlib import Path
 
 helper_path = Path(__file__).with_name("desktop_smoke.py")
@@ -24,6 +26,28 @@ with tempfile.TemporaryDirectory(prefix="dish-notifications-") as temporary:
     feed = temp / "notifications.json"
     feed.write_text("[]")
     ack = feed.with_suffix(".ack")
+    registry_body = json.dumps({"name": "@earendil-works/pi-coding-agent",
+                                "version": "99.0.0"}).encode()
+
+    class Registry(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(registry_body)))
+            self.end_headers()
+            self.wfile.write(registry_body)
+
+        def log_message(self, *args):
+            pass
+
+    registry = http.server.HTTPServer(("127.0.0.1", 0), Registry)
+    threading.Thread(target=registry.serve_forever, daemon=True).start()
+    terminal_log = temp / "terminal.log"
+    fake_bin = temp / "bin"
+    fake_bin.mkdir()
+    fake_terminal = fake_bin / "x-terminal-emulator"
+    fake_terminal.write_text(f'#!/bin/sh\necho launched >> "{terminal_log}"\n')
+    fake_terminal.chmod(0o700)
     state = temp / "config/dish/state.json"
     state.parent.mkdir(parents=True)
     state.write_text(json.dumps({"appearance": "dark"}))
@@ -141,7 +165,27 @@ with tempfile.TemporaryDirectory(prefix="dish-notifications-") as temporary:
         dismissed = json.loads(state.read_text())["dismissed_notifications"]
         assert set(dismissed) == {"one", "two", "three"}, "Persisted dismissals changed after streaming"
         print(f"state.json dismissed_notifications: {json.dumps(dismissed)}")
-        print("Notification smoke passed: display, FIFO, persistence, restart and streaming gate")
+        # Regressão #148: a ação do card roda dentro do listener do workspace;
+        # um weak.update reentrava na entidade e derrubava o Dish com panic.
+        stop()
+        preferences = json.loads(state.read_text())
+        preferences["pi_auto_check"] = True
+        preferences.pop("last_pi_update_check", None)
+        state.write_text(json.dumps(preferences))
+        env["DISH_PI_REGISTRY_URL"] = f"http://127.0.0.1:{registry.server_address[1]}/latest"
+        env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+        launch()
+        wait_for(lambda: shown("pi-update-99.0.0"),
+                 "Pi update notification did not appear", timeout=20)
+        click_ui(window, "notification-action-pi-update-99.0.0")
+        wait_for(lambda: terminal_log.exists() and terminal_log.read_text().splitlines() == ["launched"],
+                 "Pi update action did not open the terminal installer")
+        end = time.monotonic() + 1.0
+        while process.poll() is None and time.monotonic() < end:
+            time.sleep(0.05)
+        assert process.poll() is None, "Dish crashed after the Pi update action (#148)"
+        assert terminal_log.read_text().splitlines() == ["launched"], "Pi update requested more than once"
+        print("Notification smoke passed: display, FIFO, persistence, restart, streaming gate and Pi update action")
     finally:
         if process and process.poll() is None:
             process.terminate()

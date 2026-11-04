@@ -299,7 +299,7 @@ impl Available {
                 "Uma nova versão do Dish está disponível. Veja o que mudou nas notas da release."
                     .into(),
             action_label: Some("Ver release".into()),
-            action: Some(std::rc::Rc::new(move |_, _| {
+            action: Some(std::rc::Rc::new(move |_, _, _| {
                 crate::platform::open_url(&self.notes_url)
             })),
         }
