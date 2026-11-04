@@ -4,6 +4,33 @@ from pathlib import Path
 from typing import NamedTuple
 
 
+def read_events(path):
+    """Lê um JSONL que outro processo ainda pode estar escrevendo.
+
+    O escritor pode estar no meio de uma linha quando a leitura acontece. O
+    pedaço final, sem terminador, pode estar truncado: ele é lido em modo
+    tolerante e descartado se não formar um JSON válido. Uma linha inválida que
+    **tem** terminador continua sendo erro — corrupção de verdade não pode
+    passar em silêncio.
+    """
+    try:
+        raw = Path(path).read_bytes()
+    except FileNotFoundError:
+        return []
+    chunks = raw.split(b"\n")
+    partial = chunks.pop()
+    events = []
+    for chunk in chunks:
+        if chunk.strip():
+            events.append(json.loads(chunk.decode("utf-8")))
+    if partial.strip():
+        try:
+            events.append(json.loads(partial.decode("utf-8")))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            pass
+    return events
+
+
 class Word(NamedTuple):
     x: int
     y: int
