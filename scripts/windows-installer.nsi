@@ -1,13 +1,16 @@
 ﻿; Instalador do Dish para Windows (NSIS).
 ;
 ; Escolha por um EXE/NSIS em vez de MSI: o fluxo pedido na issue #13 é um
-; assistente (avançar/avançar/concluir) com detecção do Pi, e o NSIS faz isso
-; sem exigir administrador — a instalação é por usuário, em %LOCALAPPDATA%.
+; assistente (avançar/avançar/concluir) com detecção do Pi e do Node.js, e o
+; NSIS faz isso sem exigir administrador — a instalação é por usuário, em
+; %LOCALAPPDATA%.
 ;
-; O Dish continua sendo só o cliente: quem instala o Pi é o instalador oficial
-; do Pi, executado aqui apenas se a pessoa marcar a opção na página de
-; verificação. O assistente de primeira execução do Dish cobre o mesmo passo
-; depois, caso ninguém marque nada.
+; O Dish continua sendo só o cliente. A página "Pi e Node.js" mostra o que já
+; existe e, com consentimento explícito, instala o Node.js fixado (conferido
+; por SHA-256) em %LOCALAPPDATA%\dish\node e o Pi via npm em
+; %LOCALAPPDATA%\dish\pi durante a página "Instalando" — sem terminal para a
+; pessoa. Se o download falhar ou a pessoa pular, o assistente de primeira
+; execução do Dish cobre o mesmo passo.
 ;
 ; Compilar:  makensis /DVERSION=0.1.0-alpha.3 /DVERSIONNUM=0.1.0.3 /DSRCDIR=..\.. scripts\windows-installer.nsi
 
@@ -17,6 +20,8 @@ Unicode true
 !include "FileFunc.nsh"
 !include "nsDialogs.nsh"
 !include "LogicLib.nsh"
+!include "WordFunc.nsh"
+!include "WinMessages.nsh"
 
 !ifndef VERSION
   !define VERSION "0.0.0"
@@ -31,6 +36,15 @@ Unicode true
 !define APP_NAME "Dish"
 !define APP_EXE "dish.exe"
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Dish"
+
+; Versão fixada, não "latest": o instalador baixa o mesmo bytes sempre.
+!define NODE_VERSION "24.22.2"
+!define NODE_MIN "22.19.0"
+; SHA-256 de node-v24.22.2-win-x64.zip, conferido em https://nodejs.org/dist/v24.22.2/SHASUMS256.txt
+!define NODE_SHA256 "ca1bff5d8ead13c9f2ea404a176db46bd430704d5b5113734049fa365e7799e2"
+!define NODE_ZIP "node-v${NODE_VERSION}-win-x64"
+!define NODE_URL "https://nodejs.org/dist/v${NODE_VERSION}/${NODE_ZIP}.zip"
+!define PI_PACKAGE "@earendil-works/pi-coding-agent"
 
 Name "${APP_NAME} ${VERSION}"
 OutFile "${SRCDIR}\dist\dish-${VERSION}-windows-x86_64-setup.exe"
@@ -54,9 +68,9 @@ VIAddVersionKey "LegalCopyright" "Apache-2.0"
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_LICENSE "${SRCDIR}\LICENSE"
-Page custom PiCheckPage PiCheckLeave
 !insertmacro MUI_PAGE_COMPONENTS
 !insertmacro MUI_PAGE_DIRECTORY
+Page custom DepsPage DepsLeave
 !insertmacro MUI_PAGE_INSTFILES
 Page custom FinishPage FinishLeave
 
@@ -66,22 +80,236 @@ Page custom FinishPage FinishLeave
 !insertmacro MUI_LANGUAGE "PortugueseBR"
 !insertmacro MUI_LANGUAGE "English"
 
-var PiCheckbox
-var PiFound
-var RunPiInstaller
+Var NodeOk
+Var NodeExe
+Var NodeVer
+Var NodeNote
+Var PiOk
+Var PiExe
+Var PiVer
+Var PiNote
+Var WantNode
+Var WantPi
+Var NodeCheckbox
+Var PiCheckbox
+Var DishCheckbox
+Var RunDish
 
-; --------------------------------------------------------------- verificação do Pi
+; --------------------------------------------------------------- detecção
 
-Function PiCheckPage
-  ; `where pi` responde 0 quando o Pi está no PATH do usuário.
+; Primeira linha de uma saída (caminho/versão), sem CR/LF e sem espaços nas
+; pontas: `where` e os .cmd do npm escrevem mais de uma linha.
+Function FirstLine
+  Exch $R0
+  Push $R1
+  Push $R2
+  Push $R3
+  StrCpy $R1 ""
+  StrCpy $R2 0
+  ${Do}
+    StrCpy $R3 $R0 1 $R2
+    ${If} $R3 == ""
+      ${ExitDo}
+    ${EndIf}
+    ${If} $R3 == "$\r"
+    ${OrIf} $R3 == "$\n"
+      ${ExitDo}
+    ${EndIf}
+    StrCpy $R1 "$R1$R3"
+    IntOp $R2 $R2 + 1
+  ${Loop}
+  ${Do}
+    StrCpy $R3 $R1 1
+    ${If} $R3 != " "
+      ${ExitDo}
+    ${EndIf}
+    StrCpy $R1 $R1 "" 1
+  ${Loop}
+  ${Do}
+    StrCpy $R3 $R1 "" -1
+    ${If} $R3 != " "
+      ${ExitDo}
+    ${EndIf}
+    StrCpy $R1 $R1 -1
+  ${Loop}
+  StrCpy $R0 $R1
+  Pop $R3
+  Pop $R2
+  Pop $R1
+  Exch $R0
+FunctionEnd
+
+; Caminho no topo da pilha. Só muda as variáveis de detecção se o executável
+; responder a --version; um Node antigo vira nota e a busca continua.
+Function TryNode
+  Exch $R0
+  Push $R1
+  Push $R2
+  Push $R3
+  Push $R4
+  nsExec::ExecToStack '"$R0" --version'
+  Pop $R1
+  Pop $R2
+  ${If} $R1 == "0"
+    Push $R2
+    Call FirstLine
+    Pop $R3
+    ${If} $R3 != ""
+      StrCpy $R4 $R3 1
+      ${If} $R4 == "v"
+        StrCpy $R3 $R3 "" 1
+      ${EndIf}
+      ${VersionCompare} "$R3" "${NODE_MIN}" $R1
+      ${If} $R1 == "0"
+      ${OrIf} $R1 == "1"
+        StrCpy $NodeOk "1"
+        StrCpy $NodeExe "$R0"
+        StrCpy $NodeVer "$R3"
+        StrCpy $NodeNote "Node.js $R3: $R0"
+      ${Else}
+        StrCpy $NodeNote "Node.js $R3 encontrado em $R0, mas o Pi exige ${NODE_MIN} ou superior."
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+  Pop $R4
+  Pop $R3
+  Pop $R2
+  Pop $R1
+  Pop $R0
+FunctionEnd
+
+; O cmd precisa das aspas duplas externas para aceitar um caminho com espaços.
+Function TryPi
+  Exch $R0
+  Push $R1
+  Push $R2
+  Push $R3
+  nsExec::ExecToStack 'cmd /C ""$R0" --version"'
+  Pop $R1
+  Pop $R2
+  ${If} $R1 == "0"
+    Push $R2
+    Call FirstLine
+    Pop $R3
+    ${If} $R3 != ""
+      StrCpy $PiOk "1"
+      StrCpy $PiExe "$R0"
+      StrCpy $PiVer "$R3"
+      StrCpy $PiNote "Pi $R3: $R0"
+    ${EndIf}
+  ${EndIf}
+  Pop $R3
+  Pop $R2
+  Pop $R1
+  Pop $R0
+FunctionEnd
+
+!macro TryNodeCandidate CANDIDATE
+  ${If} $NodeOk != "1"
+    ${If} ${FileExists} `${CANDIDATE}`
+      Push `${CANDIDATE}`
+      Call TryNode
+    ${EndIf}
+  ${EndIf}
+!macroend
+
+!macro TryPiCandidate CANDIDATE
+  ${If} $PiOk != "1"
+    ${If} ${FileExists} `${CANDIDATE}`
+      Push `${CANDIDATE}`
+      Call TryPi
+    ${EndIf}
+  ${EndIf}
+!macroend
+
+Function DetectDeps
+  StrCpy $NodeOk "0"
+  StrCpy $NodeExe ""
+  StrCpy $NodeVer ""
+  StrCpy $NodeNote ""
+  StrCpy $PiOk "0"
+  StrCpy $PiExe ""
+  StrCpy $PiVer ""
+  StrCpy $PiNote ""
+
+  ; `where` usa o PATH deste processo. Depois de instalar, o PATH do
+  ; instalador continua velho, então os caminhos fixos abaixo são a garantia.
+  nsExec::ExecToStack 'cmd /C where node.exe'
+  Pop $0
+  Pop $1
+  ${If} $0 == "0"
+    Push $1
+    Call FirstLine
+    Pop $0
+    ${If} $0 != ""
+      Push $0
+      Call TryNode
+    ${EndIf}
+  ${EndIf}
+
+  ${If} $NodeOk != "1"
+    !insertmacro TryNodeCandidate "$PROGRAMFILES64\nodejs\node.exe"
+    !insertmacro TryNodeCandidate "$LOCALAPPDATA\pi-node\current\node.exe"
+    !insertmacro TryNodeCandidate "$LOCALAPPDATA\dish\node\node.exe"
+    ${If} $NodeOk == "1"
+      StrCpy $NodeNote "$NodeNote (fora do PATH)"
+    ${EndIf}
+  ${EndIf}
+
+  ${If} $NodeOk != "1"
+  ${AndIf} $NodeNote == ""
+    StrCpy $NodeNote "Node.js não encontrado."
+  ${EndIf}
+
   nsExec::ExecToStack 'cmd /C where pi'
   Pop $0
   Pop $1
   ${If} $0 == "0"
-    StrCpy $PiFound "1"
-  ${Else}
-    StrCpy $PiFound "0"
+    Push $1
+    Call FirstLine
+    Pop $0
+    ${If} $0 != ""
+      Push $0
+      Call TryPi
+    ${EndIf}
   ${EndIf}
+
+  ; Mesma busca do app (src/installation.rs) mais o prefixo privado do Dish.
+  ${If} $PiOk != "1"
+    !insertmacro TryPiCandidate "$PROFILE\.local\bin\pi.cmd"
+    !insertmacro TryPiCandidate "$PROFILE\.local\bin\pi.exe"
+    !insertmacro TryPiCandidate "$PROFILE\.npm-global\bin\pi.cmd"
+    !insertmacro TryPiCandidate "$PROFILE\.pi\agent\bin\pi.cmd"
+    !insertmacro TryPiCandidate "$PROFILE\.pi\agent\bin\pi.exe"
+    !insertmacro TryPiCandidate "$APPDATA\npm\pi.cmd"
+    !insertmacro TryPiCandidate "$LOCALAPPDATA\Programs\pi\pi.cmd"
+    !insertmacro TryPiCandidate "$LOCALAPPDATA\pi\pi.cmd"
+    !insertmacro TryPiCandidate "$LOCALAPPDATA\dish\pi\pi.cmd"
+    ${If} $PiOk == "1"
+      StrCpy $PiNote "$PiNote (fora do PATH; o Dish o encontra mesmo assim)"
+    ${EndIf}
+  ${EndIf}
+
+  ${If} $PiOk != "1"
+    StrCpy $PiNote "Pi não encontrado."
+  ${EndIf}
+FunctionEnd
+
+; --------------------------------------------------------------- página de dependências
+
+Function DepsPage
+  Call DetectDeps
+
+  ; Se não falta nada, a página nem aparece (nada de página vazia).
+  ${If} $NodeOk == "1"
+  ${AndIf} $PiOk == "1"
+    StrCpy $WantNode "0"
+    StrCpy $WantPi "0"
+    Abort
+  ${EndIf}
+
+  StrCpy $NodeCheckbox ""
+  StrCpy $PiCheckbox ""
 
   nsDialogs::Create 1018
   Pop $0
@@ -89,38 +317,57 @@ Function PiCheckPage
     Abort
   ${EndIf}
 
-  ${NSD_CreateLabel} 0 0 100% 24u "O Dish é um cliente do Pi: ele precisa do Pi instalado para funcionar."
+  !insertmacro MUI_HEADER_TEXT "Pi e Node.js" "O Dish precisa do Pi, que roda sobre o Node.js."
+
+  ${NSD_CreateLabel} 0 0 100% 30u "Encontrado neste computador:$\r$\n$NodeNote$\r$\n$PiNote"
   Pop $0
 
-  ${If} $PiFound == "0"
-    ${NSD_CreateLabel} 0 30u 100% 40u "O Pi não foi encontrado neste computador.$\r$\nVocê pode baixar e revisar o instalador oficial no editor. Depois, o PowerShell pedirá confirmação explícita antes de executar. Você também pode deixar para depois."
-    Pop $0
-    ${NSD_CreateCheckbox} 0 76u 100% 12u "Baixar e revisar o instalador oficial do Pi"
-    Pop $PiCheckbox
-    ; Download e execução exigem escolhas explícitas.
-    ${NSD_Uncheck} $PiCheckbox
-  ${Else}
-    ${NSD_CreateLabel} 0 30u 100% 24u "Pi encontrado neste computador."
+  ${If} $NodeOk != "1"
+    ; Desmarcado: nada é baixado sem escolha explícita (política da issue #102).
+    ${NSD_CreateCheckbox} 0 36u 100% 12u "Instalar o Node.js ${NODE_VERSION} em %LOCALAPPDATA%\dish\node e adicioná-lo ao PATH do usuário"
+    Pop $NodeCheckbox
+    ${NSD_Uncheck} $NodeCheckbox
+    ${NSD_CreateLabel} 0 50u 100% 10u "Baixado de nodejs.org e conferido por SHA-256 antes de extrair."
     Pop $0
   ${EndIf}
+
+  ${If} $PiOk != "1"
+    ${NSD_CreateCheckbox} 0 64u 100% 12u "Instalar o Pi (npm ${PI_PACKAGE}) em %LOCALAPPDATA%\dish\pi"
+    Pop $PiCheckbox
+    ${NSD_Uncheck} $PiCheckbox
+  ${EndIf}
+
+  ${NSD_CreateLabel} 0 84u 100% 36u "Nada é instalado sem marcar. Se você pular, ou se o download falhar, o Dish abre o próprio assistente de primeira execução."
+  Pop $0
 
   nsDialogs::Show
 FunctionEnd
 
-Function PiCheckLeave
-  ${If} $PiFound == "0"
-    ${NSD_GetState} $PiCheckbox $RunPiInstaller
-  ${Else}
-    StrCpy $RunPiInstaller "0"
+Function DepsLeave
+  StrCpy $WantNode "0"
+  StrCpy $WantPi "0"
+  ${If} $NodeCheckbox != ""
+    ${NSD_GetState} $NodeCheckbox $0
+    ${If} $0 == ${BST_CHECKED}
+      StrCpy $WantNode "1"
+    ${EndIf}
+  ${EndIf}
+  ${If} $PiCheckbox != ""
+    ${NSD_GetState} $PiCheckbox $0
+    ${If} $0 == ${BST_CHECKED}
+      StrCpy $WantPi "1"
+    ${EndIf}
+  ${EndIf}
+  ${If} $WantPi == "1"
+  ${AndIf} $NodeOk != "1"
+  ${AndIf} $WantNode != "1"
+    MessageBox MB_OK|MB_ICONEXCLAMATION "O Pi precisa do Node.js ${NODE_MIN} ou superior. Marque também a instalação do Node.js ou desmarque o Pi."
+    Abort
   ${EndIf}
 FunctionEnd
 
-var DishCheckbox
-var RunDish
+; --------------------------------------------------------------- página final
 
-; Página final própria: com o instalador do Pi em execução, abrir o Dish junto
-; confundiria (ele ainda não encontraria o Pi e poderia iniciar outra
-; instalação), então o "Executar o Dish" fica desmarcado e desabilitado.
 Function FinishPage
   nsDialogs::Create 1018
   Pop $0
@@ -129,32 +376,30 @@ Function FinishPage
   ${EndIf}
   ${NSD_CreateLabel} 0 0 100% 24u "A instalação do Dish terminou."
   Pop $0
-  ${NSD_CreateCheckbox} 0 32u 100% 12u "Executar o Dish agora"
+  ${NSD_CreateCheckbox} 0 32u 100% 12u "Abrir o Dish agora"
   Pop $DishCheckbox
   ${NSD_Check} $DishCheckbox
-  ${If} $RunPiInstaller == ${BST_CHECKED}
-    ; Desmarcado, mas utilizável: abrir o Dish com o instalador do Pi ainda
-    ; rodando mostra o assistente sem achar o Pi. Quem quiser, marca.
-    ${NSD_Uncheck} $DishCheckbox
-    ${NSD_CreateLabel} 0 52u 100% 24u "O instalador do Pi abre em outra janela; conclua-o antes de abrir o Dish."
-    Pop $0
+  ${If} $PiOk != "1"
+    ${If} $WantNode == "1"
+    ${OrIf} $WantPi == "1"
+      ${NSD_CreateLabel} 0 52u 100% 36u "O Pi não foi instalado; o Dish abrirá o assistente de primeira execução."
+      Pop $0
+    ${EndIf}
   ${EndIf}
   nsDialogs::Show
 FunctionEnd
 
 Function FinishLeave
   ${NSD_GetState} $DishCheckbox $RunDish
-  ${If} $RunPiInstaller == ${BST_CHECKED}
-    ; Instalador oficial do Pi, como no assistente do Linux: nada é escondido
-    ; da pessoa e o Dish não reimplementa a instalação.
-    ExecShell "open" "powershell.exe" '-NoProfile -File "$INSTDIR\install-pi-windows.ps1"'
-  ${EndIf}
   ${If} $RunDish == ${BST_CHECKED}
-    ExecShell "open" "$INSTDIR\${APP_EXE}"
+    ; O Explorer inicia o Dish com o ambiente do usuário já atualizado (o PATH
+    ; com o Node.js) e nunca elevado; um filho do instalador herdaria o PATH
+    ; antigo do processo.
+    Exec '"$WINDIR\explorer.exe" "$INSTDIR\${APP_EXE}"'
   ${EndIf}
 FunctionEnd
 
-; --------------------------------------------------------------------- seções
+; --------------------------------------------------------------- seções
 
 Section "Dish" SEC_MAIN
   SectionIn RO
@@ -194,11 +439,185 @@ Section /o "Atalho na área de trabalho" SEC_DESKTOP
   CreateShortcut "$DESKTOP\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}" 0
 SectionEnd
 
+; Depois do Dish: se esta etapa falhar ou for pulada, o app já está completo.
+; O nome com "-" esconde a seção da página de componentes.
+Section "-Dependencias" SEC_DEPS
+  ; Recheca para a página final saber o estado real.
+  Call DetectDeps
+  ${If} $WantNode == "1"
+    Call InstallNode
+  ${EndIf}
+  ${If} $WantPi == "1"
+    Call InstallPi
+  ${EndIf}
+SectionEnd
+
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
   !insertmacro MUI_DESCRIPTION_TEXT ${SEC_MAIN} "O aplicativo, a licença, o aviso de terceiros e o pacote de licenças das dependências."
   !insertmacro MUI_DESCRIPTION_TEXT ${SEC_STARTMENU} "Atalhos no menu Iniciar, incluindo o desinstalador."
   !insertmacro MUI_DESCRIPTION_TEXT ${SEC_DESKTOP} "Um atalho na área de trabalho."
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
+
+; --------------------------------------------------------------- instalação das dependências
+
+Function InstallNode
+  ${Do}
+    Call InstallNodeOnce
+    Pop $0
+    ${If} $0 == "ok"
+      ${Break}
+    ${EndIf}
+    DetailPrint "Falha ao instalar o Node.js: $0"
+    MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "Não foi possível instalar o Node.js.$\r$\n$\r$\n$0$\r$\n$\r$\nTentar de novo? Em Cancelar, esta etapa é pulada e o Dish abre o assistente de primeira execução." /SD IDCANCEL IDRETRY nodeRetry
+    StrCpy $WantPi "0"
+    DetailPrint "Instalação do Node.js pulada."
+    ${Break}
+    nodeRetry:
+  ${Loop}
+FunctionEnd
+
+; Tudo em nsExec::ExecToLog: o registro mostra o que aconteceu. O PowerShell
+; roda inline (-Command), sem contornar a política de execução, sem iex e sem
+; executar arquivo .ps1.
+Function InstallNodeOnce
+  InitPluginsDir
+  StrCpy $0 "$PLUGINSDIR\${NODE_ZIP}.zip"
+
+  DetailPrint "Baixando o Node.js ${NODE_VERSION} de nodejs.org..."
+  nsExec::ExecToLog `powershell.exe -NoProfile -NonInteractive -Command "$$ProgressPreference='SilentlyContinue'; $$ErrorActionPreference='Stop'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; try { Invoke-WebRequest -UseBasicParsing -Uri '${NODE_URL}' -OutFile '$0' } catch { Write-Output $$_.Exception.Message; exit 1 }"`
+  Pop $1
+  ${If} $1 != "0"
+    Push "download falhou (rede ou proxy). Veja o registro acima."
+    Return
+  ${EndIf}
+
+  DetailPrint "Conferindo o SHA-256 do arquivo baixado..."
+  nsExec::ExecToLog `powershell.exe -NoProfile -NonInteractive -Command "$$h=(Get-FileHash -Algorithm SHA256 -LiteralPath '$0').Hash; Write-Output ('SHA-256: ' + $$h); if ($$h -ne '${NODE_SHA256}') { Write-Output 'SHA-256 diferente do esperado'; exit 1 }"`
+  Pop $1
+  ${If} $1 != "0"
+    Delete "$0"
+    Push "o arquivo baixado não confere com o SHA-256 esperado"
+    Return
+  ${EndIf}
+
+  ; Extrai num diretório de passagem: uma falha não deixa node pela metade.
+  DetailPrint "Extraindo o Node.js..."
+  RMDir /r "$LOCALAPPDATA\dish\node.new"
+  CreateDirectory "$LOCALAPPDATA\dish\node.new"
+  nsExec::ExecToLog `powershell.exe -NoProfile -NonInteractive -Command "$$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.IO.Compression.FileSystem; try { [IO.Compression.ZipFile]::ExtractToDirectory('$0', '$LOCALAPPDATA\dish\node.new') } catch { Write-Output $$_.Exception.Message; exit 1 }"`
+  Pop $1
+  ${If} $1 != "0"
+    RMDir /r "$LOCALAPPDATA\dish\node.new"
+    Push "não foi possível extrair o Node.js"
+    Return
+  ${EndIf}
+
+  IfFileExists "$LOCALAPPDATA\dish\node.new\${NODE_ZIP}\node.exe" nodeExtractOk
+    RMDir /r "$LOCALAPPDATA\dish\node.new"
+    Push "o arquivo extraído não contém node.exe"
+    Return
+  nodeExtractOk:
+
+  DetailPrint "Movendo o Node.js para $LOCALAPPDATA\dish\node..."
+  RMDir /r "$LOCALAPPDATA\dish\node"
+  Rename "$LOCALAPPDATA\dish\node.new\${NODE_ZIP}" "$LOCALAPPDATA\dish\node"
+  RMDir /r "$LOCALAPPDATA\dish\node.new"
+  Delete "$0"
+  IfFileExists "$LOCALAPPDATA\dish\node\node.exe" nodeRenameOk
+    Push "não foi possível mover o Node.js para o destino"
+    Return
+  nodeRenameOk:
+
+  ; O PATH do usuário costuma passar de 1024 caracteres (limite das strings do
+  ; NSIS), então não dá para ler/escrever com ReadRegStr/WriteRegStr: o
+  ; PowerShell edita HKCU\Environment direto e mantem o tipo REG_EXPAND_SZ e as
+  ; entradas %VAR% sem expandir.
+  DetailPrint "Adicionando o Node.js ao PATH do usuário..."
+  nsExec::ExecToLog `powershell.exe -NoProfile -NonInteractive -Command "$$ErrorActionPreference='Stop'; try { $$d='$LOCALAPPDATA\dish\node'; $$k=[Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment'); $$p=[string]$$k.GetValue('Path','',[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames); $$parts=@($$p.Split(';') | Where-Object { $$_ }); if (@($$parts | Where-Object { [Environment]::ExpandEnvironmentVariables($$_).TrimEnd('\') -ieq $$d }).Count -gt 0) { Write-Output 'PATH do usuario ja contem o Node.js' } else { $$k.SetValue('Path', (@($$parts + $$d) -join ';'), [Microsoft.Win32.RegistryValueKind]::ExpandString); Write-Output 'Node.js adicionado ao PATH do usuario' }; $$k.Close() } catch { Write-Output $$_.Exception.Message; exit 1 }"`
+  Pop $1
+  ${If} $1 != "0"
+    Push "não foi possível atualizar o PATH do usuário"
+    Return
+  ${EndIf}
+
+  ; Registro escrito direto: avisa o Explorer para recarregar o ambiente.
+  SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
+
+  StrCpy $NodeOk "1"
+  StrCpy $NodeExe "$LOCALAPPDATA\dish\node\node.exe"
+  Push "ok"
+FunctionEnd
+
+Function InstallPi
+  ${Do}
+    Call InstallPiOnce
+    Pop $0
+    ${If} $0 == "ok"
+      ${Break}
+    ${EndIf}
+    DetailPrint "Falha ao instalar o Pi: $0"
+    MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "Não foi possível instalar o Pi.$\r$\n$\r$\n$0$\r$\n$\r$\nTentar de novo? Em Cancelar, esta etapa é pulada e o Dish abre o assistente de primeira execução." /SD IDCANCEL IDRETRY piRetry
+    DetailPrint "Instalação do Pi pulada."
+    ${Break}
+    piRetry:
+  ${Loop}
+FunctionEnd
+
+Function InstallPiOnce
+  InitPluginsDir
+  ${If} $NodeExe == ""
+    ; Pode ter sido instalado agora há pouco ou existir fora do PATH atual.
+    Call DetectDeps
+  ${EndIf}
+  ${If} $NodeOk != "1"
+    Push "Node.js ${NODE_MIN} ou superior não encontrado"
+    Return
+  ${EndIf}
+
+  ${GetParent} "$NodeExe" $1
+  StrCpy $2 "$1\npm.cmd"
+  IfFileExists "$2" piNpmOk
+    Push "npm não encontrado ao lado de $NodeExe"
+    Return
+  piNpmOk:
+
+  ; Mesmos argumentos de src/installation.rs. O npm.cmd precisa achar o node:
+  ; o `set "PATH=..."` dentro do cmd expande %PATH% no próprio cmd, então não
+  ; há limite de 1024 caracteres do NSIS nem mudança no PATH do instalador.
+  ; A saída do npm vai para um arquivo, não para o registro: ela pode conter
+  ; credencial de registry privado (mesma regra do app); só as linhas de erro
+  ; são mostradas.
+  DetailPrint "Instalando o Pi em $LOCALAPPDATA\dish\pi (npm)..."
+  nsExec::ExecToStack `cmd /C "set "PATH=$1;%PATH%" && "$1\npm.cmd" install -g --ignore-scripts --no-audit --no-fund --prefix "$LOCALAPPDATA\dish\pi" ${PI_PACKAGE} > "$PLUGINSDIR\npm.log" 2>&1"`
+  Pop $2
+  Pop $3
+  ${If} $2 != "0"
+    DetailPrint "npm terminou com status $2"
+    nsExec::ExecToLog `findstr /B /C:"npm error code" /C:"npm error errno" /C:"npm ERR! code" /C:"npm ERR! errno" "$PLUGINSDIR\npm.log"`
+    Pop $3
+    Delete "$PLUGINSDIR\npm.log"
+    Push "npm terminou com status $2 (veja o código de erro no registro acima)"
+    Return
+  ${EndIf}
+  Delete "$PLUGINSDIR\npm.log"
+
+  IfFileExists "$LOCALAPPDATA\dish\pi\pi.cmd" piInstalled
+    Push "o npm terminou, mas pi.cmd não foi encontrado em $LOCALAPPDATA\dish\pi"
+    Return
+  piInstalled:
+
+  nsExec::ExecToLog 'cmd /C "set "PATH=$1;%PATH%" && "$LOCALAPPDATA\dish\pi\pi.cmd" --version"'
+  Pop $2
+  ${If} $2 != "0"
+    Push "o Pi foi instalado mas não respondeu a --version"
+    Return
+  ${EndIf}
+
+  DetailPrint "Pi instalado em $LOCALAPPDATA\dish\pi"
+  StrCpy $PiOk "1"
+  StrCpy $PiExe "$LOCALAPPDATA\dish\pi\pi.cmd"
+  Push "ok"
+FunctionEnd
 
 Section "Uninstall"
   Delete "$INSTDIR\${APP_EXE}"
@@ -220,4 +639,6 @@ Section "Uninstall"
 
   ; Preferências, sessões e a instalação do Pi ficam onde estão: desinstalar o
   ; Dish não pode apagar conversas nem mexer no Pi.
+  ; O Node em %LOCALAPPDATA%\dish\node e a entrada no PATH também ficam, pelo
+  ; mesmo motivo.
 SectionEnd
