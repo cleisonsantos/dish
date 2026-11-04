@@ -11,6 +11,52 @@ pub enum UpdatePolicy {
     Off,
 }
 
+/// Critério da lista de sessões dentro de cada pasta.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionOrder {
+    #[default]
+    Activity,
+    Completed,
+    Name,
+}
+
+/// Lista agrupada por pasta de projeto ou uma lista única.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionLayout {
+    #[default]
+    Projects,
+    Flat,
+}
+
+/// Critério da ordem dos grupos de projeto.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProjectOrder {
+    #[default]
+    Activity,
+    Name,
+}
+
+/// A escolha inteira da seção Navegação, como um só evento.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NavigationChoice {
+    pub session_order: SessionOrder,
+    pub session_layout: SessionLayout,
+    pub project_order: ProjectOrder,
+}
+
+/// Valor desconhecido (versão futura, edição manual) cai no padrão sem descartar o resto do state.json.
+fn lenient<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned + Default,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Preferences {
@@ -43,6 +89,15 @@ pub struct Preferences {
     /// Client-observed completion time for responses not yet viewed.
     pub unread_sessions: BTreeMap<PathBuf, u64>,
     pub session_filter: crate::session_activity::SessionFilter,
+    /// Ordem das sessões dentro de cada pasta.
+    #[serde(deserialize_with = "lenient")]
+    pub session_order: SessionOrder,
+    /// Agrupar por pasta de projeto ou mostrar uma lista única.
+    #[serde(deserialize_with = "lenient")]
+    pub session_layout: SessionLayout,
+    /// Ordem dos grupos de projeto.
+    #[serde(deserialize_with = "lenient")]
+    pub project_order: ProjectOrder,
     /// Aparência escolhida: escuro, claro ou seguindo o desktop.
     pub appearance: crate::theme::AppearanceMode,
     /// `None` preserves GPUI's platform preference; `Some` is an explicit override.
@@ -174,6 +229,26 @@ mod tests {
     }
 
     #[test]
+    fn unknown_navigation_values_fall_back_without_dropping_the_rest() {
+        let preferences: Preferences = serde_json::from_str(
+            r#"{"details_open":false,"session_order":"bogus","session_layout":42,"project_order":"name"}"#,
+        )
+        .unwrap();
+        assert_eq!(preferences.details_open, Some(false));
+        assert_eq!(preferences.session_order, SessionOrder::Activity);
+        assert_eq!(preferences.session_layout, SessionLayout::Projects);
+        assert_eq!(preferences.project_order, ProjectOrder::Name);
+    }
+
+    #[test]
+    fn missing_navigation_values_use_defaults() {
+        let preferences: Preferences = serde_json::from_str(r#"{"details_open":false}"#).unwrap();
+        assert_eq!(preferences.session_order, SessionOrder::Activity);
+        assert_eq!(preferences.session_layout, SessionLayout::Projects);
+        assert_eq!(preferences.project_order, ProjectOrder::Activity);
+    }
+
+    #[test]
     fn old_preferences_without_update_policy_default_to_auto() {
         let preferences: Preferences =
             serde_json::from_str(r#"{"details_open":false,"last_update_check":1800000000}"#)
@@ -237,6 +312,9 @@ mod tests {
             pi_executable: None,
             unread_sessions: [(PathBuf::from("/tmp/session.jsonl"), 123456)].into(),
             session_filter: crate::session_activity::SessionFilter::Unread,
+            session_order: SessionOrder::Completed,
+            session_layout: SessionLayout::Flat,
+            project_order: ProjectOrder::Name,
             appearance: crate::theme::AppearanceMode::Dark,
             reduce_motion: Some(true),
             theme: Some("user:meu-tema".to_string()),

@@ -14,27 +14,32 @@ impl Workspace {
         let filter = self.filter;
 
         let mut groups: BTreeMap<PathBuf, Vec<SessionRow>> = BTreeMap::new();
+        let interacting = self.nav_hovered || self.query.read(cx).focus_handle.is_focused(window);
+        let flat = self.preferences.session_layout == SessionLayout::Flat;
         for (index, conversation) in self.conversations.iter().enumerate() {
             let state = conversation.state.read(cx);
             let title = self.conversation_title(index, cx);
             // Recência observada nos limites de atividade, nunca nos deltas.
             // Sem atividade ao vivo: prompt, mtime salvo ou criação da conversa.
+            let saved_modified = conversation.path.as_ref().and_then(|path| {
+                self.catalog
+                    .iter()
+                    .find(|info| &info.path == path)
+                    .map(|info| info.modified)
+            });
             let last_run = state
                 .last_activity.or(state.last_run)
-                .or_else(|| {
-                    conversation.path.as_ref().and_then(|path| {
-                        self.catalog
-                            .iter()
-                            .find(|info| &info.path == path)
-                            .map(|info| info.modified)
-                    })
-                })
+                .or(saved_modified)
                 .unwrap_or(state.created_at);
+            // Base da ordem "por conclusão": o agent_end desta janela, senão
+            // o mtime gravado pelo Pi, senão a criação da conversa.
+            let completed = state.last_completed.or(saved_modified).unwrap_or(state.created_at);
             groups.entry(state.cwd.clone()).or_default().push((
                 title,
                 None,
                 Some(index),
                 last_run,
+                completed,
             ));
         }
         for info in &self.catalog {
@@ -45,11 +50,19 @@ impl Workspace {
             {
                 continue;
             }
+            let modified = self
+                .preferences
+                .unread_sessions
+                .get(&info.path)
+                .copied()
+                .map(from_epoch_millis)
+                .unwrap_or(info.modified);
             groups.entry(info.cwd.clone()).or_default().push((
                 info.title.clone(),
                 Some(info.clone()),
                 None,
-                self.preferences.unread_sessions.get(&info.path).copied().map(from_epoch_millis).unwrap_or(info.modified),
+                modified,
+                modified,
             ));
         }
 
@@ -60,7 +73,7 @@ impl Workspace {
                     .file_name()
                     .map(|name| name.to_string_lossy().to_lowercase().contains(&query))
                     .unwrap_or(false);
-                items.retain(|(title, info, live, _)| {
+                items.retain(|(title, info, live, _, _)| {
                     let signals = live.map(|index| {
                         let conversation = &self.conversations[index];
                         SessionSignals::from_state(conversation.state.read(cx), conversation.unread_completion)
@@ -81,41 +94,104 @@ impl Workspace {
             });
         }
 
+        // A mesma lógica de "fixada" alimenta a ordem e o probe de teste.
+        let pinned_sessions = &self.preferences.pinned_sessions;
+        let conversations = &self.conversations;
+        let is_pinned = move |row: &SessionRow| {
+            let path = match row.2 {
+                Some(index) => conversations[index].path.clone(),
+                None => row.1.as_ref().map(|info| info.path.clone()),
+            };
+            path.is_some_and(|path| pinned_sessions.contains(&path))
+        };
+        let mut ranked: Vec<(PathBuf, ProjectRank, Vec<SessionRow>)> = groups
+            .into_iter()
+            .map(|(cwd, mut items)| {
+                let mut rank = ProjectRank {
+                    running: false,
+                    needs_input: false,
+                    latest: std::time::UNIX_EPOCH,
+                };
+                for row in &items {
+                    rank.latest = rank.latest.max(row.3);
+                    if let Some(index) = row.2 {
+                        let state = self.conversations[index].state.read(cx);
+                        rank.running |= state.is_executing();
+                        rank.needs_input |= state.modal.is_some();
+                    }
+                }
+                sort_session_rows(
+                    &mut items,
+                    &self.row_order,
+                    interacting,
+                    self.preferences.session_order,
+                    is_pinned,
+                );
+                (cwd, rank, items)
+            })
+            .collect();
+        sort_project_groups(
+            &mut ranked,
+            &self.project_order,
+            interacting,
+            self.preferences.project_order,
+        );
+        let grouped_folders: Vec<PathBuf> = ranked.iter().map(|(cwd, _, _)| cwd.clone()).collect();
+        let project_order: Vec<PathBuf> = ranked.iter().map(|(cwd, _, _)| cwd.clone()).collect();
+
         // Novos resultados de busca/filtro são revelados; recolher manualmente
         // continua funcionando e a seta direita pode reabrir o último projeto.
         if self.nav_query != query || self.nav_filter != filter {
-            for cwd in groups.keys() { self.collapsed.remove(cwd); }
+            for (cwd, _, _) in &ranked { self.collapsed.remove(cwd); }
             self.nav_filter = filter;
         }
-        // A mesma ordem estável alimenta o desenho e a navegação por teclado.
-        for items in groups.values_mut() {
-            sort_session_rows(items, &self.row_order,
-                self.nav_hovered || self.query.read(cx).focus_handle.is_focused(window));
-            // Fixadas primeiro dentro do grupo, preservando a ordem por
-            // atividade entre elas. `sort_by_key` é estável.
-            let pinned = &self.preferences.pinned_sessions;
-            items.sort_by_key(|row| {
-                let path = match row.2 {
-                    Some(index) => self.conversations[index].path.clone(),
-                    None => row.1.as_ref().map(|info| info.path.clone()),
-                };
-                !path.is_some_and(|path| pinned.contains(&path))
-            });
-        }
+
+        let groups: Vec<(PathBuf, ProjectRank, Vec<SessionRow>)> = if flat {
+            // Lista única: some o cabeçalho de pasta e as fixadas sobem para o
+            // topo da lista inteira.
+            let mut rows: Vec<SessionRow> = Vec::new();
+            for (_, _, mut items) in ranked {
+                rows.append(&mut items);
+            }
+            if rows.is_empty() {
+                Vec::new()
+            } else {
+                sort_session_rows(
+                    &mut rows,
+                    &self.row_order,
+                    interacting,
+                    self.preferences.session_order,
+                    is_pinned,
+                );
+                vec![(
+                    PathBuf::new(),
+                    ProjectRank { running: false, needs_input: false, latest: std::time::UNIX_EPOCH },
+                    rows,
+                )]
+            }
+        } else {
+            ranked
+        };
+
         let mut entries: Vec<NavEntry> = Vec::new();
-        for (cwd, items) in &groups {
-            if !self.collapsed.contains(cwd) {
-                for (_, info, live, _) in items {
-                    if let Some(index) = live {
-                        entries.push(NavEntry::Open(*index));
-                    } else if let Some(info) = info {
-                        entries.push(NavEntry::Saved(info.path.clone()));
-                    } else {
-                        continue;
-                    }
+        let mut probe_titles: Vec<String> = Vec::new();
+        let mut probe_pinned: Vec<bool> = Vec::new();
+        for (cwd, _, items) in &groups {
+            if !flat && self.collapsed.contains(cwd) {
+                continue;
+            }
+            for row in items {
+                probe_titles.push(row.0.clone());
+                probe_pinned.push(is_pinned(row));
+                if let Some(index) = row.2 {
+                    entries.push(NavEntry::Open(index));
+                } else if let Some(info) = &row.1 {
+                    entries.push(NavEntry::Saved(info.path.clone()));
                 }
             }
         }
+        let probe_layout = if flat { "flat" } else { "projects" };
+        let probe_projects: Vec<String> = project_order.iter().map(|cwd| cwd.display().to_string()).collect();
         let previous = self.nav_entries.get(self.nav_index);
         if self.nav_query != query {
             self.nav_query = query.clone();
@@ -350,7 +426,12 @@ impl Workspace {
 
         let mut list = div()
             .id("nav-list")
-            .test_probe(|| "nav-list".into(), || serde_json::json!({}))
+            .test_probe(|| "nav-list".into(), move || serde_json::json!({
+                "layout": probe_layout,
+                "projects": probe_projects,
+                "titles": probe_titles,
+                "pinned": probe_pinned,
+            }))
             .flex_1()
             .min_h(px(0.))
             .overflow_y_scroll()
@@ -402,21 +483,20 @@ impl Workspace {
             );
         }
 
-        let grouped_folders: Vec<PathBuf> = groups.keys().cloned().collect();
-        for (cwd, items) in groups {
-            let collapsed = self.collapsed.contains(&cwd);
+        for (cwd, _, items) in groups {
+            let collapsed = !flat && self.collapsed.contains(&cwd);
             let click_cwd = cwd.clone();
             let new_cwd = cwd.clone();
             let key_cwd = cwd.clone();
             let running = items
                 .iter()
-                .filter(|(_, _, live, _)| match live {
+                .filter(|(_, _, live, _, _)| match live {
                     Some(index) => self.conversations[*index].state.read(cx).is_executing(),
                     None => false,
                 })
                 .count();
-            let needs_input = items.iter().filter(|(_, _, live, _)| live.is_some_and(|i| self.conversations[i].state.read(cx).modal.is_some())).count();
-            let unread_count = items.iter().filter(|(_, info, live, _)| live.map(|i| self.conversations[i].unread_completion).unwrap_or_else(|| info.as_ref().is_some_and(|info| self.preferences.unread_sessions.contains_key(&info.path)))).count();
+            let needs_input = items.iter().filter(|(_, _, live, _, _)| live.is_some_and(|i| self.conversations[i].state.read(cx).modal.is_some())).count();
+            let unread_count = items.iter().filter(|(_, info, live, _, _)| live.map(|i| self.conversations[i].unread_completion).unwrap_or_else(|| info.as_ref().is_some_and(|info| self.preferences.unread_sessions.contains_key(&info.path)))).count();
             let project_tooltip = {
                 let path = cwd.display().to_string();
                 let attention = attention_summary(needs_input, unread_count);
@@ -434,7 +514,8 @@ impl Workspace {
                     .flex_col()
                     .gap(px(theme::S1))
                     .mb(px(theme::S2))
-                    .child(
+                    .when(!flat, |el| {
+                        el.child(
                         div()
                             .id(SharedString::from(format!("project-{cwd:?}")))
                             .tooltip(move |_, cx| {
@@ -531,11 +612,12 @@ impl Workspace {
                                     .text_color(theme::faint())
                                     .child(SharedString::from(items.len().to_string())),
                             ),
-                    )
-                    .when(!collapsed, |el| {
+                        )
+                    })
+                    .when(flat || !collapsed, |el| {
                         el.children(items.into_iter().map(
-                            |(title, info, live, activity_time)| {
-                                let key = row_key(&(title.clone(), info.clone(), live, activity_time));
+                            |(title, info, live, activity_time, completed_time)| {
+                                let key = row_key(&(title.clone(), info.clone(), live, activity_time, completed_time));
                                 let highlighted_here = match &highlighted {
                                     Some(NavEntry::Open(index)) => live == Some(*index),
                                     Some(NavEntry::Saved(path)) => info.as_ref().is_some_and(|info| &info.path == path),
@@ -568,6 +650,17 @@ impl Workspace {
                                 let weak = cx.entity().downgrade();
                                 let info = info.clone();
                                 let live_index = live;
+                                // Na lista única não há cabeçalho de pasta: o
+                                // projeto aparece em cada linha.
+                                let folder = if flat {
+                                    let cwd = match live {
+                                        Some(index) => Some(self.conversations[index].state.read(cx).cwd.clone()),
+                                        None => info.as_ref().map(|info| info.cwd.clone()),
+                                    };
+                                    cwd.as_deref().map(folder_of)
+                                } else {
+                                    None
+                                };
                                 let anchor = self.nav_anchors.get(&key).cloned();
                                 let tooltip = format!(
                                     "{}\n{} · {}",
@@ -838,6 +931,10 @@ impl Workspace {
                                                     .when(!signals.needs_input, |el| {
                                                         el.child(div().text_size(px(theme::TEXT_XS)).text_color(theme::faint())
                                                             .child(SharedString::from(relative_time(activity_time, std::time::SystemTime::now()))))
+                                                    })
+                                                    .when_some(folder, |el, folder| {
+                                                        el.child(div().text_size(px(theme::TEXT_XS)).text_color(theme::faint())
+                                                            .child(SharedString::from(folder)))
                                                     }),
                                             )
                                             .when(running, |el| {
@@ -930,6 +1027,7 @@ impl Workspace {
         }
 
         self.row_order = self.nav_entries.iter().map(entry_key).collect();
+        self.project_order = project_order;
         self.nav_anchors.retain(|key, _| self.row_order.contains(key));
         rail = rail.child(list);
         if self.undo_delete.is_some() {

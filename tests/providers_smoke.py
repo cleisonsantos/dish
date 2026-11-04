@@ -36,6 +36,7 @@ class Harness:
 
     def __init__(self, name, env, npm_global=False, real_pi=False):
         self.name = name
+        self.section_click = None
         self.real_pi = real_pi
         self.directory = tempfile.TemporaryDirectory(prefix=f"dish-providers-{name}-")
         temp = Path(self.directory.name)
@@ -137,8 +138,7 @@ class Harness:
         time.sleep(1)
         press("F1")
         time.sleep(1.2)
-        wait_for(lambda: find_word(self.window, "Provedores") is not None, "Configurações não abriu", timeout=15)
-        self.click("Provedores")
+        self.open_section("settings-providers", "Provedores")
         return self
 
     def __exit__(self, *_):
@@ -149,6 +149,31 @@ class Harness:
             self.process.kill()
         UI_TRACES.pop(self.window, None)
         self.directory.cleanup()
+
+    def open_section(self, identity, label):
+        """Clica na seção no menu lateral das Configurações.
+
+        O rótulo é lido por OCR recortando só a coluna do menu e ampliando: na
+        captura inteira o tesseract perde rótulos longos ("Provedores",
+        "Navegação") e o caso falhava sem que houvesse nada de errado na tela.
+        A posição é confirmada em dois frames seguidos antes do clique, porque o
+        modal ainda desliza nos primeiros frames e um y lido antes disso cai no
+        item de baixo.
+        """
+        crop = (150, 0, 500, 960)
+        end = time.monotonic() + 20
+        while time.monotonic() < end:
+            box = find_word(self.window, label, crop=crop)
+            time.sleep(0.2)
+            again = find_word(self.window, label, crop=crop)
+            if box and again and box[:2] == again[:2]:
+                x, y, width, height = box
+                click(self.window, x + width // 2, y + height // 2)
+                self.section_click = "ocr"
+                return
+            time.sleep(0.2)
+        raise AssertionError(f"{self.name}: não achei {label!r} no menu das Configurações")
+
 
     def events(self):
         return [json.loads(line) for line in self.log_path.read_text().splitlines()] if self.log_path.exists() else []
@@ -307,6 +332,7 @@ def check_catalog():
         text = h.wait_text(["openai", "credencial salva", "anthropic", "sem credencial", "4 provedores"])
         for planted in ("FIXTURE", "sk-ant-", "eyJ"):
             assert planted not in text, f"segredo na tela: {planted}"
+        assert h.section_click == "ocr", f"catalogo: a seção não foi clicada pelo menu ({h.section_click})"
 
 
 def check_first_use():
@@ -374,8 +400,7 @@ def check_provider_refreshes_open_conversation():
         type_text("rascunho-preservado")
         wait_for(lambda: find_word(h.window, "rascunho"), "Rascunho não apareceu")
         press("F1")
-        h.wait_text(["Provedores"])
-        h.click("Provedores")
+        h.open_section("settings-providers", "Provedores")
         h.wait_text(["sem credencial"])
         # Conecta a anthropic, como no caso de login.
         h.click("Conectar")
@@ -498,8 +523,7 @@ def check_real_pi_stale_catalog_and_reopen():
         type_text("rascunho-real-preservado")
         wait_for(lambda: find_word(h.window, "rascunho"), "Rascunho real não apareceu")
         press("F1")
-        h.wait_text(["Provedores"])
-        h.click("Provedores")
+        h.open_section("settings-providers", "Provedores")
         h.wait_text(["deepseek", "credencial salva", "anthropic"])
         # anthropic é a segunda linha; o primeiro "Conectar" seria amazon-bedrock.
         h.click_row_action("anthropic", "Conectar")

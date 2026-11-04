@@ -627,18 +627,40 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertFalse(data.startswith(b"\xef\xbb\xbf\xef\xbb\xbf"))
         self.assertFalse(data.decode("utf-8-sig").startswith("\ufeff"))
 
-    def test_installer_requires_pi_opt_in_and_holds_dish_back(self):
+    def test_installer_installs_pi_and_node_only_with_opt_in(self):
         nsi = (ROOT / "scripts/windows-installer.nsi").read_text(encoding="utf-8")
-        # Download requires opt-in; execution requires a second confirmation.
+        # Nada é baixado sem marcar: as duas caixas começam desmarcadas.
         self.assertIn("${NSD_Uncheck} $PiCheckbox", nsi)
+        self.assertIn("${NSD_Uncheck} $NodeCheckbox", nsi)
         self.assertNotIn("${NSD_Check} $PiCheckbox", nsi)
-        self.assertNotIn("ExecutionPolicy", nsi)
-        self.assertNotIn("| iex", nsi)
+        self.assertNotIn("${NSD_Check} $NodeCheckbox", nsi)
+        # Sem PowerShell opaco: tudo inline e o hash é conferido antes de extrair.
+        for unsafe in ["ExecutionPolicy", "| iex", "Invoke-Expression",
+                       "Unblock-File", " -File ", "-EncodedCommand"]:
+            self.assertNotIn(unsafe, nsi)
+        self.assertRegex(nsi, r'!define NODE_SHA256 "[0-9a-f]{64}"')
+        self.assertIn("Get-FileHash", nsi)
+        self.assertIn("-ne '${NODE_SHA256}'", nsi)
+        self.assertLess(nsi.index("Get-FileHash"), nsi.index("ExtractToDirectory"))
+        # O Pi entra com as mesmas flags que src/installation.rs usa (ficam em sincronia).
+        self.assertIn("install -g --ignore-scripts --no-audit --no-fund --prefix", nsi)
+        installation = (ROOT / "src/installation.rs").read_text()
+        for flag in ['"--ignore-scripts"', '"--no-audit"', '"--no-fund"', '"--prefix"']:
+            self.assertIn(flag, installation)
+        # O Dish entra primeiro; as dependências ficam para depois.
+        self.assertLess(nsi.index('Section "Dish" SEC_MAIN'),
+                        nsi.index('Section "-Dependencias" SEC_DEPS'))
+        # Em modo silencioso (/S) as duas falhas viram "pular etapa".
+        self.assertEqual(nsi.count("/SD IDCANCEL IDRETRY"), 2)
+        # Se já existe tudo, a página de dependências nem aparece.
+        self.assertIn("Function DepsPage", nsi)
+        self.assertIn('${AndIf} $PiOk == "1"', nsi)
+        # O helper .ps1 continua no pacote (o app e o MSI também o usam).
         self.assertIn('File "${SRCDIR}\\scripts\\install-pi-windows.ps1"', nsi)
-        self.assertIn('-NoProfile -File "$INSTDIR\\install-pi-windows.ps1"', nsi)
-        self.assertIn("ExecShell \"open\" \"$INSTDIR\\${APP_EXE}\"", nsi)
-        # O "Executar o Dish" fica desmarcado, mas nunca desabilitado.
-        self.assertIn("${NSD_Uncheck} $DishCheckbox", nsi)
+        # "Abrir o Dish agora" marcado por padrão e nunca elevado.
+        self.assertIn("${NSD_Check} $DishCheckbox", nsi)
+        self.assertIn('Exec \'"$WINDIR\\explorer.exe" "$INSTDIR\\${APP_EXE}"\'', nsi)
+        self.assertIn("RequestExecutionLevel user", nsi)
         self.assertNotIn("EnableWindow $DishCheckbox", nsi)
 
     def test_windows_download_is_reviewed_before_explicit_execution(self):

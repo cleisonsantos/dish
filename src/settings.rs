@@ -1,17 +1,24 @@
+use crate::providers::local;
 use crate::{editor::{self, Editor}, theme::{self, AppearanceMode}};
 use crate::ui::test_probe::TestProbe;
 use gpui::{prelude::*, *};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet};
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 #[derive(Clone, Copy, PartialEq)]
-pub enum Section { App, Appearance, Providers, Models, Sessions, Keys, About }
+pub enum Section { App, Appearance, Navigation, Providers, Models, Sessions, Keys, About }
 
 pub enum SettingsEvent {
     Closed,
     Preference(&'static str, bool),
     /// O usuário escolheu escuro, claro ou seguir o desktop.
     Appearance(AppearanceMode),
+    /// Ordem e agrupamento da lista de sessões.
+    Navigation(crate::preferences::NavigationChoice),
     /// O usuário escolheu um tema do catálogo, por id.
     Theme(String),
     /// Abrir a pasta de temas do usuário no gerenciador de arquivos.
@@ -92,6 +99,32 @@ enum ProvidersView {
     Unavailable(String),
 }
 
+/// Resultado da descoberta de um serviço local, na ordem de `LocalService::ALL`.
+#[derive(Clone)]
+enum LocalProbe {
+    Idle,
+    Searching,
+    Done(local::Detection),
+}
+
+/// Onde está a validação do endpoint compatível com OpenAI.
+#[derive(Clone)]
+enum EndpointStep {
+    Editing,
+    Validating,
+    Valid(Vec<String>),
+    Invalid(String),
+    Saving,
+}
+
+/// Estado do formulário de endpoint compatível.
+struct EndpointForm {
+    api: local::Api,
+    step: EndpointStep,
+    /// Impressão digital dos campos validados; a chave em si não é guardada.
+    validated: Option<u64>,
+}
+
 /// Onde o login está. Um passo por vez, com a lista sempre a um clique atrás.
 #[derive(Clone)]
 enum LoginStep {
@@ -119,6 +152,8 @@ pub struct Settings {
     titles: bool,
     sound: bool,
     appearance: AppearanceMode,
+    /// Ordem e agrupamento da lista de sessões.
+    navigation_choice: crate::preferences::NavigationChoice,
     /// Id do tema fixado, ou `None` para o padrão da aparência.
     theme: Option<String>,
     /// `(provider, id)` de cada modelo que o Pi reportou.
@@ -141,6 +176,18 @@ pub struct Settings {
     /// A próxima consulta terminou? Então ela é consequência de uma credencial
     /// que mudou e precisa avisar as conversas abertas.
     provider_change_pending: bool,
+    /// Descoberta dos serviços locais, uma entrada por `LocalService::ALL`.
+    local: Vec<LocalProbe>,
+    local_cancel: Option<Arc<AtomicBool>>,
+    /// Muda a cada descoberta; resultado de geração antiga é descartado.
+    local_generation: u64,
+    /// Formulário de endpoint compatível, quando aberto.
+    endpoint: Option<EndpointForm>,
+    endpoint_cancel: Option<Arc<AtomicBool>>,
+    endpoint_id: Entity<Editor>,
+    endpoint_url: Entity<Editor>,
+    endpoint_key: Entity<Editor>,
+    endpoint_models: Entity<Editor>,
     /// Versão do Pi e opções de atualização mostradas em Sobre / Pi.
     pi: PiStatus,
     /// Consulta de versão em andamento (não é a checagem de rede).
@@ -157,6 +204,8 @@ pub struct SettingsView {
     /// `[detalhes, navegação, raciocínio, títulos, som]`.
     pub options: [bool; 5],
     pub appearance: AppearanceMode,
+    /// Ordem e agrupamento escolhidos para a navegação de sessões.
+    pub navigation_choice: crate::preferences::NavigationChoice,
     /// Tema fixado pelo usuário, se houver.
     pub theme: Option<String>,
     /// `(provider, id)` de cada modelo que o Pi reportou.
@@ -185,11 +234,23 @@ impl Settings {
         cx.observe(&search, |_, _, cx| cx.notify()).detach();
         let answer = cx.new(|cx| Editor::new("", "", window, cx));
         cx.observe(&answer, |_, _, cx| cx.notify()).detach();
+        let endpoint_id = cx.new(|cx| Editor::new("", "meu-endpoint", window, cx));
+        cx.observe(&endpoint_id, |_, _, cx| cx.notify()).detach();
+        let endpoint_url = cx.new(|cx| Editor::new("", "http://127.0.0.1:8000/v1", window, cx));
+        cx.observe(&endpoint_url, |_, _, cx| cx.notify()).detach();
+        let endpoint_key = cx.new(|cx| Editor::new("", "opcional", window, cx));
+        cx.observe(&endpoint_key, |_, _, cx| cx.notify()).detach();
+        endpoint_key.update(cx, |editor, cx| editor.set_masked(true, cx));
+        let endpoint_models = cx.new(|cx| {
+            Editor::new("", "deixe vazio para usar todos os modelos listados", window, cx)
+        });
+        cx.observe(&endpoint_models, |_, _, cx| cx.notify()).detach();
         Self {
             open: false, section: Section::App, focus: cx.focus_handle(),
             previous_focus: None, search,
             details: true, navigation: true, thinking: true, titles: false, sound: false,
             appearance: AppearanceMode::System,
+            navigation_choice: Default::default(),
             theme: None,
             models: Vec::new(), hidden: BTreeSet::new(),
             providers: ProvidersView::Idle,
@@ -200,6 +261,15 @@ impl Settings {
             answer_focus: false,
             confirming_logout: None,
             provider_change_pending: false,
+            local: local_idle(),
+            local_cancel: None,
+            local_generation: 0,
+            endpoint: None,
+            endpoint_cancel: None,
+            endpoint_id,
+            endpoint_url,
+            endpoint_key,
+            endpoint_models,
             pi: PiStatus::default(),
             pi_version_loading: false,
             sessions: SessionsView::default(),
@@ -220,6 +290,7 @@ impl Settings {
         self.section = section;
         [self.details, self.navigation, self.thinking, self.titles, self.sound] = view.options;
         self.appearance = view.appearance;
+        self.navigation_choice = view.navigation_choice;
         self.theme = view.theme;
         self.models = view.models;
         self.hidden = view.hidden;
@@ -229,7 +300,10 @@ impl Settings {
         self.focus.focus(window, cx);
         if section == Section::Keys { self.search.read(cx).focus_handle.clone().focus(window, cx); } else { self.focus.focus(window, cx); }
         self.provider_notice = None;
-        if section == Section::Providers { self.refresh_providers(cx); }
+        if section == Section::Providers {
+            self.refresh_providers(cx);
+            self.start_local_detection(cx);
+        }
         if section == Section::About { self.refresh_pi_version(cx); }
         cx.notify();
     }
@@ -307,8 +381,117 @@ impl Settings {
         .detach();
     }
 
+    /// Procura os serviços locais em paralelo, sem bloquear a interface.
+    ///
+    /// Uma geração por consulta: se a tela fechar ou outra busca começar, o
+    /// token é marcado e o resultado antigo é descartado ao chegar.
+    fn start_local_detection(&mut self, cx: &mut Context<Self>) {
+        if let Some(token) = self.local_cancel.take() {
+            token.store(true, Ordering::SeqCst);
+        }
+        let token = Arc::new(AtomicBool::new(false));
+        self.local_cancel = Some(Arc::clone(&token));
+        self.local_generation = self.local_generation.wrapping_add(1);
+        let generation = self.local_generation;
+        self.local = local::LocalService::ALL.iter().map(|_| LocalProbe::Searching).collect();
+        cx.notify();
+        for service in local::LocalService::ALL {
+            let token = Arc::clone(&token);
+            cx.spawn(async move |this, cx| {
+                let cancel = Arc::clone(&token);
+                let detected = cx
+                    .background_executor()
+                    .spawn(async move {
+                        local::detect(
+                            service,
+                            service.default_root(),
+                            local::DETECT_TIMEOUT,
+                            &cancel,
+                        )
+                    })
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    if this.local_generation != generation || token.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    let index = local::LocalService::ALL
+                        .iter()
+                        .position(|candidate| *candidate == service);
+                    if let Some(slot) = index.and_then(|index| this.local.get_mut(index)) {
+                        *slot = LocalProbe::Done(detected);
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+    }
+
+    /// Cancela a descoberta e o formulário, limpando a chave do editor.
+    fn reset_local_and_endpoint(&mut self, cx: &mut Context<Self>) {
+        if let Some(token) = self.local_cancel.take() {
+            token.store(true, Ordering::SeqCst);
+        }
+        self.local_generation = self.local_generation.wrapping_add(1);
+        self.local = local_idle();
+        if let Some(token) = self.endpoint_cancel.take() {
+            token.store(true, Ordering::SeqCst);
+        }
+        self.endpoint = None;
+        self.endpoint_key.update(cx, |editor, cx| {
+            editor.set_masked(true, cx);
+            editor.clear(cx);
+        });
+    }
+
+    /// Grava um endpoint em `models.json` e reconsulta o catálogo pelo caminho
+    /// do #69, para as conversas abertas oferecerem "Reabrir esta conversa".
+    fn save_endpoint(&mut self, endpoint: local::Endpoint, cx: &mut Context<Self>) {
+        let provider = endpoint.provider.clone();
+        self.provider_notice = Some("Gravando models.json…".to_string());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let Some(path) = local::models_path() else {
+                        return Err(
+                            "Não foi possível localizar a pasta do agente do Pi.".to_string()
+                        );
+                    };
+                    local::save(&path, &endpoint).map_err(|error| format!("{error:#}"))
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok(outcome) => {
+                        this.provider_notice = Some(if outcome.created {
+                            format!(
+                                "{provider} salvo em models.json ({} modelo(s) novo(s)). O arquivo models.json foi criado.",
+                                outcome.added_models
+                            )
+                        } else {
+                            format!(
+                                "{provider} salvo em models.json ({} modelo(s) novo(s)). O original ficou em models.json.dish-backup.",
+                                outcome.added_models
+                            )
+                        });
+                        this.provider_change_pending = true;
+                        this.refresh_providers(cx);
+                    }
+                    Err(message) => {
+                        this.provider_notice = Some(message);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open = false;
+        self.reset_local_and_endpoint(cx);
         self.search.update(cx, |editor, cx| editor.clear(cx));
         if let Some(focus) = self.previous_focus.take() { focus.focus(window, cx); }
         cx.emit(SettingsEvent::Closed);
@@ -574,7 +757,13 @@ impl Settings {
                     })),
                 ]))
                 .into_any_element(),
-            None => self.provider_list(page, cx),
+            None => {
+                if self.endpoint.is_some() {
+                    self.endpoint_form(page, cx)
+                } else {
+                    self.provider_list(page, cx)
+                }
+            }
         }
     }
 
@@ -695,9 +884,147 @@ impl Settings {
         actions = actions.child(control("providers-retry", "Verificar de novo", cx.listener(
             |this, _, _, cx| this.refresh_providers(cx),
         )).flex_none());
-        page.child(actions).child(note(
-            "Provedores locais e endpoints compatíveis são configurados em models.json, como o Pi descreve em docs/models.md.",
-        )).into_any_element()
+        page.child(actions).child(self.local_block(cx)).into_any_element()
+    }
+
+    /// Descoberta dos serviços locais e a porta de entrada do endpoint
+    /// compatível. Roda depois da lista, sem esconder o estado do Pi.
+    fn local_block(&mut self, cx: &mut Context<Self>) -> Div {
+        let mut states = serde_json::Map::new();
+        for (index, service) in local::LocalService::ALL.iter().enumerate() {
+            let (state, models) = match self.local.get(index) {
+                Some(LocalProbe::Searching) => ("searching", 0),
+                Some(LocalProbe::Done(local::Detection::Found { models, .. })) => {
+                    ("found", models.len())
+                }
+                Some(LocalProbe::Done(local::Detection::NotFound { .. })) => ("not_found", 0),
+                Some(LocalProbe::Done(local::Detection::Failed { .. })) => ("failed", 0),
+                _ => ("idle", 0),
+            };
+            states.insert(
+                service.provider_id().to_string(),
+                serde_json::json!({ "state": state, "models": models }),
+            );
+        }
+        let states = serde_json::Value::Object(states);
+        let names = local::LocalService::ALL
+            .iter()
+            .map(|service| service.name())
+            .collect::<Vec<_>>()
+            .join(" e ");
+        let mut block = div()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .test_probe(|| "providers-local".into(), move || states.clone())
+            .child(
+                div()
+                    .text_size(px(theme::TEXT_SM))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme::text())
+                    .child("Provedores locais"),
+            )
+            .child(note(&format!(
+                "{names} são procurados no endereço padrão de cada serviço."
+            )));
+        for (index, service) in local::LocalService::ALL.into_iter().enumerate() {
+            let probe = self
+                .local
+                .get(index)
+                .cloned()
+                .unwrap_or(LocalProbe::Idle);
+            let mut row = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(12.))
+                .px(px(12.))
+                .py(px(8.))
+                .rounded(theme::r_control())
+                .bg(theme::surface_2())
+                .border_1()
+                .border_color(theme::line_soft())
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .truncate()
+                        .font_family(theme::FONT_MONO)
+                        .text_size(px(theme::TEXT_SM))
+                        .text_color(theme::text())
+                        .child(SharedString::from(service.provider_id())),
+                );
+            match probe {
+                LocalProbe::Idle => {
+                    row = row.child(local_status("aguardando", theme::faint()));
+                }
+                LocalProbe::Searching => {
+                    row = row.child(local_status(
+                        &format!(
+                            "procurando em {}…",
+                            root_label(service.default_root())
+                        ),
+                        theme::dim(),
+                    ));
+                }
+                LocalProbe::Done(local::Detection::Found { models, .. }) if models.is_empty() => {
+                    row = row.child(local_status("nenhum modelo baixado", theme::faint()));
+                }
+                LocalProbe::Done(local::Detection::Found { models, .. }) => {
+                    row = row
+                        .child(local_status(&model_count(models.len()), theme::dim()))
+                        .child(control(
+                            SharedString::from(format!(
+                                "providers-local-add-{}",
+                                service.provider_id()
+                            )),
+                            "Adicionar ao Pi",
+                            cx.listener(move |this, _, _, cx| {
+                                let endpoint = local::Endpoint {
+                                    provider: service.provider_id().to_string(),
+                                    base_url: service.base_url(service.default_root()),
+                                    api: local::Api::OpenAiCompletions,
+                                    key: Some(service.dummy_key().to_string()),
+                                    models: models.clone(),
+                                };
+                                this.save_endpoint(endpoint, cx);
+                            }),
+                        ));
+                }
+                LocalProbe::Done(local::Detection::NotFound { .. }) => {
+                    row = row.child(local_status("não encontrado", theme::faint()));
+                }
+                LocalProbe::Done(local::Detection::Failed { message, .. }) => {
+                    row = row.child(local_status(&message, theme::dim()));
+                }
+            }
+            block = block.child(row);
+        }
+        block
+            .child(actions_row(vec![
+                control(
+                    "providers-local-retry",
+                    "Procurar de novo",
+                    cx.listener(|this, _, _, cx| this.start_local_detection(cx)),
+                ),
+                control(
+                    "providers-endpoint-open",
+                    "Adicionar endpoint compatível",
+                    cx.listener(|this, _, window, cx| {
+                        this.endpoint = Some(EndpointForm {
+                            api: local::Api::OpenAiCompletions,
+                            step: EndpointStep::Editing,
+                            validated: None,
+                        });
+                        this.provider_notice = None;
+                        this.endpoint_id.read(cx).focus_handle.clone().focus(window, cx);
+                        cx.notify();
+                    }),
+                ),
+            ]))
+            .child(note(
+                "O Dish edita só o provedor que adiciona em models.json e guarda o original em models.json.dish-backup antes de gravar.",
+            ))
     }
 
     /// Escolha de como entrar: chave de API ou conta do provedor.
@@ -1036,6 +1363,281 @@ impl Settings {
         .detach();
     }
 
+    /// Valida o endpoint no serviço, fora da thread da interface. A chave só
+    /// viaja no cabeçalho da requisição; o estado guarda só a impressão digital.
+    fn validate_endpoint(&mut self, cx: &mut Context<Self>) {
+        let Some(api) = self.endpoint.as_ref().map(|form| form.api) else {
+            return;
+        };
+        let provider = self.endpoint_id.read(cx).text(cx).trim().to_string();
+        let base_url = self.endpoint_url.read(cx).text(cx).trim().to_string();
+        let key_text = self.endpoint_key.read(cx).text(cx);
+        let models_text = self.endpoint_models.read(cx).text(cx);
+        let fingerprint =
+            endpoint_fingerprint(&provider, &base_url, api, key_text.trim(), &models_text);
+        let key = endpoint_key(&key_text);
+        let models = split_models(&models_text);
+        if let Some(form) = self.endpoint.as_mut() {
+            form.step = EndpointStep::Validating;
+            form.validated = None;
+        }
+        if let Some(token) = self.endpoint_cancel.take() {
+            token.store(true, Ordering::SeqCst);
+        }
+        let token = Arc::new(AtomicBool::new(false));
+        self.endpoint_cancel = Some(Arc::clone(&token));
+        self.provider_notice = None;
+        cx.notify();
+        let endpoint = local::Endpoint {
+            provider,
+            base_url,
+            api,
+            key,
+            models,
+        };
+        cx.spawn(async move |this, cx| {
+            let cancel = Arc::clone(&token);
+            let result = cx
+                .background_executor()
+                .spawn(async move { local::validate(&endpoint, local::VALIDATE_TIMEOUT, &cancel) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if token.load(Ordering::SeqCst) {
+                    return;
+                }
+                let Some(form) = this.endpoint.as_mut() else {
+                    return;
+                };
+                match result {
+                    Ok(models) => {
+                        form.step = EndpointStep::Valid(models);
+                        form.validated = Some(fingerprint);
+                    }
+                    Err(message) => {
+                        form.step = EndpointStep::Invalid(message);
+                        form.validated = None;
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Salva o endpoint validado. Se algo mudou desde a validação, pede para
+    /// validar de novo em vez de gravar outra coisa.
+    fn submit_endpoint(&mut self, cx: &mut Context<Self>) {
+        let Some((api, step, validated)) = self
+            .endpoint
+            .as_ref()
+            .map(|form| (form.api, form.step.clone(), form.validated))
+        else {
+            return;
+        };
+        let EndpointStep::Valid(listed) = step else {
+            self.provider_notice = Some("Valide o endpoint antes de salvar.".to_string());
+            cx.notify();
+            return;
+        };
+        let provider = self.endpoint_id.read(cx).text(cx).trim().to_string();
+        let base_url = self.endpoint_url.read(cx).text(cx).trim().to_string();
+        let key_text = self.endpoint_key.read(cx).text(cx);
+        let models_text = self.endpoint_models.read(cx).text(cx);
+        let fingerprint =
+            endpoint_fingerprint(&provider, &base_url, api, key_text.trim(), &models_text);
+        if validated != Some(fingerprint) {
+            self.provider_notice = Some(
+                "Valide de novo: os campos mudaram desde a última validação.".to_string(),
+            );
+            cx.notify();
+            return;
+        }
+        let mut models = split_models(&models_text);
+        if models.is_empty() {
+            models = listed;
+        }
+        if models.is_empty() {
+            self.provider_notice =
+                Some("O endpoint não listou modelos; escreva pelo menos um.".to_string());
+            cx.notify();
+            return;
+        }
+        let key = endpoint_key(&key_text);
+        if let Some(form) = self.endpoint.as_mut() {
+            form.step = EndpointStep::Saving;
+        }
+        if let Some(token) = self.endpoint_cancel.take() {
+            token.store(true, Ordering::SeqCst);
+        }
+        // A chave não fica no editor depois de sair daqui.
+        self.endpoint_key.update(cx, |editor, cx| {
+            editor.set_masked(true, cx);
+            editor.clear(cx);
+        });
+        self.endpoint = None;
+        self.provider_notice = None;
+        cx.notify();
+        let endpoint = local::Endpoint {
+            provider,
+            base_url,
+            api,
+            key,
+            models,
+        };
+        self.save_endpoint(endpoint, cx);
+    }
+
+    fn cancel_endpoint(&mut self, cx: &mut Context<Self>) {
+        if let Some(token) = self.endpoint_cancel.take() {
+            token.store(true, Ordering::SeqCst);
+        }
+        self.endpoint = None;
+        self.endpoint_key.update(cx, |editor, cx| {
+            editor.set_masked(true, cx);
+            editor.clear(cx);
+        });
+        self.provider_notice = None;
+        cx.notify();
+    }
+
+    /// Formulário do endpoint compatível com OpenAI. A chave nunca é
+    /// publicada no probe: só o modo de exibição e o tamanho.
+    fn endpoint_form(&mut self, page: Div, cx: &mut Context<Self>) -> AnyElement {
+        let Some((api, step, validated)) = self
+            .endpoint
+            .as_ref()
+            .map(|form| (form.api, form.step.clone(), form.validated))
+        else {
+            return page.into_any_element();
+        };
+        let provider = self.endpoint_id.read(cx).text(cx).trim().to_string();
+        let base_url = self.endpoint_url.read(cx).text(cx).trim().to_string();
+        let key_text = self.endpoint_key.read(cx).text(cx);
+        let key_masked = self.endpoint_key.read(cx).masked;
+        let key_length = key_text.chars().count();
+        let models_text = self.endpoint_models.read(cx).text(cx);
+        let fingerprint =
+            endpoint_fingerprint(&provider, &base_url, api, key_text.trim(), &models_text);
+        let changed = matches!(step, EndpointStep::Valid(_)) && validated != Some(fingerprint);
+        let probe = serde_json::json!({
+            "step": endpoint_step_id(&step),
+            "api": api.id(),
+            "key_masked": key_masked,
+            "key_length": key_length,
+        });
+        let mut form = div()
+            .id("providers-endpoint-form")
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .test_probe(|| "providers-endpoint".into(), move || probe.clone())
+            .child(
+                div()
+                    .text_size(px(theme::TEXT_SM))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme::text())
+                    .child("Endpoint compatível com OpenAI"),
+            )
+            .child(endpoint_field("Nome do provedor", self.endpoint_id.clone()))
+            .child(endpoint_field("URL base", self.endpoint_url.clone()));
+        let mut selector = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(6.))
+            .child(
+                div()
+                    .text_size(px(theme::TEXT_XS))
+                    .text_color(theme::dim())
+                    .child("Tipo de API"),
+            );
+        for choice in [local::Api::OpenAiCompletions, local::Api::OpenAiResponses] {
+            let active = choice == api;
+            let id = match choice {
+                local::Api::OpenAiCompletions => "providers-endpoint-api-completions",
+                local::Api::OpenAiResponses => "providers-endpoint-api-responses",
+            };
+            selector = selector.child(
+                control(id, choice.label(), cx.listener(move |this, _, _, cx| {
+                    if let Some(form) = this.endpoint.as_mut() {
+                        form.api = choice;
+                    }
+                    cx.notify();
+                }))
+                .when(active, |el| {
+                    el.bg(theme::surface_2())
+                        .border_color(theme::line())
+                        .text_color(theme::text())
+                }),
+            );
+        }
+        form = form
+            .child(selector)
+            .child(endpoint_field(
+                "Chave de API (opcional)",
+                self.endpoint_key.clone(),
+            ))
+            .child(note(
+                "A chave é gravada em models.json, que o Pi lê; o Dish não a guarda em preferências nem em registro. Você também pode escrever $NOME_DA_VARIÁVEL.",
+            ))
+            .child(endpoint_field("Modelos", self.endpoint_models.clone()));
+        match &step {
+            EndpointStep::Editing => {}
+            EndpointStep::Validating => {
+                form = form.child(note("Validando…"));
+            }
+            EndpointStep::Valid(models) => {
+                form = form.child(note(&format!(
+                    "Endpoint respondeu com {}.",
+                    model_count(models.len())
+                )));
+                if !models.is_empty() {
+                    let mut list = div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .font_family(theme::FONT_MONO)
+                        .text_size(px(theme::TEXT_XS))
+                        .text_color(theme::dim());
+                    for id in models.iter().take(12) {
+                        list = list
+                            .child(div().truncate().child(SharedString::from(id.clone())));
+                    }
+                    form = form.child(list);
+                }
+            }
+            EndpointStep::Invalid(message) => {
+                form = form.child(note(message));
+            }
+            EndpointStep::Saving => {
+                form = form.child(note("Salvando em models.json…"));
+            }
+        }
+        if changed {
+            form = form.child(note(
+                "Valide de novo: os campos mudaram desde a última validação.",
+            ));
+        }
+        form = form.child(actions_row(vec![
+            control(
+                "providers-endpoint-validate",
+                "Validar",
+                cx.listener(|this, _, _, cx| this.validate_endpoint(cx)),
+            ),
+            control(
+                "providers-endpoint-save",
+                "Salvar",
+                cx.listener(|this, _, _, cx| this.submit_endpoint(cx)),
+            ),
+            control(
+                "providers-endpoint-cancel",
+                "Cancelar",
+                cx.listener(|this, _, _, cx| this.cancel_endpoint(cx)),
+            ),
+        ]));
+        page.child(form).into_any_element()
+    }
+
     pub fn suspend(&mut self, cx: &mut Context<Self>) {
         self.open = false;
         self.previous_focus = None;
@@ -1045,6 +1647,7 @@ impl Settings {
         self.login = None;
         self.confirming_logout = None;
         self.reset_answer(false, cx);
+        self.reset_local_and_endpoint(cx);
         // Reabrir a tela relê o estado: a credencial pode ter mudado no Pi.
         self.providers = ProvidersView::Idle;
         cx.notify();
@@ -1115,6 +1718,97 @@ fn switch(id: impl Into<ElementId>, state: SwitchState, click: impl Fn(&ClickEve
             click(event, window, cx);
         })
 }
+fn local_idle() -> Vec<LocalProbe> {
+    local::LocalService::ALL
+        .iter()
+        .map(|_| LocalProbe::Idle)
+        .collect()
+}
+
+/// Estado de uma linha local, em texto curto e cor neutra por padrão.
+fn local_status(value: &str, color: gpui::Hsla) -> Div {
+    div()
+        .flex_none()
+        .text_size(px(theme::TEXT_XS))
+        .text_color(color)
+        .child(SharedString::from(value.to_owned()))
+}
+
+/// Rótulo e caixa de um campo do formulário, no mesmo poço escuro da resposta
+/// secreta do login.
+fn endpoint_field(label: &str, editor: Entity<Editor>) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(4.))
+        .child(
+            div()
+                .text_size(px(theme::TEXT_XS))
+                .text_color(theme::dim())
+                .child(SharedString::from(label.to_owned())),
+        )
+        .child(
+            div()
+                .p(px(8.))
+                .rounded(theme::r_technical())
+                .bg(theme::inset())
+                .border_1()
+                .border_color(theme::line_soft())
+                .child(editor),
+        )
+}
+
+fn endpoint_step_id(step: &EndpointStep) -> &'static str {
+    match step {
+        EndpointStep::Editing => "editing",
+        EndpointStep::Validating => "validating",
+        EndpointStep::Valid(_) => "valid",
+        EndpointStep::Invalid(_) => "invalid",
+        EndpointStep::Saving => "saving",
+    }
+}
+
+/// Lista de modelos digitada: vírgula, espaço ou quebra de linha separam um id
+/// do outro; repetidos são descartados.
+fn split_models(text: &str) -> Vec<String> {
+    let mut models = Vec::new();
+    for token in text.split(|character: char| character == ',' || character.is_whitespace()) {
+        let token = token.trim();
+        if token.is_empty() || models.iter().any(|existing: &String| existing.as_str() == token) {
+            continue;
+        }
+        models.push(token.to_string());
+    }
+    models
+}
+
+/// Chave do endpoint sem espaços acidentais de colagem; vazia vira ausência.
+fn endpoint_key(text: &str) -> Option<String> {
+    Some(text.trim().to_string()).filter(|key| !key.is_empty())
+}
+
+/// Identidade dos campos validados. A chave entra no hash, mas não é guardada
+/// em lugar nenhum — nem no estado, nem em mensagem, nem em registro.
+fn endpoint_fingerprint(
+    provider: &str,
+    base_url: &str,
+    api: local::Api,
+    key: &str,
+    models_text: &str,
+) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    (provider, base_url, api.id(), key, models_text).hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Raiz sem esquema, como aparece na linha de status ("127.0.0.1:11434").
+fn root_label(root: &str) -> &str {
+    root.strip_prefix("http://")
+        .or_else(|| root.strip_prefix("https://"))
+        .unwrap_or(root)
+        .trim_end_matches('/')
+}
+
 fn note(value: &str) -> Div {
     div()
         .text_size(px(theme::TEXT_SM))
@@ -1300,6 +1994,7 @@ impl Render for Settings {
         for (section, label, id) in [
             (Section::App, "Aplicativo", "settings-app"),
             (Section::Appearance, "Aparência", "settings-appearance"),
+            (Section::Navigation, "Navegação", "settings-navigation"),
             (Section::Providers, "Provedores", "settings-providers"),
             (Section::Models, "Modelos", "settings-models"),
             (Section::Sessions, "Sessões", "settings-sessions"),
@@ -1310,7 +2005,10 @@ impl Render for Settings {
                 this.section = section;
                 if section == Section::Keys { this.search.read(cx).focus_handle.clone().focus(window, cx); }
                 else { this.focus.focus(window, cx); }
-                if section == Section::Providers { this.refresh_providers(cx); }
+                if section == Section::Providers {
+                    this.refresh_providers(cx);
+                    this.start_local_detection(cx);
+                }
                 if section == Section::About { this.refresh_pi_version(cx); }
                 cx.notify();
             })).when(self.section == section, |el| el
@@ -1467,6 +2165,7 @@ impl Render for Settings {
                 );
                 page.into_any_element()
             }
+            Section::Navigation => self.navigation_page(cx),
             Section::Providers => self.providers_page(window, cx),
             Section::Models => {
                 let mut page = column().child("Modelos").child(note(
@@ -1795,10 +2494,109 @@ fn about_pair(label: &str, value: &str) -> Div {
             .child(SharedString::from(value.to_owned())))
 }
 
+impl Settings {
+    /// Seção Navegação: ordem das sessões, agrupamento e ordem das pastas.
+    fn navigation_page(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        use crate::preferences::{ProjectOrder, SessionOrder};
+        let choice = self.navigation_choice;
+
+        fn segments() -> Div {
+            div()
+                .flex()
+                .flex_row()
+                .items_stretch()
+                .p(px(2.))
+                .gap(px(1.))
+                .rounded(theme::r_control())
+                .bg(theme::inset())
+                .border_1()
+                .border_color(theme::line_soft())
+        }
+
+        fn row(label: &str, control: Div) -> Div {
+            div().flex().flex_row().items_center().gap(px(12.))
+                .px(px(12.)).py(px(8.)).rounded(theme::r_control())
+                .bg(theme::surface_2()).border_1().border_color(theme::line_soft())
+                .child(div().flex_1().min_w(px(0.)).text_size(px(theme::TEXT_SM))
+                    .text_color(theme::dim()).child(SharedString::from(label.to_owned())))
+                .child(control)
+        }
+
+        let mut order = segments();
+        for (value, label, id) in [
+            (SessionOrder::Activity, "Atividade", "nav-order-activity"),
+            (SessionOrder::Completed, "Conclusão", "nav-order-completed"),
+            (SessionOrder::Name, "Nome", "nav-order-name"),
+        ] {
+            let active = choice.session_order == value;
+            order = order.child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .test_probe(move || id.to_string(), move || serde_json::json!({ "active": active }))
+                    .child(appearance_segment(id, label, active, cx, move |this, cx| {
+                        this.navigation_choice.session_order = value;
+                        cx.emit(SettingsEvent::Navigation(this.navigation_choice));
+                        cx.notify();
+                    })),
+            );
+        }
+
+        let mut layout = segments();
+        for (value, label, id) in [
+            (crate::preferences::SessionLayout::Projects, "Por pasta", "nav-layout-projects"),
+            (crate::preferences::SessionLayout::Flat, "Lista única", "nav-layout-flat"),
+        ] {
+            let active = choice.session_layout == value;
+            layout = layout.child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .test_probe(move || id.to_string(), move || serde_json::json!({ "active": active }))
+                    .child(appearance_segment(id, label, active, cx, move |this, cx| {
+                        this.navigation_choice.session_layout = value;
+                        cx.emit(SettingsEvent::Navigation(this.navigation_choice));
+                        cx.notify();
+                    })),
+            );
+        }
+
+        let mut projects = segments();
+        for (value, label, id) in [
+            (ProjectOrder::Activity, "Atividade", "nav-projects-activity"),
+            (ProjectOrder::Name, "Nome", "nav-projects-name"),
+        ] {
+            let active = choice.project_order == value;
+            projects = projects.child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .test_probe(move || id.to_string(), move || serde_json::json!({ "active": active }))
+                    .child(appearance_segment(id, label, active, cx, move |this, cx| {
+                        this.navigation_choice.project_order = value;
+                        cx.emit(SettingsEvent::Navigation(this.navigation_choice));
+                        cx.notify();
+                    })),
+            );
+        }
+
+        column()
+            .child(page_title("Navegação"))
+            .child(note("Fixadas ficam sempre no topo. A ordem não muda enquanto o ponteiro ou o teclado estiverem na lista."))
+            .child(row("Ordem das sessões", order))
+            .child(row("Agrupamento", layout))
+            .child(row("Ordem das pastas", projects))
+            .into_any_element()
+    }
+}
 
 #[cfg(test)]
 mod model_grouping_tests {
-    use super::{group_state, grouped_models, SwitchState};
+    use super::{
+        endpoint_fingerprint, endpoint_key, group_state, grouped_models, root_label, split_models,
+        SwitchState,
+    };
+    use crate::providers::local::Api;
     use std::collections::BTreeSet;
 
     fn models(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
@@ -1833,6 +2631,102 @@ mod model_grouping_tests {
         assert_eq!(grouped["anthropic"], ["haiku", "sonnet"]);
         assert_eq!(grouped["openai"], ["gpt-3", "gpt-4"]);
         assert!(grouped_models(&[]).is_empty());
+    }
+
+    #[test]
+    fn split_models_accepts_commas_whitespace_and_newlines() {
+        let text = " qwen2.5-coder:7b, llama3.2\n mistral\t,,";
+        assert_eq!(
+            split_models(text),
+            ["qwen2.5-coder:7b", "llama3.2", "mistral"]
+        );
+        assert!(split_models(" \n\t ").is_empty());
+        // Repetidos mantêm só a primeira ocorrência, na ordem digitada.
+        assert_eq!(split_models("a b, a"), ["a", "b"]);
+    }
+
+    #[test]
+    fn fingerprint_changes_when_any_endpoint_field_changes() {
+        let base = endpoint_fingerprint(
+            "meu-endpoint",
+            "http://127.0.0.1:8000/v1",
+            Api::OpenAiCompletions,
+            "chave",
+            "modelo-a\nmodelo-b",
+        );
+        assert_eq!(
+            base,
+            endpoint_fingerprint(
+                "meu-endpoint",
+                "http://127.0.0.1:8000/v1",
+                Api::OpenAiCompletions,
+                "chave",
+                "modelo-a\nmodelo-b",
+            )
+        );
+        assert_ne!(
+            base,
+            endpoint_fingerprint(
+                "outro",
+                "http://127.0.0.1:8000/v1",
+                Api::OpenAiCompletions,
+                "chave",
+                "modelo-a\nmodelo-b",
+            )
+        );
+        assert_ne!(
+            base,
+            endpoint_fingerprint(
+                "meu-endpoint",
+                "http://127.0.0.1:9000/v1",
+                Api::OpenAiCompletions,
+                "chave",
+                "modelo-a\nmodelo-b",
+            )
+        );
+        assert_ne!(
+            base,
+            endpoint_fingerprint(
+                "meu-endpoint",
+                "http://127.0.0.1:8000/v1",
+                Api::OpenAiResponses,
+                "chave",
+                "modelo-a\nmodelo-b",
+            )
+        );
+        assert_ne!(
+            base,
+            endpoint_fingerprint(
+                "meu-endpoint",
+                "http://127.0.0.1:8000/v1",
+                Api::OpenAiCompletions,
+                "outra-chave",
+                "modelo-a\nmodelo-b",
+            )
+        );
+        assert_ne!(
+            base,
+            endpoint_fingerprint(
+                "meu-endpoint",
+                "http://127.0.0.1:8000/v1",
+                Api::OpenAiCompletions,
+                "chave",
+                "modelo-a",
+            )
+        );
+    }
+
+    #[test]
+    fn endpoint_key_trims_pasted_whitespace() {
+        assert_eq!(endpoint_key("  sk-x\n"), Some("sk-x".to_string()));
+        assert_eq!(endpoint_key(" \n"), None);
+    }
+
+    #[test]
+    fn root_label_hides_the_scheme() {
+        assert_eq!(root_label("http://127.0.0.1:11434"), "127.0.0.1:11434");
+        assert_eq!(root_label("https://exemplo.test/"), "exemplo.test");
+        assert_eq!(root_label("127.0.0.1:1234"), "127.0.0.1:1234");
     }
 }
 

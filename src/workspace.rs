@@ -6,6 +6,7 @@ use gpui::prelude::*;
 use gpui::*;
 
 use crate::editor::Editor;
+use crate::preferences::{ProjectOrder, SessionLayout, SessionOrder};
 use crate::rpc::{PiClient, PiConfig};
 use crate::sessions::{self, SessionInfo};
 use crate::state::{AppState, AppStateEvent};
@@ -248,6 +249,7 @@ type SessionRow = (
     Option<SessionInfo>,
     Option<usize>,
     std::time::SystemTime,
+    std::time::SystemTime,
 );
 
 fn attention_summary(pending: usize, unread: usize) -> String {
@@ -257,10 +259,75 @@ fn attention_summary(pending: usize, unread: usize) -> String {
     labels.join(" · ")
 }
 
-fn sort_session_rows(items: &mut [SessionRow], previous: &[String], interacting: bool) {
-    items.sort_by(|a, b| b.3.cmp(&a.3).then_with(|| row_key(a).cmp(&row_key(b))));
+fn sort_session_rows(
+    items: &mut [SessionRow],
+    previous: &[String],
+    interacting: bool,
+    order: SessionOrder,
+    pinned: impl Fn(&SessionRow) -> bool,
+) {
+    match order {
+        SessionOrder::Activity => {
+            items.sort_by(|a, b| b.3.cmp(&a.3).then_with(|| row_key(a).cmp(&row_key(b))));
+        }
+        SessionOrder::Completed => {
+            items.sort_by(|a, b| {
+                b.4.cmp(&a.4)
+                    .then_with(|| b.3.cmp(&a.3))
+                    .then_with(|| row_key(a).cmp(&row_key(b)))
+            });
+        }
+        SessionOrder::Name => {
+            items.sort_by(|a, b| {
+                a.0.to_lowercase()
+                    .cmp(&b.0.to_lowercase())
+                    .then_with(|| row_key(a).cmp(&row_key(b)))
+            });
+        }
+    }
     if interacting {
         items.sort_by_key(|item| previous.iter().position(|key| *key == row_key(item)).unwrap_or(usize::MAX));
+    }
+    // Fixadas primeiro, preservando a ordem escolhida entre elas.
+    items.sort_by_key(|item| !pinned(item));
+}
+
+/// Estado agregado de um grupo de projeto, para a ordem dos grupos.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ProjectRank {
+    running: bool,
+    needs_input: bool,
+    latest: std::time::SystemTime,
+}
+
+fn compare_projects(
+    a: (&std::path::Path, &ProjectRank),
+    b: (&std::path::Path, &ProjectRank),
+    order: ProjectOrder,
+) -> std::cmp::Ordering {
+    match order {
+        ProjectOrder::Activity => b.1.running.cmp(&a.1.running)
+            .then_with(|| b.1.needs_input.cmp(&a.1.needs_input))
+            .then_with(|| b.1.latest.cmp(&a.1.latest))
+            .then_with(|| a.0.cmp(b.0)),
+        ProjectOrder::Name => folder_of(a.0).to_lowercase().cmp(&folder_of(b.0).to_lowercase())
+            .then_with(|| a.0.cmp(b.0)),
+    }
+}
+
+/// Ordena os grupos; durante a interação, a ordem anterior é congelada para
+/// que nada se mova sob o ponteiro ou o teclado.
+fn sort_project_groups<T>(
+    groups: &mut [(PathBuf, ProjectRank, T)],
+    previous: &[PathBuf],
+    interacting: bool,
+    order: ProjectOrder,
+) {
+    groups.sort_by(|a, b| compare_projects((a.0.as_path(), &a.1), (b.0.as_path(), &b.1), order));
+    if interacting {
+        groups.sort_by_key(|group| {
+            previous.iter().position(|path| *path == group.0).unwrap_or(usize::MAX)
+        });
     }
 }
 
@@ -365,6 +432,8 @@ pub struct Workspace {
     filter: SessionFilter,
     nav_hovered: bool,
     row_order: Vec<String>,
+    /// Última ordem desenhada dos grupos de projeto, para congelar a lista.
+    project_order: Vec<PathBuf>,
     nav_anchors: BTreeMap<String, ScrollAnchor>,
     /// Se o usuário já decidiu mostrar/ocultar a navegação nesta janela.
     nav_user_choice: bool,
@@ -897,6 +966,7 @@ impl Workspace {
             filter: preferences.session_filter,
             nav_hovered: false,
             row_order: Vec::new(),
+            project_order: Vec::new(),
             nav_anchors: BTreeMap::new(),
             nav_user_choice: preferences.navigation_open.is_some(),
             hovered: None,
@@ -1162,6 +1232,13 @@ impl Workspace {
                     SettingsEvent::RequestPiUpdate => this.request_pi_update(false, cx),
                     SettingsEvent::DeleteFolderSessions(cwd) => this.delete_folder_sessions(cwd.clone(), cx),
                     SettingsEvent::UndoFolderDelete => this.undo_delete(cx),
+                    SettingsEvent::Navigation(choice) => {
+                        this.preferences.session_order = choice.session_order;
+                        this.preferences.session_layout = choice.session_layout;
+                        this.preferences.project_order = choice.project_order;
+                        crate::preferences::save(this.preferences.clone());
+                        cx.notify();
+                    }
                     SettingsEvent::Closed => this.refresh(cx),
                 }
                 cx.notify();
@@ -1173,6 +1250,11 @@ impl Workspace {
         let view = crate::settings::SettingsView {
             options: [state.sidebar, self.visible, state.show_thinking, state.generated_titles, self.preferences.completion_sound],
             appearance: self.preferences.appearance,
+            navigation_choice: crate::preferences::NavigationChoice {
+                session_order: self.preferences.session_order,
+                session_layout: self.preferences.session_layout,
+                project_order: self.preferences.project_order,
+            },
             theme: self.preferences.theme.clone(),
             models: state
                 .models
@@ -1369,6 +1451,8 @@ impl Workspace {
 
     /// Recolhe ou expande o projeto da sessão destacada.
     fn nav_toggle_project(&mut self, collapse: bool, cx: &mut Context<Self>) {
+        // Em lista única não há pasta para recolher.
+        if self.preferences.session_layout == SessionLayout::Flat { return; }
         if !collapse {
             if let Some(cwd) = &self.nav_last_project {
                 if self.collapsed.remove(cwd) { cx.notify(); return; }
@@ -3257,6 +3341,7 @@ fn folder_of(cwd: &std::path::Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::{add_to_catalog, drop_from_catalog, select_item, sort_session_rows, row_key, attention_summary, filter_counts, nav_position, NavEntry, SessionSignals, SessionFilter};
+    use super::{compare_projects, sort_project_groups, ProjectRank, SessionOrder, ProjectOrder};
     use super::{folder_delete_blocker, restore_failure_message, session_folders, DeletedItem};
     use std::collections::BTreeSet;
     use crate::sessions::SessionInfo;
@@ -3384,9 +3469,9 @@ mod tests {
     fn opening_saved_session_preserves_its_position_during_interaction() {
         let saved = info("/middle.jsonl", 2);
         let mut rows = vec![
-            ("first".into(), None, Some(0), std::time::UNIX_EPOCH),
-            (saved.title.clone(), Some(saved.clone()), None, saved.modified),
-            ("last".into(), None, Some(1), std::time::UNIX_EPOCH),
+            ("first".into(), None, Some(0), std::time::UNIX_EPOCH, std::time::UNIX_EPOCH),
+            (saved.title.clone(), Some(saved.clone()), None, saved.modified, saved.modified),
+            ("last".into(), None, Some(1), std::time::UNIX_EPOCH, std::time::UNIX_EPOCH),
         ];
         let mut previous = rows.iter().map(row_key).collect::<Vec<_>>();
         let (old, new) = super::promote_session_row(&mut previous, &saved.path, 2);
@@ -3395,10 +3480,10 @@ mod tests {
         rows[1].1 = None;
         rows[1].2 = Some(2);
         // Freeze applies while the mouse remains over the row just clicked.
-        sort_session_rows(&mut rows, &previous, true);
+        sort_session_rows(&mut rows, &previous, true, SessionOrder::Activity, |_| false);
         assert_eq!(rows.iter().map(row_key).collect::<Vec<_>>(), ["live-0", "live-2", "live-1"]);
         // Once interaction ends, normal activity ordering still applies.
-        sort_session_rows(&mut rows, &previous, false);
+        sort_session_rows(&mut rows, &previous, false, SessionOrder::Activity, |_| false);
         assert_eq!(row_key(&rows[0]), "live-2");
     }
 
@@ -3407,16 +3492,122 @@ mod tests {
         use std::time::{Duration, UNIX_EPOCH};
         let old = UNIX_EPOCH + Duration::from_secs(1);
         let recent = UNIX_EPOCH + Duration::from_secs(2);
-        let mut rows = vec![("b".into(), None, Some(1), old), ("a".into(), None, Some(0), old)];
-        sort_session_rows(&mut rows, &[], false);
+        let mut rows = vec![
+            ("b".into(), None, Some(1), old, old),
+            ("a".into(), None, Some(0), old, old),
+        ];
+        sort_session_rows(&mut rows, &[], false, SessionOrder::Activity, |_| false);
         assert_eq!(rows.iter().map(row_key).collect::<Vec<_>>(), ["live-0", "live-1"]);
         let previous = rows.iter().map(row_key).collect::<Vec<_>>();
         rows[1].3 = recent;
-        rows.push(("c".into(), None, Some(2), recent));
-        sort_session_rows(&mut rows, &previous, true);
+        rows.push(("c".into(), None, Some(2), recent, recent));
+        sort_session_rows(&mut rows, &previous, true, SessionOrder::Activity, |_| false);
         assert_eq!(rows.iter().map(row_key).collect::<Vec<_>>(), ["live-0", "live-1", "live-2"]);
-        sort_session_rows(&mut rows, &previous, false);
+        sort_session_rows(&mut rows, &previous, false, SessionOrder::Activity, |_| false);
         assert_eq!(rows.iter().map(row_key).collect::<Vec<_>>(), ["live-1", "live-2", "live-0"]);
+    }
+
+    fn project_rank(running: bool, needs_input: bool, seconds: u64) -> ProjectRank {
+        ProjectRank {
+            running,
+            needs_input,
+            latest: std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds),
+        }
+    }
+
+    fn project(path: &str) -> PathBuf {
+        PathBuf::from(path)
+    }
+
+    fn group_names(groups: &[(PathBuf, ProjectRank, ())]) -> Vec<String> {
+        groups.iter().map(|(path, _, _)| super::folder_of(path)).collect()
+    }
+
+    #[test]
+    fn project_groups_put_running_before_input_before_recent_activity() {
+        let mut groups = vec![
+            (project("/idle"), project_rank(false, false, 9), ()),
+            (project("/input"), project_rank(false, true, 1), ()),
+            (project("/running"), project_rank(true, false, 0), ()),
+        ];
+        sort_project_groups(&mut groups, &[], false, ProjectOrder::Activity);
+        assert_eq!(group_names(&groups), ["running", "input", "idle"]);
+    }
+
+    #[test]
+    fn project_group_ties_fall_back_to_the_path() {
+        let rank = project_rank(false, false, 3);
+        let mut groups = vec![(project("/b"), rank, ()), (project("/a"), rank, ())];
+        sort_project_groups(&mut groups, &[], false, ProjectOrder::Activity);
+        assert_eq!(group_names(&groups), ["a", "b"]);
+    }
+
+    #[test]
+    fn project_order_by_name_uses_the_folder_not_the_path() {
+        let rank = project_rank(false, false, 1);
+        let mut groups = vec![(project("/z/alpha"), rank, ()), (project("/a/beta"), rank, ())];
+        sort_project_groups(&mut groups, &[], false, ProjectOrder::Name);
+        assert_eq!(group_names(&groups), ["alpha", "beta"]);
+        let alpha = project("/z/alpha");
+        let beta = project("/a/beta");
+        assert_eq!(
+            compare_projects((alpha.as_path(), &rank), (beta.as_path(), &rank), ProjectOrder::Name),
+            std::cmp::Ordering::Less
+        );
+    }
+
+    #[test]
+    fn interacting_freezes_the_previous_project_order_even_when_the_rank_changes() {
+        let mut groups = vec![
+            (project("/a"), project_rank(false, false, 1), ()),
+            (project("/b"), project_rank(false, false, 1), ()),
+        ];
+        let previous = vec![groups[1].0.clone(), groups[0].0.clone()];
+        // `a` começa a executar, mas a lista não pode se mexer sob o ponteiro.
+        groups[0].1 = project_rank(true, false, 0);
+        sort_project_groups(&mut groups, &previous, true, ProjectOrder::Activity);
+        assert_eq!(group_names(&groups), ["b", "a"]);
+        sort_project_groups(&mut groups, &previous, false, ProjectOrder::Activity);
+        assert_eq!(group_names(&groups), ["a", "b"]);
+    }
+
+    fn row(title: &str, live: usize, activity: u64, completed: u64) -> super::SessionRow {
+        (
+            title.into(),
+            None,
+            Some(live),
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(activity),
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(completed),
+        )
+    }
+
+    fn row_keys(rows: &[super::SessionRow]) -> Vec<String> {
+        rows.iter().map(row_key).collect()
+    }
+
+    #[test]
+    fn pinned_rows_stay_first_in_every_order() {
+        for order in [SessionOrder::Activity, SessionOrder::Completed, SessionOrder::Name] {
+            let mut rows = vec![row("b", 1, 10, 1), row("a", 0, 20, 2), row("c", 2, 30, 3)];
+            sort_session_rows(&mut rows, &[], false, order, |row| row.2 == Some(2));
+            assert_eq!(row_key(&rows[0]), "live-2", "fixada primeiro em {order:?}");
+        }
+    }
+
+    #[test]
+    fn completed_order_uses_the_completion_time() {
+        let mut rows = vec![row("a", 0, 1, 30), row("b", 1, 2, 20), row("c", 2, 3, 10)];
+        sort_session_rows(&mut rows, &[], false, SessionOrder::Completed, |_| false);
+        assert_eq!(row_keys(&rows), ["live-0", "live-1", "live-2"]);
+        sort_session_rows(&mut rows, &[], false, SessionOrder::Activity, |_| false);
+        assert_eq!(row_keys(&rows), ["live-2", "live-1", "live-0"]);
+    }
+
+    #[test]
+    fn name_order_compares_titles_case_insensitively() {
+        let mut rows = vec![row("Gama", 0, 3, 3), row("alfa", 1, 2, 2), row("beta", 2, 1, 1)];
+        sort_session_rows(&mut rows, &[], false, SessionOrder::Name, |_| false);
+        assert_eq!(row_keys(&rows), ["live-1", "live-2", "live-0"]);
     }
 
     #[test]

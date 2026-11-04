@@ -2,6 +2,8 @@
 
 **Status:** avaliação escrita; nenhum código alterado.
 
+**Atualização (#13):** o dono escolheu instalar Pi e Node.js dentro do instalador NSIS (direção A, no instalador em vez do app). O fluxo atual está em `docs/windows-installer.md`; as referências de linha do `.nsi` abaixo descrevem a versão anterior.
+
 **Base:** branch `docs/15-windows-setup-survey`, `origin/main` em `51a753e`
 (2026-10-27).
 
