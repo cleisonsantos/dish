@@ -48,9 +48,7 @@ printf '#!/bin/sh\\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@
     env.pop("PI_CODING_AGENT_SESSION_DIR", None)
 
     def events():
-        if not log_path.exists():
-            return []
-        return [json.loads(line) for line in log_path.read_text().splitlines() if line]
+        return read_events(log_path)
 
     def launch():
         log = open(temp / "dish.log", "w")
