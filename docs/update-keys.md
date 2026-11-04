@@ -67,19 +67,52 @@ passado com `--secret-key-file`. Ele grava a privada em arquivo temporário com
 permissão `0600`, assina os bytes exatos de `latest.json`, grava
 `latest.json.minisig` ao lado e apaga o temporário. Sem chave, o comando falha
 antes de criar o manifesto: em modo de release nunca existe `latest.json` sem
-assinatura. O job de publicação recebe a privada pelo secret, assina e remove o
-temporário ao terminar; a verificação com a pública do cliente é feita pelo
-comando abaixo ou por uma etapa explícita do job. Só esse job precisa de
-`contents: write`; os demais mantêm `contents: read`. Se faltar secret ou a
-assinatura não verificar, a publicação deve falhar. Não foi criado um workflow
-parcial que pudesse publicar sem essa cadeia completa.
+assinatura.
+
+A publicação hoje é feita pelo script local `scripts/publish-release.sh`
+(abaixo), usando a mesma privada. Não existe workflow publicando o manifesto; o
+secret no environment `release` continua sendo o caminho para automatizar no CI
+no futuro, mas não é usado hoje. O script local verifica a privada contra a
+pública de `src/update.rs` antes de qualquer chamada ao GitHub, então uma chave
+errada não publica nada.
 
 ## Gerar, assinar e publicar cada release
 
-Depois de construir e anexar os assets Linux, baixe para um diretório vazio os
-arquivos `.tar.gz`, `.deb` e seus dois `.sha256` daquele release. O gerador
-não reconstrói binários, não instala nada e não publica nada. Ele sempre assina
-em modo de release e recusa gerar o manifesto se a chave não estiver presente:
+O caminho normal agora é `scripts/publish-release.sh TAG ARTIFACT_DIR`; o
+`ARTIFACT_DIR` é o artifact Linux do CI já extraído. A ordem é obrigatória:
+subir os binários → publicar → gerar o manifesto a partir dos assets baixados →
+anexar `latest.json` + `.minisig` por último → conferir. O script executa essa
+sequência e falha fechado em cada etapa.
+
+Com a privada no disco, fora do checkout:
+
+```sh
+scripts/publish-release.sh v0.1.0-alpha.6 /tmp/dish-release-assets \
+  --secret-key-file "$HOME/.config/dish-release-keys/dish.key"
+```
+
+Com `MINISIGN_SECRET_KEY` já no ambiente:
+
+```sh
+export MINISIGN_SECRET_KEY="$(cat "$HOME/.config/dish-release-keys/dish.key")"
+scripts/publish-release.sh v0.1.0-alpha.6 /tmp/dish-release-assets
+```
+
+Não imprima o conteúdo da privada nem o inclua em logs. Sem chave, o script
+para antes de qualquer chamada ao GitHub. Ele também confere os dois `.sha256`
+locais, exige que um asset já presente tenha o mesmo tamanho (e o mesmo digest,
+quando o GitHub informa um), nunca usa `--clobber`, publica o rascunho e relê o
+`publishedAt` real. Depois baixa os quatro assets Linux do próprio Release, gera
+e assina o manifesto sobre esses bytes, confere nome/tamanho/URL/digest com
+`--check-release` e só então envia os dois arquivos do manifesto. No fim baixa
+tudo de novo, compara, verifica a assinatura e repete a conferência.
+
+Os comandos manuais abaixo continuam servindo de referência e de conferência.
+Para o caminho manual, depois de os assets Linux estarem anexados ao Release
+publicado, baixe para um diretório vazio os arquivos `.tar.gz`, `.deb` e seus
+dois `.sha256`. O gerador não reconstrói binários, não instala nada e não publica
+nada. Ele sempre assina em modo de release e recusa gerar o manifesto se a chave
+não estiver presente:
 
 ```sh
 # Offline: a privada fica no disco, fora do checkout.
@@ -87,7 +120,7 @@ python3 scripts/package-manifest.py /tmp/dish-release-assets \
   --tag v0.1.0-alpha.6 --published-at 2026-10-26T12:00:00Z \
   --sign --secret-key-file "$HOME/.config/dish-release-keys/dish.key"
 
-# CI: MINISIGN_SECRET_KEY já vem do secret do environment release.
+# CI futuro: MINISIGN_SECRET_KEY viria do secret do environment release.
 python3 scripts/package-manifest.py /tmp/dish-release-assets \
   --tag v0.1.0-alpha.6 --published-at 2026-10-26T12:00:00Z --sign
 
@@ -102,7 +135,8 @@ nome, versão, target e glibc do `BUILD.json`. O JSON é determinístico: chaves
 ordenadas, indentação de dois espaços e newline final. Não altere esses bytes
 após assinar. A assinatura e o manifesto não entram em `assets`.
 
-Após revisão e verificação, o mantenedor publica os dois arquivos juntos:
+Após revisão e verificação, o mantenedor publica os dois arquivos juntos, por
+último:
 
 ```sh
 gh release upload v0.1.0-alpha.6 \
@@ -110,10 +144,20 @@ gh release upload v0.1.0-alpha.6 \
   /tmp/dish-release-assets/latest.json.minisig
 ```
 
-Nunca use `--clobber`. Para assinatura offline, estes passos são o checklist de
-publicação. Para CI, reproduza a mesma sequência no job protegido depois de
-validar os assets reais. A chave pública do binário, a pública usada na
-verificação da publicação e a privada usada para assinar precisam corresponder.
+Nunca use `--clobber`. A conferência final compara o manifesto com a lista real
+de assets do Release:
+
+```sh
+gh release view v0.1.0-alpha.6 --json assets,tagName > /tmp/dish-release.json
+python3 scripts/package-manifest.py --check-release \
+  /tmp/dish-release.json /tmp/dish-release-assets/latest.json
+```
+
+`--check-release` falha se a tag, o nome, o tamanho, a URL ou o digest de um
+asset Linux não baterem com o manifesto. A chave pública do binário, a pública
+usada na verificação e a privada usada para assinar precisam corresponder. O
+`latest.json` só pode ser gerado depois da publicação: enquanto o Release for
+rascunho, as URLs são `untagged-...` e não servem para o cliente.
 
 ## Versão do binário
 

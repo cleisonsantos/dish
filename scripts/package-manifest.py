@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the section 4 release manifest from existing Linux assets. No upload."""
+"""Generate the section 4 release manifest and check it against release assets. No upload."""
 import argparse
 from datetime import datetime, timezone
 import hashlib
@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 
@@ -19,6 +20,7 @@ NUMBER = r"(?:0|[1-9][0-9]*)"
 IDENTIFIER = r"(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
 VERSION = re.compile(rf"{NUMBER}\.{NUMBER}\.{NUMBER}(?:-{IDENTIFIER}(?:\.{IDENTIFIER})*)?")
 LIMIT = 64 * 1024
+CHECKED_KINDS = ("portable-linux-x86_64", "debian-amd64")
 
 
 def validate_version(version):
@@ -103,6 +105,35 @@ def secret_key(secret_key_file=None, environment=None):
     return value
 
 
+def check_release(manifest_bytes, release):
+    """Check the manifest against `gh release view --json assets,tagName` output."""
+    manifest = json.loads(manifest_bytes)
+    tag = manifest.get("tag")
+    if tag != release.get("tagName"):
+        raise ValueError(f"Release tag mismatch: {tag} != {release.get('tagName')}")
+    release_assets = release.get("assets") or []
+    for kind in CHECKED_KINDS:
+        expected = [item for item in manifest.get("assets") or [] if item.get("kind") == kind]
+        if not expected:
+            raise ValueError(f"Manifest lacks asset kind: {kind}")
+        for item in expected:
+            name = item["name"]
+            matches = [asset for asset in release_assets if asset.get("name") == name]
+            if not matches:
+                raise ValueError(f"Missing release asset: {name}")
+            if len(matches) > 1:
+                raise ValueError(f"Duplicate release asset: {name}")
+            published = matches[0]
+            if published.get("size") != item.get("size"):
+                raise ValueError(f"Size mismatch: {name}")
+            if published.get("url") != item.get("url"):
+                raise ValueError(f"URL mismatch: {name}")
+            digest = published.get("digest")
+            if digest is not None and digest != "sha256:" + item["sha256"]:
+                raise ValueError(f"Digest mismatch: {name}")
+    return None
+
+
 def sign_manifest(manifest_path, key):
     """Sign the exact manifest bytes with minisign and write latest.json.minisig."""
     executable = shutil.which("minisign")
@@ -140,6 +171,21 @@ def sign_manifest(manifest_path, key):
 
 
 def main():
+    if sys.argv[1:2] == ["--check-release"]:
+        checker = argparse.ArgumentParser(
+            prog="package-manifest.py --check-release",
+            description="Check latest.json against a GitHub release asset list.")
+        checker.add_argument("release", type=Path, help="JSON from gh release view")
+        checker.add_argument("manifest", type=Path, help="latest.json to check")
+        check = checker.parse_args(sys.argv[2:])
+        try:
+            check_release(check.manifest.read_bytes(),
+                          json.loads(check.release.read_text(encoding="utf-8")))
+        except (OSError, ValueError) as error:
+            print(f"release check failed: {error}", file=sys.stderr)
+            sys.exit(1)
+        print("latest.json matches the release assets.")
+        return
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directory", type=Path, help="Downloaded release assets and .sha256 files")
     parser.add_argument("--tag", required=True)
