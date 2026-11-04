@@ -9,13 +9,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 #[derive(Clone, Copy, PartialEq)]
-pub enum Section { App, Appearance, Providers, Models, Keys, About }
+pub enum Section { App, Appearance, Navigation, Providers, Models, Keys, About }
 
 pub enum SettingsEvent {
     Closed,
     Preference(&'static str, bool),
     /// O usuário escolheu escuro, claro ou seguir o desktop.
     Appearance(AppearanceMode),
+    /// Ordem e agrupamento da lista de sessões.
+    Navigation(crate::preferences::NavigationChoice),
     /// O usuário escolheu um tema do catálogo, por id.
     Theme(String),
     /// Abrir a pasta de temas do usuário no gerenciador de arquivos.
@@ -112,6 +114,8 @@ pub struct Settings {
     titles: bool,
     sound: bool,
     appearance: AppearanceMode,
+    /// Ordem e agrupamento da lista de sessões.
+    navigation_choice: crate::preferences::NavigationChoice,
     /// Id do tema fixado, ou `None` para o padrão da aparência.
     theme: Option<String>,
     /// `(provider, id)` de cada modelo que o Pi reportou.
@@ -157,6 +161,8 @@ pub struct SettingsView {
     /// `[detalhes, navegação, raciocínio, títulos, som]`.
     pub options: [bool; 5],
     pub appearance: AppearanceMode,
+    /// Ordem e agrupamento escolhidos para a navegação de sessões.
+    pub navigation_choice: crate::preferences::NavigationChoice,
     /// Tema fixado pelo usuário, se houver.
     pub theme: Option<String>,
     /// `(provider, id)` de cada modelo que o Pi reportou.
@@ -200,6 +206,7 @@ impl Settings {
             previous_focus: None, search,
             details: true, navigation: true, thinking: true, titles: false, sound: false,
             appearance: AppearanceMode::System,
+            navigation_choice: Default::default(),
             theme: None,
             models: Vec::new(), hidden: BTreeSet::new(),
             providers: ProvidersView::Idle,
@@ -236,6 +243,7 @@ impl Settings {
         self.section = section;
         [self.details, self.navigation, self.thinking, self.titles, self.sound] = view.options;
         self.appearance = view.appearance;
+        self.navigation_choice = view.navigation_choice;
         self.theme = view.theme;
         self.models = view.models;
         self.hidden = view.hidden;
@@ -1693,6 +1701,7 @@ impl Render for Settings {
         for (section, label, id) in [
             (Section::App, "Aplicativo", "settings-app"),
             (Section::Appearance, "Aparência", "settings-appearance"),
+            (Section::Navigation, "Navegação", "settings-navigation"),
             (Section::Providers, "Provedores", "settings-providers"),
             (Section::Models, "Modelos", "settings-models"),
             (Section::Keys, "Atalhos de teclado", "settings-keys"),
@@ -1862,6 +1871,7 @@ impl Render for Settings {
                 );
                 page.into_any_element()
             }
+            Section::Navigation => self.navigation_page(cx),
             Section::Providers => self.providers_page(window, cx),
             Section::Models => {
                 let mut page = column().child("Modelos").child(note(
@@ -2185,6 +2195,101 @@ fn about_pair(label: &str, value: &str) -> Div {
             .child(SharedString::from(value.to_owned())))
 }
 
+impl Settings {
+    /// Seção Navegação: ordem das sessões, agrupamento e ordem das pastas.
+    fn navigation_page(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        use crate::preferences::{ProjectOrder, SessionOrder};
+        let choice = self.navigation_choice;
+
+        fn segments() -> Div {
+            div()
+                .flex()
+                .flex_row()
+                .items_stretch()
+                .p(px(2.))
+                .gap(px(1.))
+                .rounded(theme::r_control())
+                .bg(theme::inset())
+                .border_1()
+                .border_color(theme::line_soft())
+        }
+
+        fn row(label: &str, control: Div) -> Div {
+            div().flex().flex_row().items_center().gap(px(12.))
+                .px(px(12.)).py(px(8.)).rounded(theme::r_control())
+                .bg(theme::surface_2()).border_1().border_color(theme::line_soft())
+                .child(div().flex_1().min_w(px(0.)).text_size(px(theme::TEXT_SM))
+                    .text_color(theme::dim()).child(SharedString::from(label.to_owned())))
+                .child(control)
+        }
+
+        let mut order = segments();
+        for (value, label, id) in [
+            (SessionOrder::Activity, "Atividade", "nav-order-activity"),
+            (SessionOrder::Completed, "Conclusão", "nav-order-completed"),
+            (SessionOrder::Name, "Nome", "nav-order-name"),
+        ] {
+            let active = choice.session_order == value;
+            order = order.child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .test_probe(move || id.to_string(), move || serde_json::json!({ "active": active }))
+                    .child(appearance_segment(id, label, active, cx, move |this, cx| {
+                        this.navigation_choice.session_order = value;
+                        cx.emit(SettingsEvent::Navigation(this.navigation_choice));
+                        cx.notify();
+                    })),
+            );
+        }
+
+        let mut layout = segments();
+        for (value, label, id) in [
+            (crate::preferences::SessionLayout::Projects, "Por pasta", "nav-layout-projects"),
+            (crate::preferences::SessionLayout::Flat, "Lista única", "nav-layout-flat"),
+        ] {
+            let active = choice.session_layout == value;
+            layout = layout.child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .test_probe(move || id.to_string(), move || serde_json::json!({ "active": active }))
+                    .child(appearance_segment(id, label, active, cx, move |this, cx| {
+                        this.navigation_choice.session_layout = value;
+                        cx.emit(SettingsEvent::Navigation(this.navigation_choice));
+                        cx.notify();
+                    })),
+            );
+        }
+
+        let mut projects = segments();
+        for (value, label, id) in [
+            (ProjectOrder::Activity, "Atividade", "nav-projects-activity"),
+            (ProjectOrder::Name, "Nome", "nav-projects-name"),
+        ] {
+            let active = choice.project_order == value;
+            projects = projects.child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .test_probe(move || id.to_string(), move || serde_json::json!({ "active": active }))
+                    .child(appearance_segment(id, label, active, cx, move |this, cx| {
+                        this.navigation_choice.project_order = value;
+                        cx.emit(SettingsEvent::Navigation(this.navigation_choice));
+                        cx.notify();
+                    })),
+            );
+        }
+
+        column()
+            .child(page_title("Navegação"))
+            .child(note("Fixadas ficam sempre no topo. A ordem não muda enquanto o ponteiro ou o teclado estiverem na lista."))
+            .child(row("Ordem das sessões", order))
+            .child(row("Agrupamento", layout))
+            .child(row("Ordem das pastas", projects))
+            .into_any_element()
+    }
+}
 
 #[cfg(test)]
 mod model_grouping_tests {

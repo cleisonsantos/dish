@@ -470,6 +470,8 @@ pub struct AppState {
     /// O erro da execução atual já apareceu em `message_end`.
     run_error_in_transcript: bool,
     pub last_activity: Option<std::time::SystemTime>,
+    /// Quando a última execução terminou (agent_end) nesta janela. Base da ordem "por conclusão".
+    pub last_completed: Option<std::time::SystemTime>,
     pub activity_error: bool,
     pub activity_interrupted: bool,
     pub activity: Option<String>,
@@ -612,6 +614,7 @@ impl AppState {
             response_tracker: crate::session_activity::ResponseTracker::default(),
             run_error_in_transcript: false,
             last_activity: None,
+            last_completed: None,
             activity_error: false,
             activity_interrupted: false,
             activity: None,
@@ -877,6 +880,7 @@ impl AppState {
                 self.completed_runs = self.completed_runs.saturating_add(1);
                 self.streaming = false;
                 self.activity = None;
+                self.last_completed = Some(std::time::SystemTime::now());
                 None
             }
             "agent_settled" => {
