@@ -23,6 +23,10 @@ pub fn composer(
     cx: &Context<AppState>,
 ) -> Div {
     let editor = state.editor.clone();
+    // O editor só conhece a viewport que o hospeda. Este handle é o mesmo que
+    // o container abaixo registra com `track_scroll`; sem ele o caret anda
+    // fora da área visível em textos longos.
+    editor.read(cx).attach_scroll_handle(state.composer_scroll.clone());
     let editor_for_click = editor.clone();
     // O handle precisa carregar o tab stop: com `track_focus` explícito, o
     // `tab_index` do Div não é aplicado pelo GPUI.
@@ -99,7 +103,7 @@ pub fn composer(
                             }))
                             .flex_1()
                             .min_w(px(0.))
-                            .min_h(px(theme::WRITING_HEIGHT))
+                            .min_h(px(0.))
                             .max_h(px(220.))
                             .overflow_y_scroll()
                             .track_scroll(&state.composer_scroll)
@@ -116,7 +120,16 @@ pub fn composer(
                                 });
                             })
                             .map(standard_actions(editor.clone()))
-                            .child(editor.clone()),
+                            // O piso de altura pertence ao conteúdo, não ao
+                            // container rolável: com piso aqui, o
+                            // `line_height * rows` do editor brigava com o
+                            // `max_h(220.)` e a rolagem nunca alcançava o fim.
+                            .child(
+                                div()
+                                    .w_full()
+                                    .min_h(px(theme::WRITING_HEIGHT))
+                                    .child(editor.clone()),
+                            ),
                     ),
             )
             .child(
