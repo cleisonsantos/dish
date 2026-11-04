@@ -7,7 +7,9 @@ use gpui::{Context, Window};
 /// Maximum number of cards painted at once; the rest stay in FIFO order.
 pub const MAX_VISIBLE: usize = 2;
 
-pub type NotificationAction = Rc<dyn Fn(&mut Window, &mut Context<crate::workspace::Workspace>)>;
+/// Actions run inside the workspace listener and receive the workspace directly, so they must never
+/// call `update` on the Workspace entity (that re-enters and panics, #148).
+pub type NotificationAction = Rc<dyn Fn(&mut crate::workspace::Workspace, &mut Window, &mut Context<crate::workspace::Workspace>)>;
 
 #[allow(dead_code)] // Product producers will use this API in later changes.
 pub struct Notification {

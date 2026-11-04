@@ -350,15 +350,12 @@ impl Workspace {
     }
 
     fn enqueue_pi_available(&mut self, available: crate::pi_update::Available, cx: &mut Context<Self>) {
-        let weak = cx.entity().downgrade();
         self.enqueue_notification(Notification {
             id: available.id,
             title: available.title,
             detail: available.detail,
             action_label: Some("Atualizar o Pi".into()),
-            action: Some(std::rc::Rc::new(move |_, cx| {
-                let _ = weak.update(cx, |workspace, cx| workspace.request_pi_update(false, cx));
-            })),
+            action: Some(std::rc::Rc::new(|workspace, _, cx| workspace.request_pi_update(false, cx))),
         }, cx);
     }
 
@@ -642,15 +639,16 @@ impl Workspace {
                 let action_id = id.clone();
                 let action_key_id = id.clone();
                 controls = controls.child(div().id(SharedString::from(format!("notification-action-{id}")))
+                    .test_probe(|| format!("notification-action-{id}"), || serde_json::json!({}))
                     .track_focus(action_focus).cursor_pointer().px(px(8.)).py(px(5.))
                     .rounded(theme::r_control()).bg(theme::accent()).text_color(theme::bg())
                     .text_size(px(theme::TEXT_SM))
                     .on_click(cx.listener(move |workspace, _, window, cx| {
-                        if let Some(action) = workspace.notifications.action(&action_id) { action(window, cx); }
+                        if let Some(action) = workspace.notifications.action(&action_id) { action(workspace, window, cx); }
                     }))
                     .on_key_down(cx.listener(move |workspace, event: &KeyDownEvent, window, cx| {
                         if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            if let Some(action) = workspace.notifications.action(&action_key_id) { action(window, cx); }
+                            if let Some(action) = workspace.notifications.action(&action_key_id) { action(workspace, window, cx); }
                             cx.stop_propagation();
                         }
                     })).child(SharedString::from(label.clone())));
