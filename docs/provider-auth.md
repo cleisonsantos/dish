@@ -212,6 +212,7 @@ top5_models=[(401,'openrouter'), (305,'vercel-ai-gateway'), (193,'amazon-bedrock
 | Remoção | `src/settings.rs` | confirmação + aviso "Remover aqui não revoga a chave no serviço" |
 | Conversa aberta | `src/settings.rs`, `src/workspace.rs`, `src/state.rs` | credencial mudou → cada conversa relê o catálogo e compara com o adaptador |
 | Reabrir conversa | `src/workspace.rs`, `src/state.rs`, `src/ui/mod.rs` | reinicia só aquele processo com `--session`, preservando rascunho e histórico |
+| Provedores locais | `src/providers_local.rs`, `src/settings.rs` | detecção, validação e mesclagem do models.json |
 | Contrato e testes | `docs/provider-auth.md`, `tests/test_provider_adapter.py`, `tests/test_provider_login.py`, `tests/providers_smoke.py` | os testes plantam segredos falsos e falham se algum aparecer |
 
 ## O que a UI pode fazer com segurança hoje
@@ -305,7 +306,9 @@ O Dish nunca:
 - guarda, registra ou exibe valor de credencial — nem em preferências, nem em
   log, nem em mensagem de erro, nem em relatório de falha;
 - envia comando de autenticação como prompt para o agente;
-- escreve em `auth.json`, `models.json` ou nas configurações do Pi.
+- escreve em `auth.json` ou nas configurações do Pi. `models.json` só é gravado
+  pela mesclagem da seção "Provedores locais e compatíveis", que preserva o
+  resto do arquivo e guarda um backup antes.
 
 O adaptador copia campo por campo o que o contrato permite (`id`, `models`,
 `configured`, `source`, `label`, `providerId`, `type`), nunca espalha um objeto
@@ -355,8 +358,10 @@ cancelar.
    existir, "Reabrir esta conversa" vira uma chamada, com detecção de capacidade.
 4. **`pi --list-models` como plano B.** Também filtra por provedor autenticado
    (`dist/cli/list-models.js:34-41`): medido, 36 modelos de 2 provedores.
-5. **Provedores locais/compatíveis (`models.json`).** Não há fluxo na UI; a seção
-   só aponta o arquivo. É a fase 4, deliberadamente separada.
+5. **Provedores locais/compatíveis (`models.json`).** A fase 4 está implementada
+   nesta fatia: detecção de Ollama e LM Studio, validação e mesclagem do
+   `models.json`. Ainda não há remoção pela interface nem detecção automática de
+   outros servidores; veja "Limites conhecidos".
 6. **Saber o nome da variável de ambiente na tela.** O adaptador envia `label`,
    mas `Snapshot`/`Provider` não guardam esse campo: a linha mostra só "variável
    de ambiente". Fica para o PR 3.
@@ -369,6 +374,82 @@ cancelar.
 9. **`PRODUCT.md` ainda diz o contrário.** `PRODUCT.md:28`: "Pi manages provider
    authentication in its terminal interface. Dish uses existing Pi credentials."
    O `README.md` já está atualizado.
+
+## Provedores locais e compatíveis (#129)
+
+A fase 4 acrescenta duas coisas à seção **Provedores**: descoberta de Ollama e
+LM Studio na máquina local, e um formulário para qualquer endpoint compatível
+com OpenAI. Nos dois casos o Dish grava **só** o provedor que o usuário manda
+adicionar em `models.json`; o resto do arquivo é preservado. Os testes de
+`src/providers_local.rs` usam servidores TCP sintéticos em `127.0.0.1:0`, sem
+rede externa e sem credencial real.
+
+### Formato conferido no Pi 1.5.0
+
+O contrato foi conferido contra o pacote **1.5.0**, em
+`docs/models-configuration.md` e `docs/models.md#configure-a-compatible-endpoint`:
+
+| Campo | Papel |
+| --- | --- |
+| `providers.<id>.baseUrl` | URL base do serviço, com o sufixo do dialeto (`/v1`) |
+| `providers.<id>.api` | `openai-completions` ou `openai-responses` |
+| `providers.<id>.apiKey` | chave literal, `"$VAR"` ou `"!comando"` |
+| `providers.<id>.models[].id` | id enviado ao serviço |
+
+Um `id` que não existe no catálogo embutido **cria** um provedor e exige
+`baseUrl` + `api`. Para o modelo aparecer no seletor, o Pi precisa de uma
+credencial; por isso os serviços locais levam uma chave literal de mentira —
+`"ollama"` e `"lm-studio"` — e um endpoint genérico sem chave recebe `"local"`.
+O serviço local ignora o valor, mas o Pi o usa para considerar o provedor
+configurado.
+
+O Pi relê o arquivo quando `/model` abre, mas um processo RPC já iniciado
+continua com o snapshot de modelos do startup. É a mesma limitação do #69; por
+isso, depois de gravar, o Dish reconsulta o catálogo e as conversas abertas
+oferecem **"Reabrir esta conversa"** em vez de fingir que o snapshot mudou.
+
+### Detecção
+
+| Serviço | Requisição | Endereço padrão |
+| --- | --- | --- |
+| Ollama | `GET /api/tags` | `http://127.0.0.1:11434` |
+| LM Studio | `GET /v1/models` | `http://127.0.0.1:1234` |
+
+O prazo é de **1,5 s** por serviço (`DETECT_TIMEOUT`), curto de propósito: é uma
+conveniência, não um bloqueio. Conexão recusada, tempo esgotado ou cancelamento
+viram **"não encontrado"** (texto neutro, não erro); resposta inesperada mostra
+o motivo. Ao fechar ou suspender a tela, o token da busca é marcado; a
+requisição termina no prazo e o resultado é descartado. Uma nova busca também
+invalida a anterior por geração.
+
+### Validação e mesclagem
+
+"Validar" faz `GET <baseUrl>/models`, com `Authorization: Bearer <chave>` quando
+há chave. O corpo é lido até **1 MiB**, redirecionamentos não são seguidos e as
+mensagens de erro são construídas só a partir do status e do tipo de falha —
+nunca do corpo da resposta. URL com `usuário:senha` é recusada, assim como
+esquema diferente de HTTP(S).
+
+A gravação só toca o provedor escolhido:
+
+- `baseUrl` e `api` são substituídos;
+- `apiKey` só é substituído quando o formulário traz uma chave; sem chave, a
+  existente é mantida e, se não houver, entra `"local"`;
+- modelos existentes ficam intactos e os ids novos são **acrescentados** ao fim;
+- todos os outros provedores, campos de modelo e chaves de topo são preservados
+  na ordem em que estavam.
+
+Arquivo inválido vira erro e **nada** é escrito. Antes de toda gravação que
+substitui um `models.json` existente, os bytes originais vão para
+`models.json.dish-backup` com modo `0600`. A escrita é atômica: arquivo
+temporário no mesmo diretório, `0600`, `fsync` e `rename` por cima do original.
+O caminho é o do agente (`~/.pi/agent/models.json`, ou o que
+`PI_CODING_AGENT_DIR` apontar).
+
+Depois de gravar, o Dish usa o mesmo caminho do #69: marca a mudança pendente,
+reconsulta o catálogo e emite `ProvidersChanged`; as conversas abertas comparam
+o catálogo e oferecem "Reabrir esta conversa". O Dish não edita o snapshot de um
+processo em execução.
 
 ## Riscos e efeitos colaterais medidos
 
@@ -399,8 +480,9 @@ cancelar.
    `get_available_thinking_levels`. O PR 1 acrescenta a comparação honesta com o
    adaptador e a ação **"Reabrir esta conversa"**. A releitura sozinha não
    atualiza o snapshot de um processo já iniciado.
-5. **Fase 4** — provedores locais/compatíveis (`models.json`), preservando o
-   arquivo existente. Separado de propósito: não bloqueia a fase 3.
+5. **Fase 4 (implementada nesta fatia)** — provedores locais/compatíveis
+   (`models.json`): detecção, validação e mesclagem preservando o arquivo
+   existente. A remoção pela interface fica para depois.
 6. **Fase 5** — pedir ao Pi `pi auth login|logout` e aposentar o adaptador, se
    ele preferir expor isso na CLI. Até lá, o adaptador é a ponte.
 
@@ -422,6 +504,18 @@ cancelar.
 - **Reabrir não interrompe trabalho.** Com streaming, fila, compactação ou
   diálogo pendente, a ação fica desabilitada; o Dish não aborta nada para
   "consertar" o catálogo.
+- **Remover um provedor local ainda é manual.** A tela adiciona Ollama, LM
+  Studio e endpoints compatíveis, mas não remove nenhum deles; edite
+  `models.json` à mão (o backup em `models.json.dish-backup` ajuda a desfazer).
+- **vLLM e outros servidores vão pelo formulário genérico.** Só Ollama e LM
+  Studio são detectados automaticamente; qualquer endpoint compatível com
+  OpenAI entra por "Adicionar endpoint compatível".
+- **A chave fica literal no `models.json`, como o Pi espera.** O Dish não cria
+  cofre nem variável própria; para não gravar o segredo, use `$NOME_DA_VARIÁVEL`
+  (ou `"!comando"`) no campo da chave.
+- **Só dois dialetos são oferecidos.** O formulário grava
+  `openai-completions` ou `openai-responses`; Anthropic Messages, Gemini e
+  outros protocolos continuam exigindo edição manual do `models.json`.
 
 ## Como verificar
 

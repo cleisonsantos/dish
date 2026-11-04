@@ -15,6 +15,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+#[path = "providers_local.rs"]
+pub mod local;
+
 /// O adaptador acompanha o binário: embutido no build e gravado em cache na
 /// primeira consulta, para não existirem duas cópias para manter em sincronia.
 const ADAPTER: &str = include_str!("../scripts/pi-auth-adapter.mjs");
