@@ -48,9 +48,9 @@ use gpui::*;
 
 use crate::editor::{
     Backspace, CopySelection, CutSelection, Delete, DeleteWordBack, DeleteWordForward, DocEnd,
-    DocStart, End, Home, Left, Newline, Paste, Redo, Right, SelectAllText, SelectDocEnd,
-    SelectDocStart, SelectDown, SelectEnd, SelectHome, SelectLeft, SelectRight, SelectUp,
-    SelectWordLeft, SelectWordRight, SendPrompt, Undo, WordLeft, WordRight,
+    DocStart, End, Home, Left, Newline, PageDown, PageUp, Paste, Redo, Right, SelectAllText,
+    SelectDocEnd, SelectDocStart, SelectDown, SelectEnd, SelectHome, SelectLeft, SelectRight,
+    SelectUp, SelectWordLeft, SelectWordRight, SendPrompt, Undo, WordLeft, WordRight,
 };
 use crate::ui::{
     CloseWindow, CycleEffort, Dismiss, MenuAccept, MenuDown, MenuUp, ModalSubmit, NewSession,
@@ -75,6 +75,8 @@ fn editor_bindings(context: &str) -> Vec<KeyBinding> {
         KeyBinding::new("shift-end", SelectEnd, ctx),
         KeyBinding::new("shift-up", SelectUp, ctx),
         KeyBinding::new("shift-down", SelectDown, ctx),
+        KeyBinding::new("pageup", PageUp, ctx),
+        KeyBinding::new("pagedown", PageDown, ctx),
         KeyBinding::new("ctrl-home", DocStart, ctx),
         KeyBinding::new("ctrl-end", DocEnd, ctx),
         KeyBinding::new("cmd-up", DocStart, ctx),

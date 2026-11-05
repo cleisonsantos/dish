@@ -20,8 +20,9 @@ use gpui::{
     App, Bounds, Context, DispatchPhase, Element, ElementId, ElementInputHandler, Entity,
     EntityInputHandler, FocusHandle, Focusable, GlobalElementId, InspectorElementId,
     InteractiveElement, IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    PaintQuad, Pixels, Point, Render, SharedString, Style, Subscription, Task, TextAlign, TextRun,
-    UTF16Selection, Window, WrappedLine, actions, fill, point, prelude::*, px, relative, size,
+    PaintQuad, Pixels, Point, Render, ScrollHandle, SharedString, Style, Subscription, Task,
+    TextAlign, TextRun, UTF16Selection, Window, WrappedLine, actions, fill, point, prelude::*,
+    px, relative, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -38,6 +39,8 @@ actions!(
         End,
         DocStart,
         DocEnd,
+        PageUp,
+        PageDown,
         SelectLeft,
         SelectRight,
         SelectUp,
@@ -337,6 +340,14 @@ pub struct Editor {
     /// next layout pass.
     pub text_width: Rc<Cell<f32>>,
     geometry: Rc<RefCell<TextGeometry>>,
+    /// Handle da viewport rolável que hospeda este editor. O composer empresta
+    /// o dele; os demais editores ficam sem handle e não rolam sozinhos.
+    scroll_handle: Rc<RefCell<Option<ScrollHandle>>>,
+    /// Última `(caret, tamanho do texto, linhas visíveis)` conferida no
+    /// prepaint. Seguir o caret só quando a âncora mudou mantém a roda do
+    /// mouse livre; incluir a altura da viewport faz o redimensionamento
+    /// reavaliar uma vez.
+    scroll_anchor: Rc<Cell<Option<(usize, usize, usize)>>>,
     goal_column: GoalColumn,
     /// True while a press that began inside this editor is still held.
     dragging: bool,
@@ -394,6 +405,8 @@ impl Editor {
             masked: false,
             text_width: Rc::new(Cell::new(0.0)),
             geometry: Rc::new(RefCell::new(TextGeometry::default())),
+            scroll_handle: Rc::new(RefCell::new(None)),
+            scroll_anchor: Rc::new(Cell::new(None)),
             goal_column: GoalColumn::default(),
             dragging: false,
             undo_stack: Vec::new(),
@@ -435,6 +448,24 @@ impl Editor {
         content[..self.selection.head.min(content.len())]
             .matches('\n')
             .count()
+    }
+
+    /// Liga a viewport rolável que hospeda este editor. O handle é o mesmo
+    /// registrado no `track_scroll` do container, não uma cópia de estado.
+    pub fn attach_scroll_handle(&self, handle: ScrollHandle) {
+        *self.scroll_handle.borrow_mut() = Some(handle);
+    }
+
+    /// Quantas linhas cabem na viewport ligada a este editor. Editores sem
+    /// handle (modal, buscas) usam uma tela textual fixa para PageUp/PageDown.
+    fn visible_rows(&self, window: &Window) -> usize {
+        let Some(handle) = self.scroll_handle.borrow().clone() else {
+            return FALLBACK_VISIBLE_ROWS;
+        };
+        let line_height = f32::from(window.line_height().max(px(1.)));
+        (f32::from(handle.bounds().size.height) / line_height)
+            .floor()
+            .max(0.0) as usize
     }
 
     // --------------------------------------------------------------- mutation
@@ -669,6 +700,28 @@ impl Editor {
         self.place(if forward { end } else { start }, extend, cx);
     }
 
+    /// PageUp/PageDown: o caret anda uma viewport de cada vez, mantendo a
+    /// coluna como Up/Down.
+    fn move_screen(&mut self, forward: bool, window: &Window, cx: &mut Context<Self>) {
+        let steps = self.visible_rows(window).max(1);
+        let content = self.text(cx);
+        let head = self.selection.head.min(content.len());
+        let rows = self.rows(cx);
+        let column = self
+            .goal_column
+            .0
+            .unwrap_or_else(|| row_column(&content, &rows, head));
+        self.goal_column = GoalColumn(Some(column));
+        let mut target = head;
+        for _ in 0..steps {
+            let Some(next) = vertical_target(&content, &rows, target, Some(column), forward) else {
+                break;
+            };
+            target = next;
+        }
+        self.place(target, false, cx);
+    }
+
     // --------------------------------------------------------------- actions
 
     pub fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
@@ -764,6 +817,14 @@ impl Editor {
     pub fn select_doc_end(&mut self, _: &SelectDocEnd, _: &mut Window, cx: &mut Context<Self>) {
         let end = self.text(cx).len();
         self.place(end, true, cx);
+    }
+
+    pub fn page_up(&mut self, _: &PageUp, window: &mut Window, cx: &mut Context<Self>) {
+        self.move_screen(false, window, cx);
+    }
+
+    pub fn page_down(&mut self, _: &PageDown, window: &mut Window, cx: &mut Context<Self>) {
+        self.move_screen(true, window, cx);
     }
 
     pub fn select_all(&mut self, _: &SelectAllText, _: &mut Window, cx: &mut Context<Self>) {
@@ -1151,6 +1212,39 @@ fn index_at_column(content: &str, start: usize, end: usize, column: usize) -> us
         index += grapheme.len();
     }
     index.min(end)
+}
+
+/// Rows a PageUp/PageDown moves in an editor with no known viewport.
+const FALLBACK_VISIBLE_ROWS: usize = 10;
+
+/// Offset de rolagem para manter a linha `row` visível numa área de
+/// `visible_rows` linhas, dado o offset atual. Devolve `current` quando o
+/// caret já está à vista.
+fn scroll_offset_for_caret(row: usize, visible_rows: usize, current: usize) -> usize {
+    if visible_rows == 0 {
+        return current;
+    }
+    if row < current {
+        row
+    } else if row >= current + visible_rows {
+        row + 1 - visible_rows
+    } else {
+        current
+    }
+}
+
+/// Âncora que resume a última decisão de rolagem do composer: caret, tamanho
+/// do texto e altura da viewport. `visible_rows == 0` significa container sem
+/// medida ainda — devolve `None` para o próximo frame decidir de novo.
+fn scroll_anchor_for(
+    caret: usize,
+    len: usize,
+    visible_rows: usize,
+) -> Option<(usize, usize, usize)> {
+    if visible_rows == 0 {
+        return None;
+    }
+    Some((caret, len, visible_rows))
 }
 
 /// One range per logical line, the fallback when no paint geometry is usable.
@@ -1567,7 +1661,18 @@ impl Element for EditorText {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        let (content, masked, selection, cursor_visible, is_focused, placeholder, width_cell, geometry) = {
+        let (
+            content,
+            masked,
+            selection,
+            cursor_visible,
+            is_focused,
+            placeholder,
+            width_cell,
+            geometry,
+            scroll_handle,
+            scroll_anchor,
+        ) = {
             let editor = self.editor.read(cx);
             (
                 editor.text(cx),
@@ -1578,6 +1683,8 @@ impl Element for EditorText {
                 editor.placeholder.clone(),
                 editor.text_width.clone(),
                 editor.geometry.clone(),
+                editor.scroll_handle.clone(),
+                editor.scroll_anchor.clone(),
             )
         };
 
@@ -1618,6 +1725,51 @@ impl Element for EditorText {
             target.line_height = line_height;
             // Placeholder glyphs are painted, but are not part of the buffer.
             target.lines = if is_placeholder { Vec::new() } else { lines.clone() };
+        }
+
+        // A viewport do composer segue o caret, mas só quando ele se moveu:
+        // rolar com a roda não pode puxar a visão de volta para o caret.
+        if !is_placeholder {
+            let caret = if masked {
+                masked_offset(&content, selection.head)
+            } else {
+                selection.head
+            };
+            if let Some(handle) = scroll_handle.borrow().as_ref() {
+                let row_height = f32::from(line_height.max(px(1.)));
+                let visible_rows = (f32::from(handle.bounds().size.height) / row_height) as usize;
+                // A âncora cobre o caret e a altura da viewport: redimensionar
+                // a janela reavalia uma vez, sem puxar a visão de volta quando
+                // a rolagem veio da roda do mouse. Sem medida ainda, não grava
+                // nada e tenta no próximo frame.
+                let anchor = scroll_anchor_for(selection.head, content.len(), visible_rows);
+                if let Some(anchor) = anchor {
+                    if scroll_anchor.get() != Some(anchor) {
+                        scroll_anchor.set(Some(anchor));
+                        let caret_row = lines
+                            .iter()
+                            .rev()
+                            .find(|line| line.start <= caret)
+                            .map(|line| {
+                                let (row, _) =
+                                    line.x_for_index(caret.saturating_sub(line.start), line_height);
+                                line.row + row
+                            });
+                        if let Some(row) = caret_row {
+                            let current =
+                                (-f32::from(handle.offset().y) / row_height).max(0.0) as usize;
+                            let target = scroll_offset_for_caret(row, visible_rows, current);
+                            if target != current {
+                                handle.set_offset(point(
+                                    handle.offset().x,
+                                    px(-(target as f32) * row_height),
+                                ));
+                                window.request_animation_frame();
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // Selection rectangles. Wrapped rows are filled to their full width,
@@ -1786,6 +1938,8 @@ pub fn standard_actions<E: InteractiveElement>(editor: Entity<Editor>) -> impl F
         let element = bind!(element, SelectWordRight, select_word_right);
         let element = bind!(element, Up, up);
         let element = bind!(element, Down, down);
+        let element = bind!(element, PageUp, page_up);
+        let element = bind!(element, PageDown, page_down);
         let element = bind!(element, SelectUp, select_up);
         let element = bind!(element, SelectDown, select_down);
         let element = bind!(element, Home, home);
@@ -1810,8 +1964,9 @@ pub fn standard_actions<E: InteractiveElement>(editor: Entity<Editor>) -> impl F
 #[cfg(test)]
 mod tests {
     use super::{
-        horizontal_target, logical_rows, masked_offset, masked_text, row_of, source_offset,
-        trim_snapshots, vertical_target, PromptHistory, Selection, Snapshot,
+        horizontal_target, logical_rows, masked_offset, masked_text, row_of, scroll_anchor_for,
+        scroll_offset_for_caret, source_offset, trim_snapshots, vertical_target, PromptHistory,
+        Selection, Snapshot,
     };
 
     #[test]
@@ -1857,6 +2012,43 @@ mod tests {
             Some("anterior")
         );
         assert_eq!(history.next().as_deref(), Some("rascunho longo"));
+    }
+
+    #[test]
+    fn scroll_keeps_a_caret_already_in_the_window() {
+        assert_eq!(scroll_offset_for_caret(4, 10, 0), 0);
+        assert_eq!(scroll_offset_for_caret(12, 10, 5), 5);
+    }
+
+    #[test]
+    fn scroll_moves_just_enough_for_a_caret_below_the_window() {
+        assert_eq!(scroll_offset_for_caret(15, 10, 0), 6);
+        assert_eq!(scroll_offset_for_caret(199, 11, 0), 189);
+    }
+
+    #[test]
+    fn scroll_follows_a_caret_above_the_window() {
+        assert_eq!(scroll_offset_for_caret(3, 10, 20), 3);
+    }
+
+    #[test]
+    fn scroll_without_visible_rows_stays_put() {
+        assert_eq!(scroll_offset_for_caret(50, 0, 7), 7);
+    }
+
+    #[test]
+    fn scroll_anchor_records_caret_text_and_viewport() {
+        assert_eq!(scroll_anchor_for(10, 200, 11), Some((10, 200, 11)));
+    }
+
+    #[test]
+    fn scroll_anchor_changes_when_the_viewport_resizes() {
+        assert_ne!(scroll_anchor_for(10, 200, 5), scroll_anchor_for(10, 200, 11));
+    }
+
+    #[test]
+    fn scroll_anchor_stays_unset_without_a_measurement() {
+        assert_eq!(scroll_anchor_for(10, 200, 0), None);
     }
 
     #[test]

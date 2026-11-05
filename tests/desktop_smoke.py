@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 import time
 
-from ui_test_support import UiTrace, parse_words, visible_point, visual_lines
+from ui_test_support import UiTrace, parse_words, read_events, visible_point, visual_lines
 
 UI_TRACES = {}
 ROOT = Path(__file__).resolve().parents[1]
@@ -519,9 +519,7 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
     process = subprocess.Popen([os.environ.get("DISH_TEST_BIN", str(ROOT / "target/debug/dish")), str(projects[0])], env=env, stdout=log, stderr=log)
 
     def events():
-        if not log_path.exists():
-            return []
-        return [json.loads(line) for line in log_path.read_text().splitlines() if line]
+        return read_events(log_path)
 
     def commands(kind):
         return [item for item in events() if item.get("command", {}).get("type") == kind]

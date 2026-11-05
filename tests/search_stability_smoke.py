@@ -42,9 +42,7 @@ with tempfile.TemporaryDirectory(prefix="dish-search-stability-") as temporary:
                                env=env, stdout=log, stderr=log)
 
     def events():
-        if not log_path.exists():
-            return []
-        return [json.loads(line) for line in log_path.read_text().splitlines() if line]
+        return read_events(log_path)
 
     def deltas():
         return sum(event.get("record", {}).get("type") == "message_update" and
