@@ -1,4 +1,11 @@
-"""Anexos de arquivo: colagem, seletor, remoção e envio (#172)."""
+"""Anexos de arquivo: colagem, seletor, remoção e envio (#172).
+
+A colagem usa um `xclip` de mentira no PATH: o GPUI no Linux não pede o MIME
+`text/uri-list`, então o Dish recorre ao utilitário (ver `AppState::paste`).
+O shim responde a `-out` com o conteúdo de um arquivo e ignora `-in`, o que
+mantém o caminho real do produto (Command -> parse -> ingest -> chip) sob teste
+sem depender do binário instalado na máquina.
+"""
 from pathlib import Path
 
 helper_path = Path(__file__).with_name("desktop_smoke.py")
@@ -52,6 +59,23 @@ with tempfile.TemporaryDirectory(prefix="dish-composer-files-") as temporary:
     # O processo recebe o gancho antes de iniciar.
     env["DISH_TEST_PICK_PATHS"] = str(second)
 
+    # `xclip` de mentira: o app só chama o utilitário quando o GPUI não entrega
+    # o uri-list, e é exatamente esse caminho que queremos exercitar.
+    shim_dir = temp / "bin"
+    shim_dir.mkdir()
+    clipboard_data = temp / "clipboard-data"
+    clipboard_data.write_text("")
+    shim = shim_dir / "xclip"
+    shim.write_text("#!/bin/sh\n"
+                    'case " $* " in\n'
+                    '  *" -out "*) cat "$FAKE_XCLIP_DATA"; exit 0 ;;\n'
+                    'esac\n'
+                    'cat > /dev/null\n'
+                    'exit 0\n')
+    shim.chmod(0o700)
+    env["PATH"] = f"{shim_dir}:{env.get('PATH', '')}"
+    env["FAKE_XCLIP_DATA"] = str(clipboard_data)
+
     process = subprocess.Popen([os.environ.get("DISH_TEST_BIN", str(ROOT / "target/debug/dish")), str(project)],
                                env=env, stdout=log, stderr=log)
 
@@ -80,33 +104,19 @@ with tempfile.TemporaryDirectory(prefix="dish-composer-files-") as temporary:
             wait_for(ready, description)
             return UI_TRACES[window].node(identity)
 
-        def clipboard(data, mime):
-            holder = subprocess.Popen(["xclip", "-selection", "clipboard", "-in", "-target", mime, "-quiet"],
-                                      stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            holder.stdin.write(data)
-            holder.stdin.close()
-            end = time.monotonic() + 5
-            while time.monotonic() < end:
-                probe = subprocess.run(["xclip", "-selection", "clipboard", "-out", "-target", mime],
-                                       capture_output=True, timeout=5)
-                if probe.stdout:
-                    break
-                time.sleep(0.1)
-            return holder
+        def set_clipboard(path):
+            """Publica o caminho como uri-list no shim; o app lê por `xclip -out`."""
+            clipboard_data.write_text(path.as_uri() + "\r\n")
 
         def probe(condition, description):
             return wait_probe("composer-input", description,
                               condition=lambda node: condition(node["data"]))["data"]
 
         def paste_file(path, condition):
-            holder = clipboard((path.as_uri() + "\r\n").encode(), "text/uri-list")
-            try:
-                click_ui(window, "composer-input")
-                chord("Control_L", "v")
-                return probe(condition, "A colagem não produziu o estado esperado")
-            finally:
-                holder.terminate()
-                holder.wait(timeout=5)
+            set_clipboard(path)
+            click_ui(window, "composer-input")
+            chord("Control_L", "v")
+            return probe(condition, "A colagem não produziu o estado esperado")
 
         def toast(fragment):
             return lambda data: any(fragment in text for text in data["toasts"])
