@@ -22,6 +22,7 @@ pub fn composer(
     window: &Window,
     cx: &Context<AppState>,
 ) -> Div {
+    let expanded = state.composer_expanded;
     let editor = state.editor.clone();
     // O editor só conhece a viewport que o hospeda. Este handle é o mesmo que
     // o container abaixo registra com `track_scroll`; sem ele o caret anda
@@ -45,6 +46,9 @@ pub fn composer(
         .gap(px(theme::S2))
         .pt(px(theme::S2))
         .pb(px(theme::S5));
+    if expanded {
+        column = column.flex_1().min_h(px(0.));
+    }
 
     if !state.ext_widget.is_empty() {
         column = column.child(inset_block(state));
@@ -68,7 +72,7 @@ pub fn composer(
 
     // O acento do esforço vive aqui: borda no foco, brilho suave em repouso de
     // foco e um pulso lento enquanto o Pi realmente trabalha.
-    let surface = div()
+    let mut surface = div()
         .mx(px(theme::CHAT_INSET))
         .rounded(theme::r_surface())
         .border_1()
@@ -85,12 +89,19 @@ pub fn composer(
         })
             .flex()
             .flex_col()
-            .overflow_hidden()
+            .overflow_hidden();
+    if expanded {
+        surface = surface.flex_1().min_h(px(0.));
+    }
+    let surface = surface
             .child(
                 div()
                     .flex()
                     .flex_row()
                     .items_end()
+                    // Expandido, a linha do editor precisa ocupar a altura que
+                    // o `surface` ganhou; senão o texto fica espremido no topo.
+                    .when(expanded, |el| el.flex_1().min_h(px(0.)).items_stretch())
                     .gap(px(theme::S2))
                     .px(px(theme::S4))
                     .pt(px(theme::S4))
@@ -100,11 +111,16 @@ pub fn composer(
                             .id("composer-input")
                             .test_probe(|| "composer-input".into(), || serde_json::json!({
                                 "focused": focused,
+                                "expanded": expanded,
                             }))
                             .flex_1()
                             .min_w(px(0.))
                             .min_h(px(0.))
-                            .max_h(px(220.))
+                            // Expandido não tem teto de altura: o editor ocupa
+                            // o que o `surface` ganhou (o número é um teto
+                            // prático, não infinito, para o layout não receber
+                            // constraint infinita).
+                            .max_h(if expanded { px(10_000.) } else { px(220.) })
                             .overflow_y_scroll()
                             .track_scroll(&state.composer_scroll)
                             .key_context("DishInput")

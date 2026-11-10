@@ -408,6 +408,8 @@ pub struct SessionState {
 
 pub struct AppState {
     pub visible: bool,
+    /// Composer ocupando a área do transcript, para editar texto longo.
+    pub composer_expanded: bool,
     pub disconnected: bool,
     pub new_session_requested: bool,
     pub loading: bool,
@@ -571,6 +573,7 @@ impl AppState {
 
         Self {
             visible: false,
+            composer_expanded: false,
             disconnected: false,
             new_session_requested: false,
             loading: true,
@@ -2281,6 +2284,7 @@ impl AppState {
             }
             self.editor.update(cx, |editor, cx| editor.clear(cx));
             self.last_run = Some(std::time::SystemTime::now());
+            self.composer_expanded = false;
             self.sync_list();
             cx.notify();
             return;
@@ -2316,6 +2320,8 @@ impl AppState {
             return;
         }
         self.last_run = Some(std::time::SystemTime::now());
+        // O composer vazio não precisa ficar enorme: enviar volta ao normal.
+        self.composer_expanded = false;
         self.editor.update(cx, |editor, _| editor.push_history(&text));
 
         if let Some(command) = text.strip_prefix('!') {

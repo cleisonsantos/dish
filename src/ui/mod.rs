@@ -28,7 +28,7 @@ mod git_context_view;
 
 actions!(
     dish_ui,
-    [Dismiss, ModalSubmit, ToggleSidebar, NewSession, MenuUp, MenuDown, MenuAccept, PreviousFocus, CycleEffort, ToggleHelp, OpenModels, CloseWindow, ModelUp, ModelDown, ModelAccept, ModalUp, ModalDown]
+    [Dismiss, ModalSubmit, ToggleSidebar, NewSession, MenuUp, MenuDown, MenuAccept, PreviousFocus, CycleEffort, ToggleHelp, OpenModels, CloseWindow, ModelUp, ModelDown, ModelAccept, ModalUp, ModalDown, ToggleComposer]
 );
 
 impl Render for AppState {
@@ -54,14 +54,17 @@ impl Render for AppState {
         let narrow = inspector::uses_overlay(viewport);
 
         let (slash, slash_index) = self.slash_state(cx);
+        let expanded = self.composer_expanded;
         let mut main_column = div()
             .flex_1()
             .min_w(px(0.))
             .min_h(px(0.))
             .flex()
             .flex_col()
-            .child(conversation_header(self, cx))
-            .child(transcript::transcript(self, cx));
+            .child(conversation_header(self, cx));
+        if !expanded {
+            main_column = main_column.child(transcript::transcript(self, cx));
+        }
 
         if let Some(banner) = self.banner.clone() {
             main_column = main_column.child(banner_element(self, &banner, cx));
@@ -178,6 +181,15 @@ impl Render for AppState {
                     state.cut_selection(window, cx)
                 }),
             )
+            .on_action(cx.listener(|state, _: &ToggleComposer, window, cx| {
+                if state.modal.is_some() {
+                    return;
+                }
+                state.composer_expanded = !state.composer_expanded;
+                let focus = state.editor.read(cx).focus_handle.clone();
+                focus.focus(window, cx);
+                cx.notify();
+            }))
             .on_action(cx.listener(|state, _: &Dismiss, window, cx| {
                 if state.modal.is_some() {
                     state.respond_modal(crate::state::ModalAnswer::Cancelled, cx);
@@ -199,6 +211,10 @@ impl Render for AppState {
                     cx.notify();
                 } else if !state.slash_state(cx).0.is_empty() {
                     state.dismiss_slash(cx);
+                } else if state.composer_expanded {
+                    // Sair do expandido não descarta texto nem envia nada.
+                    state.composer_expanded = false;
+                    cx.notify();
                 } else if state.streaming {
                     state.abort(cx);
                 } else if state.banner.is_some() {
