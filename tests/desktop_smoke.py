@@ -633,7 +633,9 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         assert len(commands("prompt")) == 1, "Navigating matches submitted another prompt"
         assert not commands("abort"), "Leaving search canceled the running agent"
         # Exercise the cleared composer while the first session is still running.
-        click(window, 550, 780)
+        # O composer é achado pelo probe: a linha de controles ganhou o botão
+        # Anexar e uma coordenada fixa cairia em cima do seletor de modelo.
+        click_ui(window, "composer-input")
         # Open beta's saved session from its project group while alpha runs.
         click_beta_session(window)
         # A run can finish between the OCR snapshot and the click, changing row
@@ -666,7 +668,7 @@ with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:
         else:
             raise AssertionError("Search wheel leaked to the underlying transcript")
         press("Escape")
-        click(window, 550, 780)
+        click_ui(window, "composer-input")
         type_text("long-b")
         press("Return")
         wait_for(lambda: len(commands("prompt")) == 2, "Second prompt not sent")
