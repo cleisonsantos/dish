@@ -28,7 +28,7 @@ mod git_context_view;
 
 actions!(
     dish_ui,
-    [Dismiss, ModalSubmit, ToggleSidebar, NewSession, MenuUp, MenuDown, MenuAccept, PreviousFocus, CycleEffort, ToggleHelp, OpenModels, CloseWindow, ModelUp, ModelDown, ModelAccept, ModalUp, ModalDown, ToggleComposer]
+    [Dismiss, ModalSubmit, ToggleSidebar, NewSession, MenuUp, MenuDown, MenuAccept, PreviousFocus, CycleEffort, ToggleHelp, OpenModels, CloseWindow, ModelUp, ModelDown, ModelAccept, ModalUp, ModalDown, ToggleComposer, DuplicateLineDown, DuplicateLineUp]
 );
 
 impl Render for AppState {

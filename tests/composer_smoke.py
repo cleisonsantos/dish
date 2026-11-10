@@ -95,6 +95,21 @@ with tempfile.TemporaryDirectory(prefix="dish-composer-") as temporary:
         wait_probe("composer-input", "Send did not collapse the composer",
                 condition=lambda node: node["data"]["expanded"] is False)
 
+        # 5. A contagem acompanha as linhas e a duplicação no expandido.
+        chord("Alt_L", "Shift_L", "e")
+        wait_probe("composer-input", "Composer did not expand for stats",
+                   condition=lambda node: node["data"]["expanded"] is True)
+        type_text("primeira")
+        chord("Shift_L", "Return")
+        type_text("segunda")
+        node = wait_probe("composer-input", "Multiline stats did not update",
+                          condition=lambda node: node["data"]["stats"]["lines"] >= 2
+                          and node["data"]["stats"]["chars"] > 0)
+        lines_before = node["data"]["stats"]["lines"]
+        chord("Shift_L", "Alt_L", "Down")
+        wait_probe("composer-input", "Duplicate line did not update stats",
+                   condition=lambda node: node["data"]["stats"]["lines"] == lines_before + 1)
+
         assert process.poll() is None, (temp / "dish.log").read_text()
         print("Composer expanded smoke passed")
     except Exception:
