@@ -317,8 +317,10 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let directory = std::env::temp_dir().join(format!("dish-title-test-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         std::fs::create_dir(&directory).unwrap();
-        let script = directory.join("fake-pi");
-        let run = |body: &str, timeout| {
+        let mut script_index = 0;
+        let mut run = |body: &str, timeout| {
+            script_index += 1;
+            let script = directory.join(format!("fake-pi-{script_index}"));
             std::fs::write(&script, format!("#!/bin/sh\n{body}\n")).unwrap();
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
             generate_title_with_timeout(script.to_str().unwrap(), &directory, &model(), "Corrigir os títulos das sessões", 60, timeout)
