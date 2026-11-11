@@ -1939,7 +1939,7 @@ fn appearance_segment(
 }
 
 /// Tamanho em base 1024, uma casa decimal, com vírgula decimal.
-fn format_size(bytes: u64) -> String {
+pub(crate) fn format_size(bytes: u64) -> String {
     if bytes < 1024 {
         return format!("{bytes} B");
     }
@@ -2739,6 +2739,7 @@ mod sessions_page_tests {
         assert_eq!(format_size(0), "0 B");
         assert_eq!(format_size(512), "512 B");
         assert_eq!(format_size(1536), "1,5 KB");
+        assert_eq!(format_size(1_468_006), "1,4 MB");
         assert_eq!(format_size(35_861_708), "34,2 MB");
         assert_eq!(format_size(3 * 1024 * 1024 * 1024), "3,0 GB");
     }
