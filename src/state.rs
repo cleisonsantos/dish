@@ -2,7 +2,8 @@
 //! interaction the UI can trigger.
 
 use std::collections::{BTreeSet, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::io::Read;
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -42,6 +43,141 @@ pub enum Tone {
 /// capped separately by `clipboard_image`; this prevents many valid images
 /// from becoming an unbounded RPC command and memory spike.
 const MAX_ATTACHMENT_BYTES: usize = 32 * 1024 * 1024;
+
+const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
+const MAX_FILES_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_FILES: usize = 20;
+const BINARY_SNIFF_BYTES: usize = 8 * 1024;
+
+/// Arquivo anexado: só o caminho citado é enviado ao Pi.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FileAttachment {
+    pub id: u64,
+    pub path: PathBuf,
+    pub name: String,
+    pub bytes: u64,
+    pub missing: bool,
+}
+
+struct PendingAttachments {
+    text: String,
+    images: Vec<(String, Value)>,
+    files: Vec<FileAttachment>,
+}
+
+#[derive(Default)]
+struct Ingested {
+    images: Vec<(String, Value)>,
+    files: Vec<FileAttachment>,
+    folders: Vec<String>,
+    errors: Vec<String>,
+}
+
+fn looks_binary(sample: &[u8]) -> bool {
+    sample.contains(&0) || std::str::from_utf8(sample).is_err_and(|error| {
+        error.valid_up_to() < sample.len().saturating_sub(3) && error.error_len().is_some()
+    })
+}
+
+fn inspect_file(path: &Path) -> Result<FileAttachment, String> {
+    let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let unreadable = || format!("{name}: arquivo não encontrado ou sem permissão de leitura.");
+    let meta = std::fs::metadata(path).map_err(|_| unreadable())?;
+    if !meta.is_file() { return Err(format!("{name}: não é um arquivo comum.")); }
+    let bytes = meta.len();
+    if bytes == 0 { return Err(format!("{name}: arquivo vazio.")); }
+    if bytes > MAX_FILE_BYTES {
+        return Err(format!("{name} tem {}; o limite por arquivo é 10 MB.", crate::settings::format_size(bytes)));
+    }
+    let mut sample = Vec::new();
+    std::fs::File::open(path).and_then(|file| file.take(BINARY_SNIFF_BYTES as u64).read_to_end(&mut sample)).map_err(|_| unreadable())?;
+    if looks_binary(&sample) {
+        return Err(format!("{name} parece binário; o Pi só lê texto. Se quiser só citar o caminho, escreva-o na mensagem."));
+    }
+    let path = std::fs::canonicalize(path).map_err(|_| unreadable())?;
+    Ok(FileAttachment { id: 0, path, name, bytes, missing: false })
+}
+
+/// Classifica caminhos no executor de fundo, sem acessar o estado da interface.
+fn ingest_paths(paths: Vec<PathBuf>) -> Ingested {
+    let mut result = Ingested::default();
+    for path in paths {
+        let extension = path.extension().and_then(|v| v.to_str()).unwrap_or("").to_ascii_lowercase();
+        let format = match extension.as_str() {
+            "png" => Some(ImageFormat::Png),
+            "jpg" | "jpeg" => Some(ImageFormat::Jpeg),
+            "gif" => Some(ImageFormat::Gif),
+            "webp" => Some(ImageFormat::Webp),
+            _ => None,
+        };
+        if let Some(format) = format {
+            let bytes = std::fs::File::open(&path).and_then(|file| {
+                let mut bytes = Vec::new();
+                file.take(10 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
+                Ok(bytes)
+            });
+            match bytes.map_err(|e| e.to_string()).and_then(|bytes| clipboard_image(format, &bytes)) {
+                Ok(value) => result.images.push((path.file_name().unwrap_or_default().to_string_lossy().into_owned(), value)),
+                Err(error) => result.errors.push(format!("{}: {error}", path.display())),
+            }
+        } else if path.is_dir() {
+            result.folders.push(format!("{:?}", path.to_string_lossy()));
+        } else {
+            match inspect_file(&path) {
+                Ok(file) => result.files.push(file),
+                Err(error) => result.errors.push(error),
+            }
+        }
+    }
+    result
+}
+
+fn admit_files(existing: &[FileAttachment], incoming: Vec<FileAttachment>) -> (Vec<FileAttachment>, Vec<String>) {
+    let mut accepted: Vec<FileAttachment> = Vec::new();
+    let mut messages = Vec::new();
+    let mut used: u64 = existing.iter().map(|file| file.bytes).sum();
+    let mut excess = 0;
+    let mut over_budget = false;
+    for file in incoming {
+        if existing.iter().chain(&accepted).any(|old| old.path == file.path) {
+            messages.push(format!("{} já está anexado.", file.name));
+        } else if existing.len() + accepted.len() >= MAX_FILES {
+            excess += 1;
+        } else if used.saturating_add(file.bytes) > MAX_FILES_TOTAL_BYTES {
+            over_budget = true;
+        } else {
+            used += file.bytes;
+            accepted.push(file);
+        }
+    }
+    if excess > 0 { messages.push(format!("Limite de 20 arquivos por mensagem; {excess} ficaram de fora.")); }
+    if over_budget { messages.push("Arquivos acima do limite total de 32 MB foram ignorados.".into()); }
+    (accepted, messages)
+}
+
+/// Cita os caminhos com escape de Rust; preserva o texto quando não há arquivos.
+fn compose_message(text: &str, files: &[FileAttachment]) -> String {
+    if files.is_empty() { return text.to_owned(); }
+    let mut message = if text.trim().is_empty() { String::new() } else { format!("{}\n\n", text.trim_end()) };
+    message.push_str("Arquivos anexados:");
+    for file in files { message.push_str(&format!("\n- {:?}", file.path.to_string_lossy())); }
+    message
+}
+
+/// Gancho exclusivo do smoke: evita abrir um seletor nativo no teste.
+///
+/// O valor é um arquivo com um caminho por linha, relido a cada clique, para o
+/// teste escolher anexos diferentes sem reiniciar o app. Um valor que não é
+/// arquivo continua sendo lido como lista separada por `:`.
+fn test_pick_paths() -> Option<Vec<PathBuf>> {
+    let value = std::env::var_os("DISH_TEST_PICK_PATHS")?;
+    let text = std::fs::read_to_string(&value).ok();
+    Some(match text {
+        Some(text) => text.lines().map(str::trim).filter(|line| !line.is_empty()).map(PathBuf::from).collect(),
+        None if value.is_empty() => Vec::new(),
+        None => std::env::split_paths(&value).collect(),
+    })
+}
 
 fn attachment_bytes(value: &Value) -> usize {
     value
@@ -442,7 +578,9 @@ pub struct AppState {
     pub composer_scroll: ScrollHandle,
     pub pasted_images: Vec<(String, Value)>,
     pub paste_loading: bool,
-    pending_image_prompts: HashMap<String, (String, Vec<(String, Value)>)>,
+    pending_attachment_prompts: HashMap<String, PendingAttachments>,
+    pub attached_files: Vec<FileAttachment>,
+    attachment_seq: u64,
 
     pub messages: Vec<Message>,
     /// Mensagem apontada pela busca; apenas apresentação, nunca persistida.
@@ -568,6 +706,7 @@ impl AppState {
         list_state.set_scroll_handler(move |_event, _window, cx| {
             weak.update(cx, |_state, cx| cx.notify()).ok();
         });
+        cx.observe(&editor, |_, _, cx| cx.notify()).detach();
         cx.observe(&model_search, |_, _, cx| cx.notify()).detach();
         cx.observe(&help_search, |_, _, cx| cx.notify()).detach();
 
@@ -598,7 +737,9 @@ impl AppState {
             composer_scroll: ScrollHandle::new(),
             pasted_images: Vec::new(),
             paste_loading: false,
-            pending_image_prompts: HashMap::new(),
+            pending_attachment_prompts: HashMap::new(),
+            attached_files: Vec::new(),
+            attachment_seq: 1,
             messages: Vec::new(),
             search_message: None,
             search_query: None,
@@ -1097,9 +1238,10 @@ impl AppState {
             }
             return None;
         }
-        if let Some((text, images)) = response.id.as_ref().and_then(|id| self.pending_image_prompts.remove(id)) {
+        if let Some(PendingAttachments { text, images, files }) = response.id.as_ref().and_then(|id| self.pending_attachment_prompts.remove(id)) {
             if !response.success {
                 self.append_images(images, cx);
+                self.append_files(files, cx);
                 if self.editor.read(cx).is_empty(cx) {
                     self.editor.update(cx, |editor, cx| editor.set_text(text, cx));
                 }
@@ -2250,32 +2392,105 @@ impl AppState {
         }
     }
 
+    pub fn remove_file(&mut self, id: u64) {
+        self.attached_files.retain(|file| file.id != id);
+    }
+
+    fn append_files(&mut self, files: Vec<FileAttachment>, cx: &mut Context<Self>) {
+        let (files, messages) = admit_files(&self.attached_files, files);
+        for mut file in files {
+            file.id = self.attachment_seq;
+            self.attachment_seq += 1;
+            self.attached_files.push(file);
+        }
+        for message in messages {
+            let tone = if message.ends_with("já está anexado.") { Tone::Info } else { Tone::Warning };
+            self.push_toast(message, tone, cx);
+        }
+        cx.notify();
+    }
+
+    fn apply_ingested(&mut self, result: Ingested, cx: &mut Context<Self>) {
+        self.paste_loading = false;
+        self.append_images(result.images, cx);
+        self.append_files(result.files, cx);
+        if !result.folders.is_empty() {
+            self.editor.update(cx, |editor, cx| editor.insert_text(&result.folders.join("\n"), cx));
+        }
+        for error in result.errors { self.push_toast(error, Tone::Warning, cx); }
+        cx.notify();
+    }
+
+    /// Entrada compartilhada por colagem, drop e seletor.
+    pub fn attach_paths(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        if self.paste_loading { return; }
+        self.paste_loading = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_executor().spawn(async move { ingest_paths(paths) }).await;
+            this.update(cx, |state, cx| state.apply_ingested(result, cx)).ok();
+        }).detach();
+    }
+
+    pub fn pick_attachments(&mut self, cx: &mut Context<Self>) {
+        if self.paste_loading { return; }
+        if let Some(paths) = test_pick_paths() { self.attach_paths(paths, cx); return; }
+        let picker = cx.prompt_for_paths(PathPromptOptions {
+            files: true, directories: false, multiple: true,
+            prompt: Some("Anexar arquivos".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            match picker.await {
+                Ok(Ok(Some(paths))) => { this.update(cx, |state, cx| state.attach_paths(paths, cx)).ok(); }
+                Ok(Err(error)) => {
+                    this.update(cx, |state, cx| state.push_toast(format!("Não foi possível abrir o seletor de arquivos: {error}"), Tone::Error, cx)).ok();
+                }
+                Ok(Ok(None)) | Err(_) => {}
+            }
+        }).detach();
+    }
+
     pub fn submit(&mut self, cx: &mut Context<Self>) {
         if self.paste_loading || self.disconnected {
             self.push_toast("Aguarde a colagem terminar e verifique a conexão com o Pi.".into(), Tone::Warning, cx);
             return;
         }
-        if !self.pasted_images.is_empty() {
+        if !self.pasted_images.is_empty() || !self.attached_files.is_empty() {
             let text = self.editor.read(cx).text(cx);
             if text.trim_start().starts_with(['/', '!']) {
-                self.push_toast("Envie imagens com uma mensagem normal, sem comando / ou !.".into(), Tone::Warning, cx);
+                self.push_toast("Envie anexos com uma mensagem normal, sem comando / ou !.".into(), Tone::Warning, cx);
                 return;
             }
+            let mut missing = Vec::new();
+            for file in &mut self.attached_files {
+                file.missing = !std::fs::metadata(&file.path).map(|meta| meta.is_file()).unwrap_or(false);
+                if file.missing { missing.push(file.name.clone()); }
+            }
+            if !missing.is_empty() {
+                for name in missing.into_iter().take(4) {
+                    self.push_toast(format!("{name} não existe mais no disco. Remova o anexo para enviar."), Tone::Error, cx);
+                }
+                cx.notify();
+                return;
+            }
+            let message = compose_message(&text, &self.attached_files);
             let images: Vec<Value> = self
                 .pasted_images
                 .iter()
                 .map(|(_, value)| value.clone())
                 .collect();
             let behavior = self.streaming.then_some("steer");
-            let result = self.client.prompt_with_images(&text, behavior, &images);
+            let result = self.client.prompt_with_images(&message, behavior, &images);
             let Some(id) = self.send_rpc(result, cx) else {
                 return;
             };
             self.editor.update(cx, |editor, _| editor.push_history(&text));
             let images = std::mem::take(&mut self.pasted_images);
-            let display = format!("{}\n{}", text, vec!["[image]"; images.len()].join("\n"));
+            let files = std::mem::take(&mut self.attached_files);
+            let mut display = message;
+            for _ in &images { display.push_str("\n[image]"); }
             self.push_local_user(&display);
-            self.pending_image_prompts.insert(id, (text, images));
+            self.pending_attachment_prompts.insert(id, PendingAttachments { text, images, files });
             if behavior.is_some() {
                 self.steering_queue.push(display);
             } else {
@@ -3333,8 +3548,18 @@ impl AppState {
         if target == self.editor && self.paste_loading {
             return;
         }
+        // Um clipboard vazio pode ainda ter `text/uri-list` servido pelo
+        // utilitário: o backend do GPUI devolve uma string vazia em vez de
+        // nada, então "sem texto" também precisa cair no fallback. Imagem já
+        // entregue pelo GPUI não paga essa chamada.
+        let has_attachment = item
+            .entries()
+            .iter()
+            .any(|entry| matches!(entry, ClipboardEntry::Image(_) | ClipboardEntry::ExternalPaths(_)));
+        let needs_paths = !has_attachment
+            && (item.entries().is_empty() || item.text().is_none_or(|text| text.trim().is_empty()));
         if target == self.editor && !self.paste_loading
-            && (item.entries().is_empty() || item.entries().iter().any(|entry| matches!(entry, ClipboardEntry::Image(_) | ClipboardEntry::ExternalPaths(_))))
+            && (has_attachment || needs_paths)
         {
             self.paste_loading = true;
             cx.notify();
@@ -3342,7 +3567,7 @@ impl AppState {
                 let result = cx.background_executor().spawn(async move {
                     // GPUI's Linux clipboard backend does not request URI-list
                     // MIME types. Optional desktop utilities fill that gap.
-                    if item.entries().is_empty() {
+                    if needs_paths {
                         let output = if std::env::var_os("WAYLAND_DISPLAY").is_some() {
                             std::process::Command::new("wl-paste").args(["--no-newline", "--type", "text/uri-list"]).output()
                         } else {
@@ -3358,56 +3583,29 @@ impl AppState {
                             }
                         }
                     }
-                    let mut images = Vec::new();
-                    let mut paths = Vec::new();
-                    let mut errors = Vec::new();
+                    let mut result = Ingested::default();
                     for entry in item.into_entries() {
                         match entry {
                             ClipboardEntry::Image(image) => {
                                 match clipboard_image(image.format(), image.bytes()) {
-                                    Ok(value) => images.push(("imagem colada".into(), value)),
-                                    Err(error) => errors.push(error),
+                                    Ok(value) => result.images.push(("imagem colada".into(), value)),
+                                    Err(error) => result.errors.push(error),
                                 }
                             }
-                            ClipboardEntry::ExternalPaths(files) => for path in files.0 {
-                                let extension = path.extension().and_then(|v| v.to_str()).unwrap_or("").to_ascii_lowercase();
-                                let format = match extension.as_str() {
-                                    "png" => Some(ImageFormat::Png),
-                                    "jpg" | "jpeg" => Some(ImageFormat::Jpeg),
-                                    "gif" => Some(ImageFormat::Gif),
-                                    "webp" => Some(ImageFormat::Webp),
-                                    _ => None,
-                                };
-                                if let Some(format) = format {
-                                    use std::io::Read;
-                                    let bytes = std::fs::File::open(&path).and_then(|file| {
-                                        let mut bytes = Vec::new();
-                                        file.take(10 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
-                                        Ok(bytes)
-                                    });
-                                    match bytes.map_err(|e| e.to_string()).and_then(|bytes| clipboard_image(format, &bytes)) {
-                                        Ok(value) => images.push((path.file_name().unwrap_or_default().to_string_lossy().into_owned(), value)),
-                                        Err(error) => errors.push(format!("{}: {error}", path.display())),
-                                    }
-                                } else {
-                                    paths.push(format!("{:?}", path.to_string_lossy()));
-                                }
-                            },
+                            ClipboardEntry::ExternalPaths(files) => {
+                                let found = ingest_paths(files.paths().to_vec());
+                                result.images.extend(found.images);
+                                result.files.extend(found.files);
+                                result.folders.extend(found.folders);
+                                result.errors.extend(found.errors);
+                            }
                             ClipboardEntry::String(_) => {}
                         }
                     }
-                    (images, paths, errors)
+                    result
                 }).await;
                 let _ = this.update(cx, |state, cx| {
-                    state.paste_loading = false;
-                    state.append_images(result.0, cx);
-                    if !result.1.is_empty() {
-                        state.editor.update(cx, |editor, cx| editor.insert_text(&result.1.join("\n"), cx));
-                    }
-                    for error in result.2 {
-                        state.push_toast(error, Tone::Warning, cx);
-                    }
-                    cx.notify();
+                    state.apply_ingested(result, cx);
                 });
             }).detach();
             return;
@@ -4021,5 +4219,79 @@ mod title_tests {
     #[test]
     fn an_empty_transcript_has_no_title() {
         assert_eq!(demand_title(&[], 80), None);
+    }
+}
+
+#[cfg(test)]
+mod attachment_tests {
+    use super::{admit_files, compose_message, ingest_paths, inspect_file, looks_binary, FileAttachment, MAX_FILE_BYTES, MAX_FILES_TOTAL_BYTES};
+    use std::path::PathBuf;
+
+    fn file(name: &str, bytes: u64) -> FileAttachment {
+        FileAttachment { id: 0, path: PathBuf::from(name), name: name.into(), bytes, missing: false }
+    }
+
+    #[test]
+    fn binary_samples() {
+        assert!(!looks_binary(b"hello\n"));
+        assert!(looks_binary(b"a\0b"));
+        assert!(!looks_binary("ação".as_bytes()));
+        assert!(!looks_binary(b"texto\xc3"));
+        assert!(looks_binary(b"\xff\xfeabcdef"));
+    }
+
+    #[test]
+    fn message_paths() {
+        assert_eq!(compose_message(" original \n", &[]), " original \n");
+        let files = [file("/a.rs", 1), file("/com \"aspas\".txt", 2)];
+        let block = "Arquivos anexados:\n- \"/a.rs\"\n- \"/com \\\"aspas\\\".txt\"";
+        assert_eq!(compose_message("leia \n", &files), format!("leia\n\n{block}"));
+        assert_eq!(compose_message("  \n", &files), block);
+    }
+
+    #[test]
+    fn admission_limits_and_duplicates() {
+        let (accepted, messages) = admit_files(&[file("a", 1)], vec![file("a", 1), file("b", 1), file("b", 1)]);
+        assert_eq!(accepted.len(), 1);
+        assert_eq!(messages, ["a já está anexado.", "b já está anexado."]);
+        let batch = (0..21).map(|i| file(&i.to_string(), 1)).collect();
+        let (accepted, messages) = admit_files(&[], batch);
+        assert_eq!(accepted.len(), 20);
+        assert_eq!(messages, ["Limite de 20 arquivos por mensagem; 1 ficaram de fora."]);
+        let existing = [file("a", MAX_FILES_TOTAL_BYTES - 1)];
+        let (accepted, messages) = admit_files(&existing, vec![file("b", 2), file("c", 1)]);
+        assert_eq!(accepted, [file("c", 1)]);
+        assert_eq!(messages, ["Arquivos acima do limite total de 32 MB foram ignorados."]);
+    }
+
+    #[test]
+    fn inspect_and_ingest() {
+        let root = std::env::temp_dir().join(format!("dish-files-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&root).unwrap();
+        let text = root.join("notes.txt");
+        let empty = root.join("empty.txt");
+        let binary = root.join("blob.bin");
+        let big = root.join("big.txt");
+        let png = root.join("fake.png");
+        std::fs::write(&text, "ação").unwrap();
+        std::fs::write(&empty, "").unwrap();
+        std::fs::write(&binary, b"a\0b").unwrap();
+        // O pipeline existente de imagem recusa conteúdo vazio, sem inspecionar a assinatura.
+        std::fs::write(&png, b"").unwrap();
+        std::fs::File::create(&big).unwrap().set_len(MAX_FILE_BYTES + 1).unwrap();
+        assert!(inspect_file(&root.join("missing")).unwrap_err().contains("não encontrado"));
+        assert!(inspect_file(&empty).unwrap_err().contains("vazio"));
+        assert!(inspect_file(&binary).unwrap_err().contains("binário"));
+        assert!(inspect_file(&big).unwrap_err().contains("10 MB"));
+        assert!(inspect_file(&root).unwrap_err().contains("não é um arquivo comum"));
+        let inspected = inspect_file(&text).unwrap();
+        assert_eq!(inspected.bytes, "ação".len() as u64);
+        assert_eq!(inspected.path, std::fs::canonicalize(&text).unwrap());
+        let result = ingest_paths(vec![png, root.clone(), text]);
+        assert!(result.images.is_empty());
+        assert_eq!(result.errors.len(), 1);
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.folders, [format!("{:?}", root.to_string_lossy())]);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

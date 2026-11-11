@@ -1,6 +1,6 @@
 //! The composer: a roomy writing surface with the model and reasoning controls
 //! where they belong — next to the thing they influence — and two unambiguous
-//! actions. No permanent shortcut row, no character counter.
+//! actions.
 //!
 //! The visual grammar: one raised card, recessed tokens for the technical
 //! controls, and a single light action for sending. The accent appears only
@@ -10,7 +10,7 @@ use gpui::prelude::*;
 use gpui::*;
 
 use crate::editor::standard_actions;
-use crate::state::AppState;
+use crate::state::{AppState, FileAttachment};
 use crate::theme;
 use crate::ui::icons::{Icon, icon};
 use super::test_probe::TestProbe;
@@ -23,6 +23,15 @@ pub fn composer(
     cx: &Context<AppState>,
 ) -> Div {
     let expanded = state.composer_expanded;
+    let stats = state.editor.read(cx).stats(cx);
+    let mut counter = format!("{} {}", stats.chars, if stats.chars == 1 { "caractere" } else { "caracteres" });
+    if stats.selected > 0 {
+        counter.push_str(&format!(" · {} selecionados", stats.selected));
+    }
+    counter.push_str(&format!(" · Ln {} Col {}", stats.line, stats.col));
+    if expanded {
+        counter.push_str(&format!(" · {} {}", stats.lines, if stats.lines == 1 { "linha" } else { "linhas" }));
+    }
     let editor = state.editor.clone();
     // O editor só conhece a viewport que o hospeda. Este handle é o mesmo que
     // o container abaixo registra com `track_scroll`; sem ele o caret anda
@@ -33,7 +42,7 @@ pub fn composer(
     // `tab_index` do Div não é aplicado pelo GPUI.
     let focus_handle = editor.read(cx).focus_handle.clone().tab_stop(true).tab_index(0);
     let focused = focus_handle.is_focused(window);
-    let empty = (editor.read(cx).is_empty(cx) && state.pasted_images.is_empty()) || state.paste_loading;
+    let empty = (editor.read(cx).is_empty(cx) && state.pasted_images.is_empty() && state.attached_files.is_empty()) || state.paste_loading;
     let streaming = state.streaming;
     let has_queue = !state.steering_queue.is_empty() || !state.follow_up_queue.is_empty();
     let focus_for_click = focus_handle.clone();
@@ -53,11 +62,23 @@ pub fn composer(
     if !state.ext_widget.is_empty() {
         column = column.child(inset_block(state));
     }
+    // O Dish ainda não tem drag interno: todo drag ativo vem do SO.
+    let drop_hint = cx.has_active_drag();
+    if drop_hint {
+        column = column.child(div().mx(px(theme::CHAT_INSET)).flex().flex_row().items_center()
+            .gap(px(theme::S2)).px(px(theme::S2 + 1.)).py(px(theme::S1 + 2.))
+            .rounded(theme::r_control()).bg(theme::surface()).border_1().border_color(theme::line_soft())
+            .child(icon(Icon::Plus, 12., theme::faint()))
+            .child(div().text_size(px(theme::TEXT_SM)).text_color(theme::dim()).child("Solte para anexar")));
+    }
     if state.paste_loading {
         column = column.child(loading_note(state));
     }
     for (index, (name, _)) in state.pasted_images.iter().enumerate() {
         column = column.child(image_note(index, name, cx));
+    }
+    for file in &state.attached_files {
+        column = column.child(file_note(file, cx));
     }
     if has_queue {
         column = column.child(queue(state, cx));
@@ -81,6 +102,7 @@ pub fn composer(
         } else {
             theme::line_strong()
         })
+        .group_drag_over::<ExternalPaths>("conversation-drop", |style| style.border_color(theme::accent_edge()).bg(theme::wash(theme::accent(), 0.06)))
         .bg(theme::surface_2())
         .shadow(if focused {
             theme::accent_glow(0.0)
@@ -112,6 +134,12 @@ pub fn composer(
                             .test_probe(|| "composer-input".into(), || serde_json::json!({
                                 "focused": focused,
                                 "expanded": expanded,
+                                "stats": stats,
+                                "loading": state.paste_loading,
+                                "drop_hint": drop_hint,
+                                "attachments": state.pasted_images.iter().map(|(name, _)| serde_json::json!({"kind": "image", "name": name}))
+                                    .chain(state.attached_files.iter().map(|file| serde_json::json!({"kind": "file", "name": file.name, "size": crate::settings::format_size(file.bytes), "missing": file.missing}))).collect::<Vec<_>>(),
+                                "toasts": state.toasts.iter().map(|toast| &toast.text).collect::<Vec<_>>(),
                             }))
                             .flex_1()
                             .min_w(px(0.))
@@ -150,6 +178,15 @@ pub fn composer(
             )
             .child(
                 div()
+                    .flex_none()
+                    .px(px(theme::S4))
+                    .text_size(px(theme::TEXT_XS))
+                    .text_color(theme::faint())
+                    .text_align(TextAlign::Right)
+                    .child(counter),
+            )
+            .child(
+                div()
                     .flex()
                     .flex_row()
                     .items_center()
@@ -167,6 +204,7 @@ pub fn composer(
                             .min_w(px(0.))
                             .flex_1()
                             .flex_wrap()
+                            .child(attach_control(state, cx))
                             .child(model_control(state, cx))
                             .child(effort_control(state, cx)),
                     )
@@ -213,6 +251,25 @@ fn control_shell(id: impl Into<ElementId>) -> Stateful<Div> {
         .cursor_pointer()
         .hover(|style| style.bg(theme::hover()))
         .focus(|style| style.bg(theme::hover()).shadow(theme::focus_ring()))
+}
+
+fn attach_control(state: &AppState, cx: &Context<AppState>) -> AnyElement {
+    control_shell("attach-button")
+        .test_probe(|| "attach-button".into(), || serde_json::json!({}))
+        .when(state.paste_loading, |element| element.opacity(0.4))
+        .on_key_down(cx.listener(|state, event: &KeyDownEvent, window, cx| {
+            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                state.pick_attachments(cx);
+                cx.stop_propagation();
+            } else if event.keystroke.key == "tab" {
+                if event.keystroke.modifiers.shift { window.focus_prev(cx); } else { window.focus_next(cx); }
+                cx.stop_propagation();
+            }
+        }))
+        .on_click(cx.listener(|state, _: &ClickEvent, _, cx| state.pick_attachments(cx)))
+        .child(icon(Icon::Plus, 12., theme::faint()))
+        .child(div().text_size(px(theme::TEXT_SM)).text_color(theme::dim()).child("Anexar"))
+        .into_any_element()
 }
 
 fn model_control(state: &AppState, cx: &Context<AppState>) -> AnyElement {
@@ -474,6 +531,25 @@ fn loading_note(_state: &AppState) -> Div {
                 .text_color(theme::dim())
                 .child("Preparando colagem…"),
         )
+}
+
+fn file_note(file: &FileAttachment, cx: &Context<AppState>) -> Div {
+    let id = file.id;
+    let name = file.name.clone();
+    div().mx(px(theme::CHAT_INSET)).flex().flex_row().items_center()
+        .gap(px(theme::S2)).px(px(theme::S2 + 1.)).py(px(theme::S1 + 2.))
+        .rounded(theme::r_control()).bg(theme::surface()).border_1().border_color(theme::line_soft())
+        .child(icon(if file.missing { Icon::Alert } else { Icon::File }, 12., if file.missing { theme::failure() } else { theme::faint() }))
+        .child(div().flex_1().min_w(px(0.)).truncate().text_size(px(theme::TEXT_SM)).text_color(theme::dim()).child(SharedString::from(file.name.clone())))
+        .child(div().flex_none().font_family(theme::FONT_MONO).text_size(px(theme::TEXT_XS))
+            .text_color(if file.missing { theme::failure() } else { theme::faint() })
+            .child(SharedString::from(if file.missing { "sumiu do disco".into() } else { crate::settings::format_size(file.bytes) })))
+        .child(div().id(("remove-attached-file", id as usize))
+            .test_probe(move || format!("remove-attached-file:{name}"), || serde_json::json!({}))
+            .flex_none().px(px(theme::S1 + 1.)).py(px(2.)).rounded(theme::r_control()).cursor_pointer()
+            .hover(|style| style.text_color(theme::failure()).bg(theme::hover()))
+            .child(icon(Icon::Close, 11., theme::faint()))
+            .on_click(cx.listener(move |state, _: &ClickEvent, _, cx| { state.remove_file(id); cx.notify(); })))
 }
 
 fn image_note(index: usize, name: &str, cx: &Context<AppState>) -> Div {

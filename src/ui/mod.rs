@@ -28,7 +28,7 @@ mod git_context_view;
 
 actions!(
     dish_ui,
-    [Dismiss, ModalSubmit, ToggleSidebar, NewSession, MenuUp, MenuDown, MenuAccept, PreviousFocus, CycleEffort, ToggleHelp, OpenModels, CloseWindow, ModelUp, ModelDown, ModelAccept, ModalUp, ModalDown, ToggleComposer]
+    [Dismiss, ModalSubmit, ToggleSidebar, NewSession, MenuUp, MenuDown, MenuAccept, PreviousFocus, CycleEffort, ToggleHelp, OpenModels, CloseWindow, ModelUp, ModelDown, ModelAccept, ModalUp, ModalDown, ToggleComposer, DuplicateLineDown, DuplicateLineUp]
 );
 
 impl Render for AppState {
@@ -56,6 +56,12 @@ impl Render for AppState {
         let (slash, slash_index) = self.slash_state(cx);
         let expanded = self.composer_expanded;
         let mut main_column = div()
+            .group("conversation-drop")
+            .on_drop(cx.listener(|state, paths: &ExternalPaths, window, cx| {
+                state.attach_paths(paths.paths().to_vec(), cx);
+                let focus = state.editor.read(cx).focus_handle.clone();
+                focus.focus(window, cx);
+            }))
             .flex_1()
             .min_w(px(0.))
             .min_h(px(0.))
