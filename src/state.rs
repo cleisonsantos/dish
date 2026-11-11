@@ -3540,8 +3540,18 @@ impl AppState {
         if target == self.editor && self.paste_loading {
             return;
         }
+        // Um clipboard vazio pode ainda ter `text/uri-list` servido pelo
+        // utilitário: o backend do GPUI devolve uma string vazia em vez de
+        // nada, então "sem texto" também precisa cair no fallback. Imagem já
+        // entregue pelo GPUI não paga essa chamada.
+        let has_attachment = item
+            .entries()
+            .iter()
+            .any(|entry| matches!(entry, ClipboardEntry::Image(_) | ClipboardEntry::ExternalPaths(_)));
+        let needs_paths = !has_attachment
+            && (item.entries().is_empty() || item.text().is_none_or(|text| text.trim().is_empty()));
         if target == self.editor && !self.paste_loading
-            && (item.entries().is_empty() || item.entries().iter().any(|entry| matches!(entry, ClipboardEntry::Image(_) | ClipboardEntry::ExternalPaths(_))))
+            && (has_attachment || needs_paths)
         {
             self.paste_loading = true;
             cx.notify();
@@ -3549,7 +3559,7 @@ impl AppState {
                 let result = cx.background_executor().spawn(async move {
                     // GPUI's Linux clipboard backend does not request URI-list
                     // MIME types. Optional desktop utilities fill that gap.
-                    if item.entries().is_empty() {
+                    if needs_paths {
                         let output = if std::env::var_os("WAYLAND_DISPLAY").is_some() {
                             std::process::Command::new("wl-paste").args(["--no-newline", "--type", "text/uri-list"]).output()
                         } else {
