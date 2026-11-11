@@ -165,9 +165,17 @@ fn compose_message(text: &str, files: &[FileAttachment]) -> String {
 }
 
 /// Gancho exclusivo do smoke: evita abrir um seletor nativo no teste.
+///
+/// O valor é um arquivo com um caminho por linha, relido a cada clique, para o
+/// teste escolher anexos diferentes sem reiniciar o app. Um valor que não é
+/// arquivo continua sendo lido como lista separada por `:`.
 fn test_pick_paths() -> Option<Vec<PathBuf>> {
-    std::env::var_os("DISH_TEST_PICK_PATHS").map(|value| {
-        if value.is_empty() { Vec::new() } else { std::env::split_paths(&value).collect() }
+    let value = std::env::var_os("DISH_TEST_PICK_PATHS")?;
+    let text = std::fs::read_to_string(&value).ok();
+    Some(match text {
+        Some(text) => text.lines().map(str::trim).filter(|line| !line.is_empty()).map(PathBuf::from).collect(),
+        None if value.is_empty() => Vec::new(),
+        None => std::env::split_paths(&value).collect(),
     })
 }
 

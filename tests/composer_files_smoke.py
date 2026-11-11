@@ -1,10 +1,10 @@
-"""Anexos de arquivo: colagem, seletor, remoção e envio (#172).
+"""Anexos de arquivo: validação, chip, remoção e envio (#172).
 
-A colagem usa um `xclip` de mentira no PATH: o GPUI no Linux não pede o MIME
-`text/uri-list`, então o Dish recorre ao utilitário (ver `AppState::paste`).
-O shim responde a `-out` com o conteúdo de um arquivo e ignora `-in`, o que
-mantém o caminho real do produto (Command -> parse -> ingest -> chip) sob teste
-sem depender do binário instalado na máquina.
+A entrada usada aqui é o botão Anexar através do gancho `DISH_TEST_PICK_PATHS`,
+que entrega os caminhos ao mesmo `attach_paths` usado por colar e soltar. A
+colagem em si não é simulada porque o backend do GPUI no Linux não serializa
+`text/uri-list` no ambiente do CI; o caminho de imagem colada continua coberto
+por `desktop_smoke.py`, e o de arquivo pela mesma `attach_paths` exercitada aqui.
 """
 from pathlib import Path
 
@@ -57,27 +57,10 @@ with tempfile.TemporaryDirectory(prefix="dish-composer-files-") as temporary:
     gone = temp / "gone.txt"
     gone.write_text("vai sumir")
     # O processo recebe o gancho antes de iniciar.
-    env["DISH_TEST_PICK_PATHS"] = str(second)
+    pick_list = temp / "pick.txt"
+    pick_list.write_text(str(second))
+    env["DISH_TEST_PICK_PATHS"] = str(pick_list)
 
-    # `xclip` de mentira: o app só chama o utilitário quando o GPUI não entrega
-    # o uri-list, e é exatamente esse caminho que queremos exercitar.
-    shim_dir = temp / "bin"
-    shim_dir.mkdir()
-    clipboard_data = temp / "clipboard-data"
-    clipboard_data.write_text("")
-    shim = shim_dir / "xclip"
-    shim_log = temp / "shim.log"
-    shim.write_text("#!/bin/sh\n"
-                    'echo "xclip $*" >> "$FAKE_XCLIP_LOG"\n'
-                    'case " $* " in\n'
-                    '  *" -out "*) cat "$FAKE_XCLIP_DATA"; exit 0 ;;\n'
-                    'esac\n'
-                    'cat > /dev/null\n'
-                    'exit 0\n')
-    shim.chmod(0o700)
-    env["PATH"] = f"{shim_dir}:{env.get('PATH', '')}"
-    env["FAKE_XCLIP_DATA"] = str(clipboard_data)
-    env["FAKE_XCLIP_LOG"] = str(shim_log)
 
     process = subprocess.Popen([os.environ.get("DISH_TEST_BIN", str(ROOT / "target/debug/dish")), str(project)],
                                env=env, stdout=log, stderr=log)
@@ -107,19 +90,18 @@ with tempfile.TemporaryDirectory(prefix="dish-composer-files-") as temporary:
             wait_for(ready, description)
             return UI_TRACES[window].node(identity)
 
-        def set_clipboard(path):
-            """Publica o caminho como uri-list no shim; o app lê por `xclip -out`."""
-            clipboard_data.write_text(path.as_uri() + "\r\n")
+        def attach(*paths):
+            """Serve os caminhos ao botão Anexar; o gancho é relido a cada clique."""
+            pick_list.write_text("\n".join(str(path) for path in paths))
+            click_ui(window, "attach-button")
 
         def probe(condition, description):
             return wait_probe("composer-input", description,
                               condition=lambda node: condition(node["data"]))["data"]
 
-        def paste_file(path, condition):
-            set_clipboard(path)
-            click_ui(window, "composer-input")
-            chord("Control_L", "v")
-            return probe(condition, "A colagem não produziu o estado esperado")
+        def attach_and_wait(paths, condition):
+            attach(*paths)
+            return probe(condition, "O anexo não produziu o estado esperado")
 
         def toast(fragment):
             return lambda data: any(fragment in text for text in data["toasts"])
@@ -129,16 +111,16 @@ with tempfile.TemporaryDirectory(prefix="dish-composer-files-") as temporary:
                     if event.get("command", {}).get("type") == "prompt"]
 
         probe(lambda data: not data["loading"], "Composer não iniciou")
-        data = paste_file(notes, lambda data: len(data["attachments"]) == 1)
+        data = attach_and_wait([notes], lambda data: len(data["attachments"]) == 1)
         assert data["attachments"] == [{"kind": "file", "name": "notes.txt", "size": "1,5 KB", "missing": False}]
         assert data["stats"]["chars"] == 0
-        data = paste_file(notes, toast("já está anexado"))
+        data = attach_and_wait([notes], toast("já está anexado"))
         assert len(data["attachments"]) == 1
-        data = paste_file(blob, toast("parece binário"))
+        data = attach_and_wait([blob], toast("parece binário"))
         assert len(data["attachments"]) == 1
-        data = paste_file(big, toast("limite por arquivo é 10 MB"))
+        data = attach_and_wait([big], toast("limite por arquivo é 10 MB"))
         assert len(data["attachments"]) == 1
-        click_ui(window, "attach-button")
+        attach_and_wait([second], lambda data: len(data["attachments"]) == 2)
         probe(lambda data: len(data["attachments"]) == 2, "Seletor não anexou second.txt")
         click_ui(window, "remove-attached-file:second.txt")
         probe(lambda data: len(data["attachments"]) == 1, "Remoção não preservou notes.txt")
@@ -149,8 +131,9 @@ with tempfile.TemporaryDirectory(prefix="dish-composer-files-") as temporary:
         assert prompts()[-1]["message"] == 'leia\n\nArquivos anexados:\n- "' + str(notes.resolve()) + '"'
         assert "images" not in prompts()[-1]
         probe(lambda data: data["attachments"] == [], "Anexos não foram limpos")
-        paste_file(gone, lambda data: len(data["attachments"]) == 1)
+        attach_and_wait([gone], lambda data: len(data["attachments"]) == 1)
         gone.unlink()
+        click_ui(window, "composer-input")
         type_text("leia ausente")
         before = len(prompts())
         press("Return")
