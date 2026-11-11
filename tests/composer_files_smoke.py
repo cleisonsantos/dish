@@ -98,7 +98,25 @@ with tempfile.TemporaryDirectory(prefix="dish-composer-files-") as temporary:
             wait_probe("composer-input", "Anexo anterior não terminou",
                        lambda node: not node["data"]["loading"])
             pick_list.write_text("\n".join(str(path) for path in paths))
-            click_ui(window, "attach-button")
+
+            def estado():
+                expose_window(window)
+                node = UI_TRACES[window].node("composer-input")
+                return json.dumps(node["data"], sort_keys=True) if node else ""
+
+            antes = estado()
+            for tentativa in (1, 2):
+                click_ui(window, "attach-button")
+                # Um clique perdido (janela sem foco no instante do evento)
+                # deixaria o passo seguinte esperando para sempre: refaz uma vez.
+                fim = time.monotonic() + 3
+                while time.monotonic() < fim:
+                    if estado() != antes:
+                        return
+                    time.sleep(0.05)
+                if tentativa == 2:
+                    raise AssertionError(
+                        f"O clique em Anexar não teve efeito; probe={antes}")
 
         def probe(condition, description):
             return wait_probe("composer-input", description,
@@ -106,7 +124,14 @@ with tempfile.TemporaryDirectory(prefix="dish-composer-files-") as temporary:
 
         def attach_and_wait(paths, condition):
             attach(*paths)
-            return probe(condition, "O anexo não produziu o estado esperado")
+            try:
+                return probe(condition, "O anexo não produziu o estado esperado")
+            except AssertionError:
+                node = UI_TRACES[window].node("composer-input")
+                raise AssertionError(
+                    f"O anexo {[path.name for path in paths]} não produziu o estado esperado; "
+                    f"probe={json.dumps(node['data']) if node else 'ausente'}"
+                )
 
         def toast(fragment):
             return lambda data: any(fragment in text for text in data["toasts"])
