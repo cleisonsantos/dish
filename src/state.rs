@@ -568,6 +568,7 @@ impl AppState {
         list_state.set_scroll_handler(move |_event, _window, cx| {
             weak.update(cx, |_state, cx| cx.notify()).ok();
         });
+        cx.observe(&editor, |_, _, cx| cx.notify()).detach();
         cx.observe(&model_search, |_, _, cx| cx.notify()).detach();
         cx.observe(&help_search, |_, _, cx| cx.notify()).detach();
 

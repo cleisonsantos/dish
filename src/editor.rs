@@ -127,6 +127,57 @@ impl Selection {
     }
 }
 
+/// Contagens em caracteres Unicode; linha e coluna começam em um.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+pub struct EditorStats {
+    pub chars: usize,
+    pub lines: usize,
+    pub line: usize,
+    pub col: usize,
+    pub selected: usize,
+}
+
+fn text_stats(content: &str, mut selection: Selection) -> EditorStats {
+    selection.clamp(content);
+    let prefix = &content[..selection.head];
+    EditorStats {
+        chars: content.chars().count(),
+        lines: content.matches('\n').count() + 1,
+        line: prefix.matches('\n').count() + 1,
+        col: prefix.rsplit('\n').next().unwrap_or_default().chars().count() + 1,
+        selected: content[selection.range()].chars().count(),
+    }
+}
+
+/// Planeja uma inserção única, sem acrescentar uma quebra ao fim do texto.
+fn duplicate_line_edit(
+    content: &str,
+    mut selection: Selection,
+    below: bool,
+) -> (usize, String, Selection) {
+    selection.clamp(content);
+    let start = content[..selection.start()]
+        .rfind('\n')
+        .map_or(0, |at| at + 1);
+    let end = content[selection.end()..]
+        .find('\n')
+        .map_or(content.len(), |at| selection.end() + at);
+    let block = &content[start..end];
+    let (at, inserted, copy_start) = if below {
+        (end, format!("\n{block}"), end + 1)
+    } else {
+        (start, format!("{block}\n"), start)
+    };
+    let copied = if selection.is_empty() {
+        Selection::caret(copy_start + selection.head - start)
+    } else if selection.reversed() {
+        Selection::new(copy_start + block.len(), copy_start)
+    } else {
+        Selection::new(copy_start, copy_start + block.len())
+    };
+    (at, inserted, copied)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Edit {
     Insert,
@@ -423,6 +474,38 @@ impl Editor {
 
     pub fn text(&self, cx: &App) -> String {
         self.value.read(cx).clone()
+    }
+
+    pub fn stats(&self, cx: &App) -> EditorStats {
+        text_stats(self.value.read(cx), self.selection)
+    }
+
+    fn duplicate_line(&mut self, below: bool, cx: &mut Context<Self>) {
+        if self.read_only {
+            return;
+        }
+        let (at, inserted, copied) = duplicate_line_edit(self.value.read(cx), self.selection, below);
+        self.replace_range(at..at, &inserted, Edit::Other, cx);
+        self.selection = copied;
+        cx.notify();
+    }
+
+    fn duplicate_line_down(
+        &mut self,
+        _: &crate::ui::DuplicateLineDown,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.duplicate_line(true, cx);
+    }
+
+    fn duplicate_line_up(
+        &mut self,
+        _: &crate::ui::DuplicateLineUp,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.duplicate_line(false, cx);
     }
 
     pub fn is_empty(&self, cx: &App) -> bool {
@@ -1956,6 +2039,8 @@ pub fn standard_actions<E: InteractiveElement>(editor: Entity<Editor>) -> impl F
         let element = bind!(element, DeleteWordBack, delete_word_back);
         let element = bind!(element, DeleteWordForward, delete_word_forward);
         let element = bind!(element, Newline, insert_newline);
+        let element = bind!(element, crate::ui::DuplicateLineDown, duplicate_line_down);
+        let element = bind!(element, crate::ui::DuplicateLineUp, duplicate_line_up);
         let element = bind!(element, Undo, undo);
         bind!(element, Redo, redo)
     }
@@ -1968,6 +2053,53 @@ mod tests {
         scroll_offset_for_caret, source_offset, trim_snapshots, vertical_target, PromptHistory,
         Selection, Snapshot,
     };
+
+    fn duplicated(text: &str, selection: Selection, below: bool) -> (String, Selection) {
+        let (at, inserted, copied) = super::duplicate_line_edit(text, selection, below);
+        let mut result = text.to_owned();
+        result.replace_range(at..at, &inserted);
+        (result, copied)
+    }
+
+    #[test]
+    fn duplicate_middle_line_keeps_caret_in_copy() {
+        assert_eq!(duplicated("a\nbc\nd", Selection::caret(3), true),
+                   ("a\nbc\nbc\nd".into(), Selection::caret(6)));
+    }
+
+    #[test]
+    fn duplicate_last_line_preserves_missing_final_newline() {
+        assert_eq!(duplicated("a\nbc", Selection::caret(4), true),
+                   ("a\nbc\nbc".into(), Selection::caret(7)));
+    }
+
+    #[test]
+    fn duplicate_single_line() {
+        assert_eq!(duplicated("ação", Selection::caret(6), true),
+                   ("ação\nação".into(), Selection::caret(13)));
+    }
+
+    #[test]
+    fn duplicate_selected_lines_preserves_direction() {
+        assert_eq!(duplicated("a\nb\nc", Selection::new(0, 3), true),
+                   ("a\nb\na\nb\nc".into(), Selection::new(4, 7)));
+        assert_eq!(duplicated("a\nb\nc", Selection::new(3, 0), false),
+                   ("a\nb\na\nb\nc".into(), Selection::new(3, 0)));
+    }
+
+    #[test]
+    fn duplicate_first_line_above() {
+        assert_eq!(duplicated("ab\nc", Selection::caret(1), false),
+                   ("ab\nab\nc".into(), Selection::caret(1)));
+    }
+
+    #[test]
+    fn stats_count_characters_and_one_based_positions() {
+        let stats = super::text_stats("ação\nb", Selection::new(1, 5));
+        assert_eq!((stats.chars, stats.lines, stats.line, stats.col, stats.selected), (6, 2, 1, 4, 2));
+        let stats = super::text_stats("ação\nb", Selection::caret(8));
+        assert_eq!((stats.line, stats.col, stats.selected), (2, 2, 0));
+    }
 
     #[test]
     fn undo_budget_drops_oldest_snapshots_but_keeps_the_latest() {

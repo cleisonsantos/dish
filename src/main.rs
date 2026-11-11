@@ -302,6 +302,8 @@ fn main() {
             KeyBinding::new("shift-enter", Newline, Some("DishModal")),
             KeyBinding::new("tab", MenuAccept, Some("DishInput")),
             KeyBinding::new("shift-tab", PreviousFocus, Some("DishInput")),
+            KeyBinding::new("shift-alt-down", ui::DuplicateLineDown, Some("DishInput")),
+            KeyBinding::new("shift-alt-up", ui::DuplicateLineUp, Some("DishInput")),
             KeyBinding::new("alt-shift-e", ui::ToggleComposer, Some("DishInput")),
             KeyBinding::new("escape", Dismiss, None),
             KeyBinding::new("ctrl-b", ToggleSidebar, None),

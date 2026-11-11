@@ -1,6 +1,6 @@
 //! The composer: a roomy writing surface with the model and reasoning controls
 //! where they belong — next to the thing they influence — and two unambiguous
-//! actions. No permanent shortcut row, no character counter.
+//! actions.
 //!
 //! The visual grammar: one raised card, recessed tokens for the technical
 //! controls, and a single light action for sending. The accent appears only
@@ -23,6 +23,15 @@ pub fn composer(
     cx: &Context<AppState>,
 ) -> Div {
     let expanded = state.composer_expanded;
+    let stats = state.editor.read(cx).stats(cx);
+    let mut counter = format!("{} {}", stats.chars, if stats.chars == 1 { "caractere" } else { "caracteres" });
+    if stats.selected > 0 {
+        counter.push_str(&format!(" · {} selecionados", stats.selected));
+    }
+    counter.push_str(&format!(" · Ln {} Col {}", stats.line, stats.col));
+    if expanded {
+        counter.push_str(&format!(" · {} {}", stats.lines, if stats.lines == 1 { "linha" } else { "linhas" }));
+    }
     let editor = state.editor.clone();
     // O editor só conhece a viewport que o hospeda. Este handle é o mesmo que
     // o container abaixo registra com `track_scroll`; sem ele o caret anda
@@ -112,6 +121,7 @@ pub fn composer(
                             .test_probe(|| "composer-input".into(), || serde_json::json!({
                                 "focused": focused,
                                 "expanded": expanded,
+                                "stats": stats,
                             }))
                             .flex_1()
                             .min_w(px(0.))
@@ -147,6 +157,15 @@ pub fn composer(
                                     .child(editor.clone()),
                             ),
                     ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .px(px(theme::S4))
+                    .text_size(px(theme::TEXT_XS))
+                    .text_color(theme::faint())
+                    .text_align(TextAlign::Right)
+                    .child(counter),
             )
             .child(
                 div()
