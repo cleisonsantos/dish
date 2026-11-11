@@ -436,8 +436,9 @@ See [the UI smoke test guide](docs/smoke-tests.md) for prerequisites, commands, 
 ## Code signing policy
 
 Windows code signing is pending with the SignPath Foundation; current releases
-are unsigned. When signing is enabled it will use free code signing provided by
-SignPath.io, certificate by SignPath Foundation.
+are unsigned. Free code signing provided by SignPath.io, certificate by SignPath Foundation —
+this attribution is kept verbatim as required, and it applies as soon as signing
+is enabled.
 
 See the [code signing policy](docs/code-signing.md) for the current state,
 verification instructions and approval roles.
