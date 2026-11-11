@@ -66,7 +66,9 @@ with tempfile.TemporaryDirectory(prefix="dish-composer-files-") as temporary:
     clipboard_data = temp / "clipboard-data"
     clipboard_data.write_text("")
     shim = shim_dir / "xclip"
+    shim_log = temp / "shim.log"
     shim.write_text("#!/bin/sh\n"
+                    'echo "xclip $*" >> "$FAKE_XCLIP_LOG"\n'
                     'case " $* " in\n'
                     '  *" -out "*) cat "$FAKE_XCLIP_DATA"; exit 0 ;;\n'
                     'esac\n'
@@ -75,6 +77,7 @@ with tempfile.TemporaryDirectory(prefix="dish-composer-files-") as temporary:
     shim.chmod(0o700)
     env["PATH"] = f"{shim_dir}:{env.get('PATH', '')}"
     env["FAKE_XCLIP_DATA"] = str(clipboard_data)
+    env["FAKE_XCLIP_LOG"] = str(shim_log)
 
     process = subprocess.Popen([os.environ.get("DISH_TEST_BIN", str(ROOT / "target/debug/dish")), str(project)],
                                env=env, stdout=log, stderr=log)
@@ -164,6 +167,8 @@ with tempfile.TemporaryDirectory(prefix="dish-composer-files-") as temporary:
         print("Composer expanded failure screenshot:", screenshot)
         if window:
             save_ui_trace(window, "dish-composer")
+        print("PATH:", env.get("PATH"))
+        print("shim chamado:", shim_log.read_text() if shim_log.exists() else "NAO")
         print(log_path.read_text() if log_path.exists() else "No fixture events")
         print((temp / "dish.log").read_text())
         raise
