@@ -92,6 +92,11 @@ with tempfile.TemporaryDirectory(prefix="dish-composer-files-") as temporary:
 
         def attach(*paths):
             """Serve os caminhos ao botão Anexar; o gancho é relido a cada clique."""
+            # `attach_paths` ignora clique novo enquanto a ingestão anterior está
+            # em andamento; esperar o fim evita perder o anexo por corrida — era
+            # assim que este smoke falhava de vez em quando no CI.
+            wait_probe("composer-input", "Anexo anterior não terminou",
+                       lambda node: not node["data"]["loading"])
             pick_list.write_text("\n".join(str(path) for path in paths))
             click_ui(window, "attach-button")
 
