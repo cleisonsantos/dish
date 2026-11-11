@@ -186,8 +186,6 @@ with tempfile.TemporaryDirectory(prefix="dish-composer-files-") as temporary:
         print("Composer expanded failure screenshot:", screenshot)
         if window:
             save_ui_trace(window, "dish-composer")
-        print("PATH:", env.get("PATH"))
-        print("shim chamado:", shim_log.read_text() if shim_log.exists() else "NAO")
         print(log_path.read_text() if log_path.exists() else "No fixture events")
         print((temp / "dish.log").read_text())
         raise
