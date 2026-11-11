@@ -44,6 +44,8 @@ Unicode true
 !define NODE_SHA256 "ca1bff5d8ead13c9f2ea404a176db46bd430704d5b5113734049fa365e7799e2"
 !define NODE_ZIP "node-v${NODE_VERSION}-win-x64"
 !define NODE_URL "https://nodejs.org/dist/v${NODE_VERSION}/${NODE_ZIP}.zip"
+; 64 dígitos hexadecimais (32 bytes) de um SHA-256.
+!define SHA256_HEX_LEN 64
 !define PI_PACKAGE "@earendil-works/pi-coding-agent"
 
 Name "${APP_NAME} ${VERSION}"
@@ -94,6 +96,7 @@ Var NodeCheckbox
 Var PiCheckbox
 Var DishCheckbox
 Var RunDish
+Var PathError
 
 ; --------------------------------------------------------------- detecção
 
@@ -476,39 +479,239 @@ Function InstallNode
   ${Loop}
 FunctionEnd
 
-; Tudo em nsExec::ExecToLog: o registro mostra o que aconteceu. O PowerShell
-; roda inline (-Command), sem contornar a política de execução, sem iex e sem
-; executar arquivo .ps1.
+; --------------------------------------------------------------- verificação e PATH
+
+; 1 se o texto contém o SHA-256 esperado. Ignora espaços e quebras de linha
+; (o certutil separa os bytes com espaço nas versões antigas) e não diferencia
+; maiúsculas de minúsculas (StrCmp é case-insensitive).
+Function Sha256InText
+  Exch $R0
+  Push $R1
+  Push $R2
+  Push $R3
+  Push $R4
+  Push $R5
+  StrCpy $R1 ""
+  StrCpy $R2 0
+  ${Do}
+    StrCpy $R3 $R0 1 $R2
+    ${If} $R3 == ""
+      ${ExitDo}
+    ${EndIf}
+    ${If} $R3 != " "
+    ${AndIf} $R3 != "$\r"
+    ${AndIf} $R3 != "$\n"
+      StrCpy $R1 "$R1$R3"
+    ${EndIf}
+    IntOp $R2 $R2 + 1
+  ${Loop}
+  StrCpy $R5 "0"
+  StrCpy $R2 0
+  ${Do}
+    StrCpy $R3 $R1 ${SHA256_HEX_LEN} $R2
+    StrLen $R4 $R3
+    ${If} $R4 < ${SHA256_HEX_LEN}
+      ${ExitDo}
+    ${EndIf}
+    ${If} $R3 == "${NODE_SHA256}"
+      StrCpy $R5 "1"
+      ${ExitDo}
+    ${EndIf}
+    IntOp $R2 $R2 + 1
+  ${Loop}
+  StrCpy $R0 $R5
+  Pop $R5
+  Pop $R4
+  Pop $R3
+  Pop $R2
+  Pop $R1
+  Exch $R0
+FunctionEnd
+
+; Acrescenta %LOCALAPPDATA%\dish\node ao PATH do usuário sem shell externo.
+; ReadRegStr devolve o REG_EXPAND_SZ como está (sem expandir %VAR%) e
+; WriteRegExpandStr mantém o tipo. O limite de ${NSIS_MAX_STRLEN} caracteres
+; das strings do NSIS é tratado de frente: se acrescentar o Node passar do
+; limite, nada é escrito e a mensagem pede a inclusão manual — nunca trunca.
+; Saída: pilha = "ok" ou a mensagem de erro.
+Function UpdateUserPath
+  Push $R0
+  Push $R1
+  Push $R2
+  Push $R3
+  Push $R4
+  Push $R9
+  StrCpy $PathError ""
+
+  ; EnumRegValue diz se o valor existe mesmo quando ReadRegStr não consegue
+  ; lê-lo (acima do limite): separa "sem PATH" de "PATH ilegível".
+  StrCpy $R3 "0"
+  StrCpy $R4 0
+  ${Do}
+    EnumRegValue $R2 HKCU "Environment" $R4
+    ${If} ${Errors}
+      ${ExitDo}
+    ${EndIf}
+    ${If} $R2 == "Path"
+      StrCpy $R3 "1"
+      ${ExitDo}
+    ${EndIf}
+    IntOp $R4 $R4 + 1
+  ${Loop}
+
+  ReadRegStr $R0 HKCU "Environment" "Path"
+  ${If} ${Errors}
+    ${If} $R3 == "1"
+      StrCpy $PathError "o PATH do usuário passa de ${NSIS_MAX_STRLEN} caracteres e não pode ser lido pelo instalador; ele não foi alterado. Acrescente %LOCALAPPDATA%\dish\node ao PATH manualmente."
+      Goto pathFinish
+    ${EndIf}
+    StrCpy $R0 ""
+  ${EndIf}
+
+  ; Idempotência: compara entrada por entrada, sem barra final nem aspas.
+  StrCpy $R9 "0"
+  StrCpy $R1 "$R0;"
+  StrCpy $R2 ""
+  StrCpy $R4 0
+  ${Do}
+    StrCpy $R3 $R1 1 $R4
+    ${If} $R3 == ""
+      ${ExitDo}
+    ${EndIf}
+    ${If} $R3 == ";"
+      StrCpy $R3 $R2 "" -1
+      ${If} $R3 == "\"
+      ${OrIf} $R3 == '"'
+        StrCpy $R2 $R2 -1
+      ${EndIf}
+      StrCpy $R3 $R2 1
+      ${If} $R3 == '"'
+        StrCpy $R2 $R2 "" 1
+      ${EndIf}
+      ${If} $R2 == "$LOCALAPPDATA\dish\node"
+      ${OrIf} $R2 == "%LOCALAPPDATA%\dish\node"
+        StrCpy $R9 "1"
+        ${ExitDo}
+      ${EndIf}
+      StrCpy $R2 ""
+    ${Else}
+      StrCpy $R2 "$R2$R3"
+    ${EndIf}
+    IntOp $R4 $R4 + 1
+  ${Loop}
+
+  ${If} $R9 == "1"
+    DetailPrint "O PATH do usuário já contém o Node.js."
+    Goto pathFinish
+  ${EndIf}
+
+  ; O PATH novo precisa caber inteiro na string do NSIS (com ';' e terminador).
+  StrLen $R1 "$LOCALAPPDATA\dish\node"
+  IntOp $R1 $R1 + 1
+  IntOp $R2 ${NSIS_MAX_STRLEN} - 1
+  IntOp $R2 $R2 - $R1
+  StrLen $R3 "$R0"
+  ${If} $R3 > $R2
+    StrCpy $PathError "o PATH do usuário tem $R3 caracteres e acrescentar o Node.js passaria do limite de ${NSIS_MAX_STRLEN} do instalador; ele não foi alterado. Acrescente %LOCALAPPDATA%\dish\node ao PATH manualmente."
+    Goto pathFinish
+  ${EndIf}
+
+  ${If} $R0 == ""
+    StrCpy $R1 "$LOCALAPPDATA\dish\node"
+  ${Else}
+    StrCpy $R1 "$R0;$LOCALAPPDATA\dish\node"
+  ${EndIf}
+  WriteRegExpandStr HKCU "Environment" "Path" "$R1"
+  ${If} ${Errors}
+    StrCpy $PathError "não foi possível gravar HKCU\Environment\Path"
+    Goto pathFinish
+  ${EndIf}
+  SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
+  DetailPrint "Node.js adicionado ao PATH do usuário."
+
+  pathFinish:
+  Pop $R9
+  Pop $R4
+  Pop $R3
+  Pop $R2
+  Pop $R1
+  Pop $R0
+  ${If} $PathError == ""
+    Push "ok"
+  ${Else}
+    Push "$PathError"
+  ${EndIf}
+FunctionEnd
+
+; Nenhum interpretador de script: o download usa a API do Windows (urlmon,
+; pelo plug-in System que acompanha o NSIS), a conferência usa o certutil.exe do
+; Windows e a extração usa o tar.exe do Windows 10 1803+. Nada é baixado no build.
 Function InstallNodeOnce
   InitPluginsDir
   StrCpy $0 "$PLUGINSDIR\${NODE_ZIP}.zip"
+  Delete "$0"
 
   DetailPrint "Baixando o Node.js ${NODE_VERSION} de nodejs.org..."
-  nsExec::ExecToLog `powershell.exe -NoProfile -NonInteractive -Command "$$ProgressPreference='SilentlyContinue'; $$ErrorActionPreference='Stop'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; try { Invoke-WebRequest -UseBasicParsing -Uri '${NODE_URL}' -OutFile '$0' } catch { Write-Output $$_.Exception.Message; exit 1 }"`
-  Pop $1
+  ; URLDownloadToFileW devolve S_OK (0) e usa HTTPS/proxy do sistema. A API não
+  ; informa o status HTTP (um 404 viraria um arquivo de erro): o SHA-256 abaixo
+  ; é a garantia de conteúdo.
+  System::Call 'urlmon::URLDownloadToFileW(p 0, w "${NODE_URL}", w "$0", i 0, p 0) i .r1'
   ${If} $1 != "0"
-    Push "download falhou (rede ou proxy). Veja o registro acima."
+    Delete "$0"
+    Push "download falhou (código $1). Confira a rede ou o proxy."
     Return
   ${EndIf}
 
   DetailPrint "Conferindo o SHA-256 do arquivo baixado..."
-  nsExec::ExecToLog `powershell.exe -NoProfile -NonInteractive -Command "$$h=(Get-FileHash -Algorithm SHA256 -LiteralPath '$0').Hash; Write-Output ('SHA-256: ' + $$h); if ($$h -ne '${NODE_SHA256}') { Write-Output 'SHA-256 diferente do esperado'; exit 1 }"`
+  ; certutil -hashfile é o verificador SHA-256 que acompanha o Windows: nenhum
+  ; utilitário é baixado e nenhum interpretador de script é chamado. Saída
+  ; ausente, truncada ou com outro hash não casa com ${NODE_SHA256}: para.
+  ; $SYSDIR é SysWOW64 num instalador 32-bit; Sysnative cobre o caso em que o
+  ; certutil não está lá.
+  StrCpy $1 "$SYSDIR\certutil.exe"
+  ${IfNot} ${FileExists} "$1"
+    StrCpy $1 "$WINDIR\Sysnative\certutil.exe"
+  ${EndIf}
+  ${IfNot} ${FileExists} "$1"
+    Delete "$0"
+    Push "certutil.exe não encontrado: não é possível conferir o SHA-256 do Node.js"
+    Return
+  ${EndIf}
+  nsExec::ExecToStack '"$1" -hashfile "$0" SHA256'
   Pop $1
+  Pop $2
   ${If} $1 != "0"
     Delete "$0"
-    Push "o arquivo baixado não confere com o SHA-256 esperado"
+    Push "não foi possível conferir o SHA-256 (certutil retornou $1)"
+    Return
+  ${EndIf}
+  Push $2
+  Call Sha256InText
+  Pop $1
+  ${If} $1 != "1"
+    Delete "$0"
+    Push "o arquivo baixado não confere com o SHA-256 esperado (${NODE_SHA256})"
     Return
   ${EndIf}
 
   ; Extrai num diretório de passagem: uma falha não deixa node pela metade.
   DetailPrint "Extraindo o Node.js..."
+  ; O NSIS não traz extrator de zip; o tar.exe (bsdtar) do Windows 10 1803+ lê
+  ; zip. $SYSDIR é SysWOW64 num instalador 32-bit; Sysnative cobre esse caso.
+  StrCpy $1 "$SYSDIR\tar.exe"
+  ${IfNot} ${FileExists} "$1"
+    StrCpy $1 "$WINDIR\Sysnative\tar.exe"
+  ${EndIf}
+  ${IfNot} ${FileExists} "$1"
+    Push "tar.exe não encontrado: o Windows 10 1803 ou superior é necessário para extrair o Node.js"
+    Return
+  ${EndIf}
   RMDir /r "$LOCALAPPDATA\dish\node.new"
   CreateDirectory "$LOCALAPPDATA\dish\node.new"
-  nsExec::ExecToLog `powershell.exe -NoProfile -NonInteractive -Command "$$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.IO.Compression.FileSystem; try { [IO.Compression.ZipFile]::ExtractToDirectory('$0', '$LOCALAPPDATA\dish\node.new') } catch { Write-Output $$_.Exception.Message; exit 1 }"`
-  Pop $1
-  ${If} $1 != "0"
+  ExecWait '"$1" -xf "$0" -C "$LOCALAPPDATA\dish\node.new"' $2
+  ${If} $2 != "0"
     RMDir /r "$LOCALAPPDATA\dish\node.new"
-    Push "não foi possível extrair o Node.js"
+    Push "não foi possível extrair o Node.js (tar retornou $2)"
     Return
   ${EndIf}
 
@@ -528,20 +731,13 @@ Function InstallNodeOnce
     Return
   nodeRenameOk:
 
-  ; O PATH do usuário costuma passar de 1024 caracteres (limite das strings do
-  ; NSIS), então não dá para ler/escrever com ReadRegStr/WriteRegStr: o
-  ; PowerShell edita HKCU\Environment direto e mantem o tipo REG_EXPAND_SZ e as
-  ; entradas %VAR% sem expandir.
   DetailPrint "Adicionando o Node.js ao PATH do usuário..."
-  nsExec::ExecToLog `powershell.exe -NoProfile -NonInteractive -Command "$$ErrorActionPreference='Stop'; try { $$d='$LOCALAPPDATA\dish\node'; $$k=[Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment'); $$p=[string]$$k.GetValue('Path','',[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames); $$parts=@($$p.Split(';') | Where-Object { $$_ }); if (@($$parts | Where-Object { [Environment]::ExpandEnvironmentVariables($$_).TrimEnd('\') -ieq $$d }).Count -gt 0) { Write-Output 'PATH do usuario ja contem o Node.js' } else { $$k.SetValue('Path', (@($$parts + $$d) -join ';'), [Microsoft.Win32.RegistryValueKind]::ExpandString); Write-Output 'Node.js adicionado ao PATH do usuario' }; $$k.Close() } catch { Write-Output $$_.Exception.Message; exit 1 }"`
+  Call UpdateUserPath
   Pop $1
-  ${If} $1 != "0"
-    Push "não foi possível atualizar o PATH do usuário"
+  ${If} $1 != "ok"
+    Push "$1"
     Return
   ${EndIf}
-
-  ; Registro escrito direto: avisa o Explorer para recarregar o ambiente.
-  SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
 
   StrCpy $NodeOk "1"
   StrCpy $NodeExe "$LOCALAPPDATA\dish\node\node.exe"
