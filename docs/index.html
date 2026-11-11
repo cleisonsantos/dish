@@ -242,6 +242,17 @@
       matching <code>.sha256</code>. Pick the one that fits your system:
     </p>
 
+    <div class="policy">
+      <p>
+        <strong>Unsigned pre-release.</strong> The current Windows build is a pre-release and its
+        binaries are <strong>not code-signed yet</strong>. SmartScreen <strong>will</strong> warn
+        when you run the installer. Check the published SHA-256 first; if it matches and you accept
+        the risk, the option to continue is <strong>More info → Run anyway</strong>. Signing is
+        pending with the SignPath Foundation, and this notice will be updated when it lands.
+      </p>
+      <pre><code>certutil -hashfile dish-&lt;version&gt;-windows-x86_64-setup.exe SHA256</code></pre>
+    </div>
+
     <div class="group">
       <h3>Linux</h3>
       <ul class="rows">
@@ -298,11 +309,19 @@ npm install -g @earendil-works/pi-coding-agent</code></pre>
         </p>
       </div>
       <div>
-        <h3>Windows signatures</h3>
-        <p>The installers and the <code>dish.exe</code> inside them carry an Authenticode signature:</p>
-        <pre><code>Get-AuthenticodeSignature .\dish-*-setup.exe
-signtool verify /pa /v .\dish-*.msi</code></pre>
-        <p class="faint">Linux builds are not Authenticode-signed, because that mechanism does not exist on the platform.</p>
+        <h3>Windows checksums</h3>
+        <p>
+          Windows installers are <strong>not Authenticode-signed yet</strong>, so the published
+          checksum is the check that applies today:
+        </p>
+        <pre><code>certutil -hashfile dish-&lt;version&gt;-windows-x86_64-setup.exe SHA256</code></pre>
+        <p class="faint">
+          SmartScreen will warn about the unsigned installer. The option to continue is
+          <strong>More info → Run anyway</strong>; use it only after the hash matches and you accept
+          the risk. Do not disable SmartScreen or Defender. Once SignPath signing is in place, this
+          section will show <code>signtool verify /pa /v</code> instead. Linux builds are not
+          Authenticode-signed, because that mechanism does not exist on the platform.
+        </p>
       </div>
     </div>
   </section>
@@ -312,12 +331,17 @@ signtool verify /pa /v .\dish-*.msi</code></pre>
     <div class="split">
       <div class="policy">
         <p>
-          <strong>Free code signing provided by <a class="link" href="https://about.signpath.io">SignPath.io</a>,
-          certificate by <a class="link" href="https://signpath.org">SignPath Foundation</a>.</strong>
+          <strong>Windows code signing is pending with the
+          <a class="link" href="https://signpath.org">SignPath Foundation</a>; current releases
+          are unsigned.</strong>
         </p>
         <p class="faint">
-          Signing happens inside the release workflow on GitHub-hosted runners, and every signing
-          request is approved by a maintainer before the certificate is used.
+          The application was submitted on 2026-10-28 and had no response at the time of writing.
+          When signing is enabled it will use free code signing provided by
+          <a class="link" href="https://about.signpath.io">SignPath.io</a>, certificate by
+          <a class="link" href="https://signpath.org">SignPath Foundation</a>, inside the release
+          workflow on GitHub-hosted runners, with every signing request approved by a maintainer
+          before the certificate is used.
         </p>
       </div>
       <div>
@@ -326,7 +350,7 @@ signtool verify /pa /v .\dish-*.msi</code></pre>
           this come from, and did it change after it was built? A valid signature answers both.
         </p>
         <p class="faint">
-          The full policy — which files are signed, who holds the roles, and how the certificate is
+          The full policy — which files will be signed, who holds the roles, and how the certificate is
           kept — is in
           <a class="link" href="https://github.com/cleisonsantos/dish/blob/main/docs/code-signing.md">docs/code-signing.md</a>.
         </p>

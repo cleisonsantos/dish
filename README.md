@@ -23,7 +23,9 @@ Prebuilt Linux candidates are available as a Debian/Ubuntu package (`.deb`), an
 RPM (`.rpm`), a portable `.tar.gz` and an `.AppImage`. The Windows beta is a per-user NSIS installer that needs
 no administrator rights, registers its own uninstaller and offers the official
 Pi installer when Pi is missing. Every asset carries a SHA-256 checksum beside
-it.
+it. The current Windows build is a pre-release and is **not code-signed yet**;
+see [Download](#download) for what SmartScreen shows and how to verify the
+installer.
 
 The Windows build is validated by CI on GitHub's `windows-latest` runner only —
 there is no real-desktop testing yet. Linux candidate packaging and validation
@@ -34,14 +36,25 @@ Release is published, never automatically from a push.
 ### Download
 
 Packages and installers are on the
-[releases page](https://github.com/cleisonsantos/dish/releases). On Windows,
-download `dish-<version>-windows-x86_64-setup.exe` and compare its hash with the
-`.sha256` file published next to it (PowerShell prints uppercase; compare
-case-insensitively):
+[releases page](https://github.com/cleisonsantos/dish/releases).
 
-```powershell
-Get-FileHash .\dish-<version>-windows-x86_64-setup.exe -Algorithm SHA256
+> **Unsigned pre-release.** The current Windows build is a pre-release and its
+> binaries are **not code-signed yet**. SmartScreen **will** warn when you run the
+> installer. Check the published SHA-256 first; if it matches and you accept the
+> risk, the option to continue is **More info → Run anyway**. Signing is pending
+> with the SignPath Foundation, and this notice will be updated when it lands.
+
+On Windows, download `dish-<version>-windows-x86_64-setup.exe` and compare its
+hash with the `.sha256` file published next to it:
+
+```cmd
+certutil -hashfile dish-<version>-windows-x86_64-setup.exe SHA256
 ```
+
+PowerShell prints the same digest with
+`Get-FileHash .\dish-<version>-windows-x86_64-setup.exe -Algorithm SHA256` and
+uppercase letters; compare case-insensitively. The SHA-256 proves the download
+matches the published file, not that the build is trusted by Windows.
 
 ### Other Linux distributions
 
@@ -422,9 +435,11 @@ See [the UI smoke test guide](docs/smoke-tests.md) for prerequisites, commands, 
 
 ## Code signing policy
 
-Free code signing provided by SignPath.io, certificate by SignPath Foundation
+Windows code signing is pending with the SignPath Foundation; current releases
+are unsigned. When signing is enabled it will use free code signing provided by
+SignPath.io, certificate by SignPath Foundation.
 
-See the [code signing policy](docs/code-signing.md) for signed artifacts,
+See the [code signing policy](docs/code-signing.md) for the current state,
 verification instructions and approval roles.
 
 ## Credits
@@ -437,7 +452,8 @@ Licensed under Apache-2.0.
 
 Windows EDR/SmartScreen: Dish starts child processes such as `git`, `node` and,
 with installation consent, `npm`. Compare release downloads with the published
-SHA-256 (`Get-FileHash .\dish-<version>-windows-x86_64-setup.exe -Algorithm SHA256`).
-Signing is optional in CI; an unsigned build may still trigger reputation alerts.
+SHA-256 (`certutil -hashfile dish-<version>-windows-x86_64-setup.exe SHA256`).
+Windows builds are currently unsigned, so SmartScreen may warn; the download
+notice explains the checksum check and the **More info → Run anyway** option.
 See [Windows false-positive investigation](docs/windows-false-positive.md) for
 installation consent, signature checks and reporting to SentinelOne or Microsoft.
