@@ -639,9 +639,11 @@ class WindowsPackagingTests(unittest.TestCase):
                        "Unblock-File", " -File ", "-EncodedCommand"]:
             self.assertNotIn(unsafe, nsi)
         self.assertRegex(nsi, r'!define NODE_SHA256 "[0-9a-f]{64}"')
-        self.assertIn("Get-FileHash", nsi)
-        self.assertIn("-ne '${NODE_SHA256}'", nsi)
-        self.assertLess(nsi.index("Get-FileHash"), nsi.index("ExtractToDirectory"))
+        # O hash é conferido pelo certutil do Windows antes de extrair com tar.exe.
+        self.assertNotIn("powershell", nsi.lower())
+        self.assertIn("certutil", nsi)
+        self.assertIn("Call Sha256InText", nsi)
+        self.assertLess(nsi.index("certutil"), nsi.index("tar.exe"))
         # O Pi entra com as mesmas flags que src/installation.rs usa (ficam em sincronia).
         self.assertIn("install -g --ignore-scripts --no-audit --no-fund --prefix", nsi)
         installation = (ROOT / "src/installation.rs").read_text()
