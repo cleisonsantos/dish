@@ -118,14 +118,20 @@ with tempfile.TemporaryDirectory(prefix="dish-composer-files-") as temporary:
                     raise AssertionError(
                         f"O clique em Anexar não teve efeito; probe={antes}")
 
-        def probe(condition, description):
-            return wait_probe("composer-input", description,
-                              condition=lambda node: condition(node["data"]))["data"]
+        def probe(condition, description, timeout=10):
+            def pronto():
+                expose_window(window)
+                node = UI_TRACES[window].node("composer-input")
+                return node and visible_point(node) and condition(node["data"])
+            wait_for(pronto, description, timeout=timeout)
+            return UI_TRACES[window].node("composer-input")["data"]
 
         def attach_and_wait(paths, condition):
             attach(*paths)
             try:
-                return probe(condition, "O anexo não produziu o estado esperado")
+                # A ingestão é IO no executor de background; num runner carregado
+                # ela pode demorar bem mais que os 10 s padrão.
+                return probe(condition, "O anexo não produziu o estado esperado", timeout=30)
             except AssertionError:
                 node = UI_TRACES[window].node("composer-input")
                 raise AssertionError(
