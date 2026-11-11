@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::BufReader;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use serde_json::Value;
@@ -28,6 +28,7 @@ pub struct Hit {
     pub live: Option<usize>,
     pub title: String,
     pub snippet: String,
+    pub score: u32,
     pub message: usize,
     pub occurrences: usize,
 }
@@ -35,6 +36,8 @@ pub struct Hit {
 #[derive(Default)]
 pub struct Results {
     pub hits: Vec<Hit>,
+    /// Counts for retained hits; unsaved sessions use a live:<index> key.
+    pub by_file: Vec<(String, usize)>,
     pub errors: Vec<String>,
     pub limited: bool,
 }
@@ -116,33 +119,9 @@ pub fn match_ranges(text: &str, folded_query: &str) -> Vec<std::ops::Range<usize
 }
 
 fn snippet(text: &str, needle: &str) -> Option<String> {
-    // Keep original Unicode characters; folding can change byte offsets.
-    for line in text.lines() {
-        let folded = line.to_lowercase();
-        let Some(folded_offset) = folded.find(needle) else {
-            continue;
-        };
-        let mut folded_bytes = 0;
-        let mut character: usize = 0;
-        for ch in line.chars() {
-            if folded_bytes >= folded_offset {
-                break;
-            }
-            folded_bytes += ch.to_lowercase().map(char::len_utf8).sum::<usize>();
-            character += 1;
-        }
-        let start = character.saturating_sub(60);
-        let mut chars = line.chars().skip(start);
-        let snippet: String = chars.by_ref().take(240).collect();
-        let truncated = chars.next().is_some();
-        return Some(format!(
-            "{}{}{}",
-            if start > 0 { "…" } else { "" },
-            snippet,
-            if truncated { "…" } else { "" }
-        ));
-    }
-    None
+    text.lines()
+        .find(|line| line.to_lowercase().contains(needle))
+        .map(str::to_owned)
 }
 
 impl Index {
@@ -158,7 +137,8 @@ impl Index {
         if needle.is_empty() {
             return result;
         }
-        for doc in documents {
+        let mut by_file = std::collections::BTreeMap::<String, usize>::new();
+        'documents: for doc in documents {
             if generation.load(Ordering::Relaxed) != ticket {
                 return Results::default();
             }
@@ -196,19 +176,34 @@ impl Index {
                 if let Some(snippet) = snippet(text, &needle) {
                     if result.hits.len() == RESULT_LIMIT {
                         result.limited = true;
-                        return result;
+                        break 'documents;
                     }
+                    let occurrences = text.to_lowercase().matches(&needle).count();
+                    let score = 1_u32
+                        .saturating_add(u32::try_from(occurrences).unwrap_or(u32::MAX - 2))
+                        .min(u32::MAX - 1);
+                    let key = doc
+                        .path
+                        .as_ref()
+                        .map(|path| path.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| format!("live:{}", doc.live.unwrap_or_default()));
+                    *by_file.entry(key).or_default() += 1;
                     result.hits.push(Hit {
                         path: doc.path.clone(),
                         live: doc.live,
                         title: doc.title.clone(),
                         snippet,
                         message,
-                        occurrences: text.to_lowercase().matches(&needle).count(),
+                        occurrences,
+                        score,
                     });
                 }
             }
         }
+        result
+            .hits
+            .sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.path.cmp(&b.path)));
+        result.by_file = by_file.into_iter().collect();
         result
     }
 
@@ -311,18 +306,14 @@ mod tests {
             title: "test".into(),
             messages: Some(Arc::new(vec!["found".into()])),
         }];
-        assert!(
-            Index::default()
-                .search(&docs, "found", &AtomicU64::new(2), 1)
-                .hits
-                .is_empty()
-        );
-        assert!(
-            Index::default()
-                .search(&docs, " ", &AtomicU64::new(1), 1)
-                .hits
-                .is_empty()
-        );
+        assert!(Index::default()
+            .search(&docs, "found", &AtomicU64::new(2), 1)
+            .hits
+            .is_empty());
+        assert!(Index::default()
+            .search(&docs, " ", &AtomicU64::new(1), 1)
+            .hits
+            .is_empty());
     }
 
     #[test]
@@ -354,7 +345,52 @@ mod tests {
         let text = format!("{} agulha {}", "x".repeat(10_000), "y".repeat(10_000));
         let found = snippet(&text, "agulha").unwrap();
         assert!(found.contains("agulha"));
-        assert!(found.chars().count() <= 242);
+        assert_eq!(found, text);
+    }
+
+    #[test]
+    fn scores_counts_stable_order_and_limit_are_collected_together() {
+        let make = |path: &str, messages: Vec<String>| Document {
+            path: Some(PathBuf::from(path)),
+            live: None,
+            title: path.into(),
+            messages: Some(Arc::new(messages)),
+        };
+        let docs = [
+            make("z", vec!["needle".into(), "needle needle".into()]),
+            make(
+                "a",
+                vec![
+                    "before\nfull needle context\nafter".into(),
+                    "second needle".into(),
+                ],
+            ),
+        ];
+        let result = Index::default().search(&docs, "needle", &AtomicU64::new(1), 1);
+        assert_eq!(result.by_file, vec![("a".into(), 2), ("z".into(), 2)]);
+        assert_eq!(
+            result
+                .hits
+                .iter()
+                .map(|hit| (hit.path.clone().unwrap(), hit.message))
+                .collect::<Vec<_>>(),
+            vec![
+                (PathBuf::from("z"), 1),
+                (PathBuf::from("a"), 0),
+                (PathBuf::from("a"), 1),
+                (PathBuf::from("z"), 0)
+            ]
+        );
+        assert_eq!(result.hits[1].snippet, "full needle context");
+        assert!(result.hits[0].score > result.hits[1].score);
+        let docs = [
+            make("z", vec!["needle".into(); RESULT_LIMIT]),
+            make("a", vec!["needle".into()]),
+        ];
+        let result = Index::default().search(&docs, "needle", &AtomicU64::new(1), 1);
+        assert_eq!(result.hits.len(), RESULT_LIMIT);
+        assert!(result.limited);
+        assert_eq!(result.by_file, vec![("z".into(), RESULT_LIMIT)]);
     }
 
     #[test]
@@ -446,12 +482,10 @@ mod tests {
         let generation = AtomicU64::new(1);
         assert_eq!(index.search(&docs, "old", &generation, 1).hits.len(), 1);
         assert_eq!(index.files.len(), 1);
-        assert!(
-            index
-                .search(&docs, "missing", &generation, 1)
-                .hits
-                .is_empty()
-        );
+        assert!(index
+            .search(&docs, "missing", &generation, 1)
+            .hits
+            .is_empty());
         fs::write(
             &path,
             "{\"type\":\"message\",\"message\":{\"content\":\"new content\"}}\n",

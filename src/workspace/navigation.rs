@@ -5,11 +5,99 @@
 
 use super::*;
 
+// Minimal PT-BR diacritic table: precomposed letters fold to their NFD base.
+// Combining marks used by decomposed PT-BR input are discarded below.
+const PT_BR_DIACRITICS: &[(&str, char)] = &[
+    ("áàâãä", 'a'),
+    ("éèêë", 'e'),
+    ("íìîï", 'i'),
+    ("óòôõö", 'o'),
+    ("úùûü", 'u'),
+    ("ç", 'c'),
+];
+
+fn normalized(text: &str) -> String {
+    text.chars()
+        .flat_map(char::to_lowercase)
+        .filter(|ch| !matches!(ch, '\u{0300}'..='\u{0303}' | '\u{0308}' | '\u{0327}'))
+        .map(|ch| {
+            if ch.is_ascii() {
+                return ch;
+            }
+            PT_BR_DIACRITICS
+                .iter()
+                .find(|(letters, _)| letters.contains(ch))
+                .map_or(ch, |(_, base)| *base)
+        })
+        .collect()
+}
+
+fn field_score(query: &str, text: &str) -> u32 {
+    let at_word = |offset: usize| {
+        text[..offset]
+            .chars()
+            .next_back()
+            .is_none_or(|ch| !ch.is_alphanumeric())
+    };
+    if text.contains(query) {
+        return 300 + u32::from(text.match_indices(query).any(|(offset, _)| at_word(offset))) * 20;
+    }
+    let mut tokens = query.split_whitespace().peekable();
+    if tokens.peek().is_some() && tokens.clone().all(|token| text.contains(token)) {
+        let starts =
+            tokens.all(|token| text.match_indices(token).any(|(offset, _)| at_word(offset)));
+        return 200 + u32::from(starts) * 20;
+    }
+    // A subsequence must start at a word boundary and may skip at most ONE
+    // character in total between matched characters (no unlimited gap runs).
+    for (offset, first) in text.char_indices() {
+        if !at_word(offset) || !query.starts_with(first) {
+            continue;
+        }
+        let mut wanted = query.chars().skip(1).peekable();
+        let mut skipped = 0;
+        for ch in text[offset + first.len_utf8()..].chars() {
+            let Some(next) = wanted.peek() else {
+                break;
+            };
+            if *next == ch {
+                wanted.next();
+            } else {
+                skipped += 1;
+            }
+            if skipped > 1 {
+                break;
+            }
+        }
+        if wanted.peek().is_none() && skipped <= 1 {
+            return 100;
+        }
+    }
+    0
+}
+
+/// Pure, bounded scores: literal > unordered tokens > one-character-gap
+/// subsequence; within each tier title > project and word start > middle.
+/// Empty (or whitespace-only) queries match everything with the minimum score.
+pub(super) fn match_score(query: &str, title: &str, project: &str) -> u32 {
+    let query = normalized(query.trim());
+    if query.is_empty() {
+        return 1;
+    }
+    let title = field_score(&query, &normalized(title));
+    let project = field_score(&query, &normalized(project));
+    (if title > 0 { title + 40 } else { 0 }).max(project)
+}
+
 impl Workspace {
     /// Navegação: cabeçalho integrado, busca, filtros e a lista de projetos.
     /// A identidade, a busca e "nova sessão" ficam no mesmo lugar — não há mais
     /// uma barra "Sessions" separada gastando uma linha inteira.
-    pub(super) fn navigation(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Stateful<Div> {
+    pub(super) fn navigation(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
         let query = self.query.read(cx).text(cx).to_lowercase();
         let filter = self.filter;
 
@@ -28,12 +116,16 @@ impl Workspace {
                     .map(|info| info.modified)
             });
             let last_run = state
-                .last_activity.or(state.last_run)
+                .last_activity
+                .or(state.last_run)
                 .or(saved_modified)
                 .unwrap_or(state.created_at);
             // Base da ordem "por conclusão": o agent_end desta janela, senão
             // o mtime gravado pelo Pi, senão a criação da conversa.
-            let completed = state.last_completed.or(saved_modified).unwrap_or(state.created_at);
+            let completed = state
+                .last_completed
+                .or(saved_modified)
+                .unwrap_or(state.created_at);
             groups.entry(state.cwd.clone()).or_default().push((
                 title,
                 None,
@@ -69,26 +161,27 @@ impl Workspace {
         // Filtros independentes de atenção, leitura e atividade.
         if !query.is_empty() || filter != SessionFilter::All {
             groups.retain(|cwd, items| {
-                let project_matches = cwd
-                    .file_name()
-                    .map(|name| name.to_string_lossy().to_lowercase().contains(&query))
-                    .unwrap_or(false);
+                let project = cwd.file_name().unwrap_or_default().to_string_lossy();
                 items.retain(|(title, info, live, _, _)| {
-                    let signals = live.map(|index| {
-                        let conversation = &self.conversations[index];
-                        SessionSignals::from_state(conversation.state.read(cx), conversation.unread_completion)
-                    }).unwrap_or(SessionSignals {
-                        saved: true,
-                        unread: info.as_ref().is_some_and(|info| self.preferences.unread_sessions.contains_key(&info.path)),
-                        ..Default::default()
-                    });
+                    let signals = live
+                        .map(|index| {
+                            let conversation = &self.conversations[index];
+                            SessionSignals::from_state(
+                                conversation.state.read(cx),
+                                conversation.unread_completion,
+                            )
+                        })
+                        .unwrap_or(SessionSignals {
+                            saved: true,
+                            unread: info.as_ref().is_some_and(|info| {
+                                self.preferences.unread_sessions.contains_key(&info.path)
+                            }),
+                            ..Default::default()
+                        });
                     if !signals.matches(filter) {
                         return false;
                     }
-                    if project_matches || query.is_empty() {
-                        return true;
-                    }
-                    title.to_lowercase().contains(&query)
+                    match_score(&query, title, &project) > 0
                 });
                 !items.is_empty()
             });
@@ -127,6 +220,10 @@ impl Workspace {
                     self.preferences.session_order,
                     is_pinned,
                 );
+                let project = cwd.file_name().unwrap_or_default().to_string_lossy();
+                items.sort_by_cached_key(|row| {
+                    std::cmp::Reverse(match_score(&query, &row.0, &project))
+                });
                 (cwd, rank, items)
             })
             .collect();
@@ -142,7 +239,9 @@ impl Workspace {
         // Novos resultados de busca/filtro são revelados; recolher manualmente
         // continua funcionando e a seta direita pode reabrir o último projeto.
         if self.nav_query != query || self.nav_filter != filter {
-            for (cwd, _, _) in &ranked { self.collapsed.remove(cwd); }
+            for (cwd, _, _) in &ranked {
+                self.collapsed.remove(cwd);
+            }
             self.nav_filter = filter;
         }
 
@@ -150,7 +249,12 @@ impl Workspace {
             // Lista única: some o cabeçalho de pasta e as fixadas sobem para o
             // topo da lista inteira.
             let mut rows: Vec<SessionRow> = Vec::new();
-            for (_, _, mut items) in ranked {
+            let mut scores = std::collections::HashMap::new();
+            for (cwd, _, mut items) in ranked {
+                let project = cwd.file_name().unwrap_or_default().to_string_lossy();
+                for row in &items {
+                    scores.insert(row_key(row), match_score(&query, &row.0, &project));
+                }
                 rows.append(&mut items);
             }
             if rows.is_empty() {
@@ -163,9 +267,14 @@ impl Workspace {
                     self.preferences.session_order,
                     is_pinned,
                 );
+                rows.sort_by_cached_key(|row| std::cmp::Reverse(scores[&row_key(row)]));
                 vec![(
                     PathBuf::new(),
-                    ProjectRank { running: false, needs_input: false, latest: std::time::UNIX_EPOCH },
+                    ProjectRank {
+                        running: false,
+                        needs_input: false,
+                        latest: std::time::UNIX_EPOCH,
+                    },
                     rows,
                 )]
             }
@@ -191,12 +300,17 @@ impl Workspace {
             }
         }
         let probe_layout = if flat { "flat" } else { "projects" };
-        let probe_projects: Vec<String> = project_order.iter().map(|cwd| cwd.display().to_string()).collect();
+        let probe_projects: Vec<String> = project_order
+            .iter()
+            .map(|cwd| cwd.display().to_string())
+            .collect();
         let previous = self.nav_entries.get(self.nav_index);
         if self.nav_query != query {
             self.nav_query = query.clone();
             self.nav_index = 0;
-        } else if let Some(index) = previous.and_then(|previous| entries.iter().position(|entry| entry == previous)) {
+        } else if let Some(index) =
+            previous.and_then(|previous| entries.iter().position(|entry| entry == previous))
+        {
             self.nav_index = index;
         }
         self.nav_entries = entries;
@@ -216,7 +330,10 @@ impl Workspace {
 
         let mut rail = div()
             .id("sessions-navigation")
-            .on_hover(cx.listener(|workspace, hovered: &bool, _, cx| { workspace.nav_hovered = *hovered; cx.notify(); }))
+            .on_hover(cx.listener(|workspace, hovered: &bool, _, cx| {
+                workspace.nav_hovered = *hovered;
+                cx.notify();
+            }))
             .w(px(self.nav_width))
             .h_full()
             .flex_none()
@@ -278,40 +395,76 @@ impl Workspace {
                                 crate::ui::icons::Icon::Dots,
                                 cx,
                                 |workspace, window, cx| {
-                                    workspace.open_settings(crate::settings::Section::App, window, cx);
+                                    workspace.open_settings(
+                                        crate::settings::Section::App,
+                                        window,
+                                        cx,
+                                    );
                                 },
                             )),
                     ),
             )
             .child(
-                div().id("nav-new-session")
+                div()
+                    .id("nav-new-session")
                     .test_probe(|| "nav-new-session".into(), || serde_json::json!({}))
-                    .mx(px(theme::S3)).mb(px(theme::S3))
-                    .px(px(theme::S3)).py(px(theme::S2))
-                    .flex().items_center().gap(px(theme::S2))
+                    .mx(px(theme::S3))
+                    .mb(px(theme::S3))
+                    .px(px(theme::S3))
+                    .py(px(theme::S2))
+                    .flex()
+                    .items_center()
+                    .gap(px(theme::S2))
                     .rounded(theme::r_control())
-                    .border_1().border_color(theme::line_strong())
-                    .bg(theme::surface_2()).text_color(theme::text())
-                    .cursor_pointer().focusable().tab_index(0)
+                    .border_1()
+                    .border_color(theme::line_strong())
+                    .bg(theme::surface_2())
+                    .text_color(theme::text())
+                    .cursor_pointer()
+                    .focusable()
+                    .tab_index(0)
                     .hover(|style| style.bg(theme::hover()))
                     .focus(|style| style.shadow(theme::focus_ring()))
                     .on_key_down(cx.listener(|workspace, event: &KeyDownEvent, window, cx| {
                         if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            let cwd = workspace.conversations[workspace.active].state.read(cx).cwd.clone();
+                            let cwd = workspace.conversations[workspace.active]
+                                .state
+                                .read(cx)
+                                .cwd
+                                .clone();
                             workspace.spawn_conversation(cwd, None, None, cx);
                             cx.stop_propagation();
                         } else if event.keystroke.key == "tab" {
-                            if event.keystroke.modifiers.shift { window.focus_prev(cx); } else { window.focus_next(cx); }
+                            if event.keystroke.modifiers.shift {
+                                window.focus_prev(cx);
+                            } else {
+                                window.focus_next(cx);
+                            }
                             cx.stop_propagation();
                         }
                     }))
                     .on_click(cx.listener(|workspace, _: &ClickEvent, _, cx| {
-                        let cwd = workspace.conversations[workspace.active].state.read(cx).cwd.clone();
+                        let cwd = workspace.conversations[workspace.active]
+                            .state
+                            .read(cx)
+                            .cwd
+                            .clone();
                         workspace.spawn_conversation(cwd, None, None, cx);
                     }))
-                    .child(crate::ui::icons::icon(crate::ui::icons::Icon::Plus, 14., theme::dim()))
-                    .child(div().flex_1().text_size(px(theme::TEXT)).child("Nova sessão"))
-                    .when(self.nav_width >= 250., |el| el.child(crate::ui::micro("Ctrl+N"))),
+                    .child(crate::ui::icons::icon(
+                        crate::ui::icons::Icon::Plus,
+                        14.,
+                        theme::dim(),
+                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(theme::TEXT))
+                            .child("Nova sessão"),
+                    )
+                    .when(self.nav_width >= 250., |el| {
+                        el.child(crate::ui::micro("Ctrl+N"))
+                    }),
             )
             // busca + filtros
             .child(
@@ -382,12 +535,28 @@ impl Workspace {
                                     cx.notify();
                                 },
                             ))
-                            .child(nav_segment("nav-filter-input", "Pend.", "sessões que precisam de você", self.filter == SessionFilter::NeedsInput, cx, |workspace, cx| {
-                                workspace.filter = SessionFilter::NeedsInput; cx.notify();
-                            }))
-                            .child(nav_segment("nav-filter-unread", "Novas", "respostas ainda não lidas", self.filter == SessionFilter::Unread, cx, |workspace, cx| {
-                                workspace.filter = SessionFilter::Unread; cx.notify();
-                            }))
+                            .child(nav_segment(
+                                "nav-filter-input",
+                                "Pend.",
+                                "sessões que precisam de você",
+                                self.filter == SessionFilter::NeedsInput,
+                                cx,
+                                |workspace, cx| {
+                                    workspace.filter = SessionFilter::NeedsInput;
+                                    cx.notify();
+                                },
+                            ))
+                            .child(nav_segment(
+                                "nav-filter-unread",
+                                "Novas",
+                                "respostas ainda não lidas",
+                                self.filter == SessionFilter::Unread,
+                                cx,
+                                |workspace, cx| {
+                                    workspace.filter = SessionFilter::Unread;
+                                    cx.notify();
+                                },
+                            ))
                             .child(nav_segment(
                                 "nav-filter-running",
                                 "Exec.",
@@ -426,12 +595,17 @@ impl Workspace {
 
         let mut list = div()
             .id("nav-list")
-            .test_probe(|| "nav-list".into(), move || serde_json::json!({
-                "layout": probe_layout,
-                "projects": probe_projects,
-                "titles": probe_titles,
-                "pinned": probe_pinned,
-            }))
+            .test_probe(
+                || "nav-list".into(),
+                move || {
+                    serde_json::json!({
+                        "layout": probe_layout,
+                        "projects": probe_projects,
+                        "titles": probe_titles,
+                        "pinned": probe_pinned,
+                    })
+                },
+            )
             .flex_1()
             .min_h(px(0.))
             .overflow_y_scroll()
@@ -495,16 +669,37 @@ impl Workspace {
                     None => false,
                 })
                 .count();
-            let needs_input = items.iter().filter(|(_, _, live, _, _)| live.is_some_and(|i| self.conversations[i].state.read(cx).modal.is_some())).count();
-            let unread_count = items.iter().filter(|(_, info, live, _, _)| live.map(|i| self.conversations[i].unread_completion).unwrap_or_else(|| info.as_ref().is_some_and(|info| self.preferences.unread_sessions.contains_key(&info.path)))).count();
+            let needs_input = items
+                .iter()
+                .filter(|(_, _, live, _, _)| {
+                    live.is_some_and(|i| self.conversations[i].state.read(cx).modal.is_some())
+                })
+                .count();
+            let unread_count = items
+                .iter()
+                .filter(|(_, info, live, _, _)| {
+                    live.map(|i| self.conversations[i].unread_completion)
+                        .unwrap_or_else(|| {
+                            info.as_ref().is_some_and(|info| {
+                                self.preferences.unread_sessions.contains_key(&info.path)
+                            })
+                        })
+                })
+                .count();
             let project_tooltip = {
                 let path = cwd.display().to_string();
                 let attention = attention_summary(needs_input, unread_count);
-                if attention.is_empty() { path } else { format!("{path}\n{attention}") }
+                if attention.is_empty() {
+                    path
+                } else {
+                    format!("{path}\n{attention}")
+                }
             };
             if !collapsed {
                 for item in &items {
-                    self.nav_anchors.entry(row_key(item)).or_insert_with(|| ScrollAnchor::for_handle(self.nav_scroll.clone()));
+                    self.nav_anchors
+                        .entry(row_key(item))
+                        .or_insert_with(|| ScrollAnchor::for_handle(self.nav_scroll.clone()));
                 }
             }
 
@@ -1001,7 +1196,8 @@ impl Workspace {
                             .cursor_pointer()
                             .hover(|style| style.bg(theme::hover()))
                             .tooltip(move |_, cx| {
-                                cx.new(|_| crate::ui::copy_button::TextTooltip(tooltip.clone())).into()
+                                cx.new(|_| crate::ui::copy_button::TextTooltip(tooltip.clone()))
+                                    .into()
                             })
                             .on_click(cx.listener(move |workspace, _: &ClickEvent, _, cx| {
                                 workspace.open_project(target.clone(), cx);
@@ -1028,7 +1224,8 @@ impl Workspace {
 
         self.row_order = self.nav_entries.iter().map(entry_key).collect();
         self.project_order = project_order;
-        self.nav_anchors.retain(|key, _| self.row_order.contains(key));
+        self.nav_anchors
+            .retain(|key, _| self.row_order.contains(key));
         rail = rail.child(list);
         if self.undo_delete.is_some() {
             rail = rail.child(self.undo_bar(cx));
@@ -1049,7 +1246,14 @@ impl Workspace {
                     div()
                         .text_size(px(theme::TEXT_XS))
                         .text_color(theme::faint())
-                        .child(SharedString::from(format!("{open_count} {}", if open_count == 1 { "sessão aberta" } else { "sessões abertas" }))),
+                        .child(SharedString::from(format!(
+                            "{open_count} {}",
+                            if open_count == 1 {
+                                "sessão aberta"
+                            } else {
+                                "sessões abertas"
+                            }
+                        ))),
                 )
                 .when(running_count > 0, |el| {
                     el.child(
@@ -1067,7 +1271,9 @@ impl Workspace {
                                 div()
                                     .text_size(px(theme::TEXT_XS))
                                     .text_color(theme::running())
-                                    .child(SharedString::from(format!("{running_count} executando"))),
+                                    .child(SharedString::from(format!(
+                                        "{running_count} executando"
+                                    ))),
                             ),
                     )
                 })
@@ -1114,7 +1320,11 @@ impl Workspace {
                                     .child(SharedString::from(format!(
                                         "{} {}",
                                         counts[1],
-                                        if counts[1] == 1 { "pendente" } else { "pendentes" }
+                                        if counts[1] == 1 {
+                                            "pendente"
+                                        } else {
+                                            "pendentes"
+                                        }
                                     ))),
                             ),
                     )
@@ -1177,7 +1387,8 @@ fn nav_segment(
                 .hover(|s| s.bg(theme::hover()))
         })
         .tooltip(move |_, cx| {
-            cx.new(|_| crate::ui::copy_button::TextTooltip(hint.into())).into()
+            cx.new(|_| crate::ui::copy_button::TextTooltip(hint.into()))
+                .into()
         })
         .text_size(px(theme::TEXT_XS))
         .text_color(if active { theme::text() } else { theme::dim() })
@@ -1188,4 +1399,61 @@ fn nav_segment(
         }))
         .child(SharedString::from(label.to_owned()))
         .into_any_element()
+}
+
+#[cfg(test)]
+mod search_quality_tests {
+    use super::match_score;
+
+    #[test]
+    fn matching_tiers_and_field_weights() {
+        assert_eq!(match_score("", "", ""), 1);
+        assert_eq!(match_score("  ", "title", "project"), 1);
+        let literal = match_score("dish migra", "Dish migração", "");
+        let tokens = match_score("dish migra", "Migração do Dish", "");
+        let subsequence = match_score("dih", "Dish", "");
+        assert!(literal > tokens && tokens > subsequence && subsequence > 0);
+        assert_eq!(match_score("dgmr", "Migração do Dish", ""), 0);
+        assert_eq!(match_score("dshh", "Dish history", ""), 0);
+        assert!(
+            match_score("dish", "Dish migration", "") > match_score("dish", "", "Dish migration")
+        );
+        assert!(match_score("dish", "Dish", "") > match_score("dish", "radish", ""));
+        assert!(match_score("dish migra", "", "dish migracao") > tokens);
+        assert_eq!(match_score("missing", "Dish", "project"), 0);
+        assert!(literal < u32::MAX);
+    }
+
+    #[test]
+    fn portuguese_accents_and_decomposed_input_match_both_directions() {
+        for (accented, plain) in [
+            ("Migração", "migracao"),
+            ("AÇÃO", "acao"),
+            ("à ê í ó ô ú ü", "a e i o o u u"),
+            ("migrac\u{0327}a\u{0303}o", "migração"),
+        ] {
+            assert!(match_score(accented, plain, "") > 0);
+            assert!(match_score(plain, accented, "") > 0);
+        }
+    }
+
+    #[test]
+    fn classifier_handles_one_hundred_thousand_sessions_under_one_second() {
+        let started = std::time::Instant::now();
+        let titles = [
+            "Migração do Dish para o novo workspace",
+            "Corrigir navegação e sessões fixadas",
+            "Investigação do cache de conteúdo",
+        ];
+        for i in 0..100_000 {
+            std::hint::black_box(match_score(
+                std::hint::black_box("dish migra"),
+                titles[i % titles.len()],
+                "dish-search179",
+            ));
+        }
+        let elapsed = started.elapsed();
+        println!("100,000 match_score calls: {elapsed:?}");
+        assert!(elapsed < std::time::Duration::from_secs(1), "{elapsed:?}");
+    }
 }
