@@ -57,7 +57,7 @@ where
     Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Preferences {
     pub details_open: Option<bool>,
@@ -72,6 +72,8 @@ pub struct Preferences {
     /// Som curto quando um turno termina numa sessão que não está à vista.
     /// Começa desligado: é escolha explícita do usuário.
     pub completion_sound: bool,
+    /// Notificação do sistema ao concluir um turno fora de vista. Ativada por padrão.
+    pub completion_notification: bool,
     /// Modelos ocultos no seletor do Dish, como `provider/id`.
     /// O Dish nunca altera a lista de modelos do Pi: isto é só apresentação.
     pub hidden_models: BTreeSet<String>,
@@ -123,6 +125,44 @@ pub struct Preferences {
     /// são escolhas explícitas.
     #[serde(default)]
     pub update_policy: UpdatePolicy,
+}
+
+impl Default for Preferences {
+    fn default() -> Self {
+        Self {
+            details_open: Default::default(),
+            navigation_open: Default::default(),
+            navigation_width: Default::default(),
+            show_thinking: Default::default(),
+            generated_titles: Default::default(),
+            completion_sound: Default::default(),
+            completion_notification: true,
+            hidden_models: Default::default(),
+            collapsed_projects: Default::default(),
+            last_project: Default::default(),
+            last_session: Default::default(),
+            recent_projects: Default::default(),
+            pinned_sessions: Default::default(),
+            window_size: Default::default(),
+            pi_executable: Default::default(),
+            unread_sessions: Default::default(),
+            session_filter: Default::default(),
+            session_order: Default::default(),
+            session_layout: Default::default(),
+            project_order: Default::default(),
+            appearance: Default::default(),
+            reduce_motion: Default::default(),
+            theme: Default::default(),
+            dismissed_notifications: Default::default(),
+            pi_auto_check: Default::default(),
+            pi_auto_install: Default::default(),
+            last_pi_update_check: Default::default(),
+            last_update_check: Default::default(),
+            last_update_etag: Default::default(),
+            update_channel: Default::default(),
+            update_policy: Default::default(),
+        }
+    }
 }
 
 fn env_path(name: &str) -> Option<PathBuf> {
@@ -221,6 +261,8 @@ mod tests {
         assert!(!preferences.pi_auto_check, "automatic Pi checks are opt-in");
         assert!(!preferences.pi_auto_install, "automatic Pi installs are opt-in");
         assert!(!preferences.completion_sound, "completion sound is opt-in");
+        assert!(preferences.completion_notification, "system notifications default to on");
+        assert!(Preferences::default().completion_notification);
         assert_eq!(preferences.last_pi_update_check, None);
         assert_eq!(preferences.last_update_check, None);
         assert_eq!(preferences.last_update_etag, None);
@@ -303,6 +345,7 @@ mod tests {
             show_thinking: Some(false),
             generated_titles: true,
             completion_sound: true,
+            completion_notification: false,
             hidden_models: ["anthropic/claude-sonnet-4".to_string()].into(),
             collapsed_projects: [PathBuf::from("/tmp/projeto-á")].into(),
             last_project: Some("/tmp/projeto-á".into()), last_session: Some("/tmp/session.jsonl".into()),

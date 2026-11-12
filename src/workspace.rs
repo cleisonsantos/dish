@@ -1070,6 +1070,10 @@ impl Workspace {
                             this.preferences.completion_sound = *value;
                             crate::preferences::save(this.preferences.clone());
                         }
+                        if *name == "completion_notification" {
+                            this.preferences.completion_notification = *value;
+                            crate::preferences::save(this.preferences.clone());
+                        }
                         if matches!(*name, "pi_auto_check" | "pi_auto_install") {
                             this.sync_pi_settings(cx);
                         }
@@ -1248,7 +1252,7 @@ impl Workspace {
         let state = self.conversations[self.active].state.read(cx);
         let pi = self.pi_status();
         let view = crate::settings::SettingsView {
-            options: [state.sidebar, self.visible, state.show_thinking, state.generated_titles, self.preferences.completion_sound],
+            options: [state.sidebar, self.visible, state.show_thinking, state.generated_titles, self.preferences.completion_sound, self.preferences.completion_notification],
             appearance: self.preferences.appearance,
             navigation_choice: crate::preferences::NavigationChoice {
                 session_order: self.preferences.session_order,
@@ -2516,7 +2520,8 @@ impl Render for Workspace {
         }
         self.sync_settings_sessions(cx);
         let active_viewed = window.is_window_active() && !self.blocking_confirmation() && !self.settings.as_ref().is_some_and(|settings| settings.read(cx).open);
-        for (index, conversation) in self.conversations.iter_mut().enumerate() {
+        for index in 0..self.conversations.len() {
+            let conversation = &mut self.conversations[index];
             let completed = conversation.state.read(cx).completed_content_runs;
             let newly_completed = completed != conversation.seen_completed_runs;
             if newly_completed {
@@ -2525,7 +2530,19 @@ impl Render for Workspace {
                 if crate::sound::should_play(self.preferences.completion_sound, newly_completed, conversation.unread_completion) {
                     crate::sound::play();
                 }
+                if crate::notifications::should_notify(self.preferences.completion_notification, newly_completed, conversation.unread_completion) {
+                    let tag = conversation.path.as_ref()
+                        .map(|path| format!("dish-session-{}", path.display()))
+                        .unwrap_or_else(|| format!("dish-session-live-{}", conversation.state.entity_id()));
+                    cx.show_system_notification(SystemNotification {
+                        tag: tag.into(),
+                        title: format!("Dish — {}", self.conversation_title(index, cx)).into(),
+                        body: "Resposta concluída".into(),
+                        actions: Vec::new(),
+                    });
+                }
             }
+            let conversation = &mut self.conversations[index];
             if index == self.active && active_viewed { conversation.unread_completion = false; }
             if let Some(path) = &conversation.path {
                 if index == self.active && active_viewed {

@@ -151,6 +151,7 @@ pub struct Settings {
     thinking: bool,
     titles: bool,
     sound: bool,
+    notification: bool,
     appearance: AppearanceMode,
     /// Ordem e agrupamento da lista de sessões.
     navigation_choice: crate::preferences::NavigationChoice,
@@ -201,8 +202,8 @@ pub struct Settings {
 
 /// O que a tela de configurações precisa mostrar quando abre.
 pub struct SettingsView {
-    /// `[detalhes, navegação, raciocínio, títulos, som]`.
-    pub options: [bool; 5],
+    /// `[detalhes, navegação, raciocínio, títulos, som, notificação]`.
+    pub options: [bool; 6],
     pub appearance: AppearanceMode,
     /// Ordem e agrupamento escolhidos para a navegação de sessões.
     pub navigation_choice: crate::preferences::NavigationChoice,
@@ -248,7 +249,7 @@ impl Settings {
         Self {
             open: false, section: Section::App, focus: cx.focus_handle(),
             previous_focus: None, search,
-            details: true, navigation: true, thinking: true, titles: false, sound: false,
+            details: true, navigation: true, thinking: true, titles: false, sound: false, notification: true,
             appearance: AppearanceMode::System,
             navigation_choice: Default::default(),
             theme: None,
@@ -288,7 +289,7 @@ impl Settings {
         if !self.open { self.previous_focus = window.focused(cx); }
         self.open = true;
         self.section = section;
-        [self.details, self.navigation, self.thinking, self.titles, self.sound] = view.options;
+        [self.details, self.navigation, self.thinking, self.titles, self.sound, self.notification] = view.options;
         self.appearance = view.appearance;
         self.navigation_choice = view.navigation_choice;
         self.theme = view.theme;
@@ -2025,6 +2026,7 @@ impl Render for Settings {
                     ("thinking", "Raciocínio expandido", self.thinking),
                     ("generated_titles", "Títulos gerados por modelo", self.titles),
                     ("completion_sound", "Som ao concluir em segundo plano", self.sound),
+                    ("completion_notification", "Notificação ao concluir em segundo plano", self.notification),
                 ] {
                     // Linha inteira clicável — o interruptor é o estado, não
                     // o único alvo.
@@ -2040,7 +2042,8 @@ impl Render for Settings {
                                     "navigation" => this.navigation = !current,
                                     "thinking" => this.thinking = !current,
                                     "generated_titles" => this.titles = !current,
-                                    _ => this.sound = !current,
+                                    "completion_sound" => this.sound = !current,
+                                    _ => this.notification = !current,
                                 }
                                 cx.emit(SettingsEvent::Preference(id, !current)); cx.notify();
                             }))
@@ -2055,7 +2058,8 @@ impl Render for Settings {
                                         "navigation" => this.navigation = !current,
                                         "thinking" => this.thinking = !current,
                                         "generated_titles" => this.titles = !current,
-                                        _ => this.sound = !current,
+                                        "completion_sound" => this.sound = !current,
+                                        _ => this.notification = !current,
                                     }
                                     cx.emit(SettingsEvent::Preference(id, !current)); cx.notify();
                                 }))),
