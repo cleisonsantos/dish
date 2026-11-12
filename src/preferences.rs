@@ -1,6 +1,10 @@
 //! UI preferences, separate from Pi's conversation storage.
-use std::{collections::{BTreeMap, BTreeSet}, path::PathBuf, sync::{mpsc, OnceLock}};
 use serde::{Deserialize, Serialize};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+    sync::{mpsc, OnceLock},
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -72,6 +76,8 @@ pub struct Preferences {
     /// Som curto quando um turno termina numa sessão que não está à vista.
     /// Começa desligado: é escolha explícita do usuário.
     pub completion_sound: bool,
+    /// Notificação do sistema ao concluir um turno fora de vista. Ativada por padrão.
+    pub completion_notification: bool,
     /// Volume só do som do Dish, de 0 (mudo) a 100%.
     #[serde(deserialize_with = "completion_volume")]
     pub completion_sound_volume: u8,
@@ -137,6 +143,7 @@ impl Default for Preferences {
             show_thinking: Default::default(),
             generated_titles: Default::default(),
             completion_sound: Default::default(),
+            completion_notification: true,
             completion_sound_volume: 35,
             hidden_models: Default::default(),
             collapsed_projects: Default::default(),
@@ -171,19 +178,30 @@ fn completion_volume<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Resul
 }
 
 fn env_path(name: &str) -> Option<PathBuf> {
-    std::env::var_os(name).filter(|value| !value.is_empty()).map(PathBuf::from)
+    std::env::var_os(name)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }
 
 /// Raiz de configuração: XDG no Unix, `%APPDATA%` no Windows (onde `HOME` e
 /// `XDG_CONFIG_HOME` não existem). Sem isso nada era salvo no Windows — nem a
 /// escolha do Pi, nem tamanho de janela, nem modelos ocultos.
-fn config_root(xdg: Option<PathBuf>, appdata: Option<PathBuf>, home: Option<PathBuf>) -> Option<PathBuf> {
-    xdg.or(appdata).or_else(|| home.map(|home| home.join(".config")))
+fn config_root(
+    xdg: Option<PathBuf>,
+    appdata: Option<PathBuf>,
+    home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    xdg.or(appdata)
+        .or_else(|| home.map(|home| home.join(".config")))
 }
 
 /// Diretório de configuração do Dish (`~/.config/dish`, `%APPDATA%/dish`).
 fn config_dir() -> Option<PathBuf> {
-    let appdata = if cfg!(windows) { env_path("APPDATA") } else { None };
+    let appdata = if cfg!(windows) {
+        env_path("APPDATA")
+    } else {
+        None
+    };
     config_root(env_path("XDG_CONFIG_HOME"), appdata, env_path("HOME"))
         .map(|root| root.join("dish"))
 }
@@ -208,9 +226,13 @@ impl Preferences {
 }
 
 pub fn load() -> Preferences {
-    let mut preferences: Preferences = path().and_then(|path| std::fs::read(path).ok())
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
-    if let Some(path) = crate::installation::selected() { preferences.pi_executable = Some(path); }
+    let mut preferences: Preferences = path()
+        .and_then(|path| std::fs::read(path).ok())
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default();
+    if let Some(path) = crate::installation::selected() {
+        preferences.pi_executable = Some(path);
+    }
     preferences
 }
 
@@ -221,8 +243,12 @@ pub fn save(preferences: Preferences) {
         let (sender, receiver) = mpsc::channel::<Preferences>();
         std::thread::spawn(move || {
             while let Ok(mut preferences) = receiver.recv() {
-                while let Ok(newer) = receiver.try_recv() { preferences = newer; }
-                let Some(path) = path() else { continue; };
+                while let Ok(newer) = receiver.try_recv() {
+                    preferences = newer;
+                }
+                let Some(path) = path() else {
+                    continue;
+                };
                 if let Err(error) = write(&path, &preferences) {
                     crate::logging::warn(format_args!("Dish: cannot save UI preferences: {error}"));
                 }
@@ -249,23 +275,38 @@ mod tests {
         let home = Some(PathBuf::from("/home/dish"));
         assert_eq!(config_root(xdg.clone(), appdata.clone(), home.clone()), xdg);
         assert_eq!(config_root(None, appdata.clone(), home.clone()), appdata);
-        assert_eq!(config_root(None, None, home), Some(PathBuf::from("/home/dish/.config")));
+        assert_eq!(
+            config_root(None, None, home),
+            Some(PathBuf::from("/home/dish/.config"))
+        );
         assert_eq!(config_root(None, None, None), None);
     }
 
     #[test]
     fn old_or_partial_preferences_use_defaults() {
-        let preferences: Preferences = serde_json::from_str(r#"{"details_open":false,"unknown":1}"#).unwrap();
+        let preferences: Preferences =
+            serde_json::from_str(r#"{"details_open":false,"unknown":1}"#).unwrap();
         assert_eq!(preferences.details_open, Some(false));
         assert_eq!(preferences.navigation_open, None);
         assert!(preferences.collapsed_projects.is_empty());
         assert_eq!(preferences.appearance, crate::theme::AppearanceMode::System);
         assert_eq!(preferences.theme, None);
-        assert_eq!(preferences.reduce_motion, None, "preserve platform motion setting");
+        assert_eq!(
+            preferences.reduce_motion, None,
+            "preserve platform motion setting"
+        );
         assert!(preferences.dismissed_notifications.is_empty());
         assert!(!preferences.pi_auto_check, "automatic Pi checks are opt-in");
-        assert!(!preferences.pi_auto_install, "automatic Pi installs are opt-in");
+        assert!(
+            !preferences.pi_auto_install,
+            "automatic Pi installs are opt-in"
+        );
         assert!(!preferences.completion_sound, "completion sound is opt-in");
+        assert!(
+            preferences.completion_notification,
+            "system notifications default to on"
+        );
+        assert!(Preferences::default().completion_notification);
         assert_eq!(preferences.completion_sound_volume, 35);
         assert_eq!(preferences.last_pi_update_check, None);
         assert_eq!(preferences.last_update_check, None);
@@ -276,9 +317,8 @@ mod tests {
 
     #[test]
     fn old_preferences_without_completion_volume_use_default() {
-        let preferences: Preferences = serde_json::from_str(
-            r#"{"completion_sound":true,"details_open":false}"#,
-        ).unwrap();
+        let preferences: Preferences =
+            serde_json::from_str(r#"{"completion_sound":true,"details_open":false}"#).unwrap();
         assert_eq!(preferences.completion_sound_volume, 35);
         assert!(preferences.completion_sound);
         assert_eq!(preferences.details_open, Some(false));
@@ -287,9 +327,9 @@ mod tests {
     #[test]
     fn completion_volume_is_bounded() {
         for volume in [0, 35, 100, 255] {
-            let preferences: Preferences = serde_json::from_value(
-                serde_json::json!({"completion_sound_volume": volume}),
-            ).unwrap();
+            let preferences: Preferences =
+                serde_json::from_value(serde_json::json!({"completion_sound_volume": volume}))
+                    .unwrap();
             assert_eq!(preferences.completion_sound_volume, volume.min(100));
         }
     }
@@ -325,7 +365,10 @@ mod tests {
     #[test]
     fn motion_preference_preserves_explicit_choices() {
         for reduced in [false, true] {
-            let preferences = Preferences { reduce_motion: Some(reduced), ..Preferences::default() };
+            let preferences = Preferences {
+                reduce_motion: Some(reduced),
+                ..Preferences::default()
+            };
             let json = serde_json::to_string(&preferences).unwrap();
             let restored: Preferences = serde_json::from_str(&json).unwrap();
             assert_eq!(restored.reduce_motion, Some(reduced));
@@ -338,11 +381,21 @@ mod tests {
             preferences.remember_project(&PathBuf::from(format!("/tmp/projeto-{index}")));
         }
         assert_eq!(preferences.recent_projects.len(), 8, "teto de 8");
-        assert_eq!(preferences.recent_projects[0], PathBuf::from("/tmp/projeto-9"));
-        preferences.remember_project(&PathBuf::from("/tmp/projeto-5"));
-        assert_eq!(preferences.recent_projects[0], PathBuf::from("/tmp/projeto-5"));
         assert_eq!(
-            preferences.recent_projects.iter().filter(|path| *path == &PathBuf::from("/tmp/projeto-5")).count(),
+            preferences.recent_projects[0],
+            PathBuf::from("/tmp/projeto-9")
+        );
+        preferences.remember_project(&PathBuf::from("/tmp/projeto-5"));
+        assert_eq!(
+            preferences.recent_projects[0],
+            PathBuf::from("/tmp/projeto-5")
+        );
+        assert_eq!(
+            preferences
+                .recent_projects
+                .iter()
+                .filter(|path| *path == &PathBuf::from("/tmp/projeto-5"))
+                .count(),
             1,
             "sem repetir"
         );
@@ -355,7 +408,10 @@ mod tests {
         let path = root.join("config/state.json");
         let first = Preferences::default();
         write(&path, &first).unwrap();
-        let second = Preferences { details_open: Some(false), ..first };
+        let second = Preferences {
+            details_open: Some(false),
+            ..first
+        };
         write(&path, &second).unwrap();
         let loaded: Preferences = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(loaded, second);
@@ -364,15 +420,18 @@ mod tests {
     #[test]
     fn preferences_round_trip() {
         let preferences = Preferences {
-            details_open: Some(false), navigation_open: Some(true),
+            details_open: Some(false),
+            navigation_open: Some(true),
             navigation_width: Some(264.),
             show_thinking: Some(false),
             generated_titles: true,
             completion_sound: true,
+            completion_notification: false,
             completion_sound_volume: 65,
             hidden_models: ["anthropic/claude-sonnet-4".to_string()].into(),
             collapsed_projects: [PathBuf::from("/tmp/projeto-á")].into(),
-            last_project: Some("/tmp/projeto-á".into()), last_session: Some("/tmp/session.jsonl".into()),
+            last_project: Some("/tmp/projeto-á".into()),
+            last_session: Some("/tmp/session.jsonl".into()),
             recent_projects: [PathBuf::from("/tmp/projeto-á"), PathBuf::from("/tmp/outro")].into(),
             pinned_sessions: [PathBuf::from("/tmp/session.jsonl")].into(),
             window_size: Some([1240., 860.]),
@@ -395,6 +454,9 @@ mod tests {
             update_policy: UpdatePolicy::Notify,
         };
         let bytes = serde_json::to_vec(&preferences).unwrap();
-        assert_eq!(serde_json::from_slice::<Preferences>(&bytes).unwrap(), preferences);
+        assert_eq!(
+            serde_json::from_slice::<Preferences>(&bytes).unwrap(),
+            preferences
+        );
     }
 }

@@ -4,6 +4,11 @@ use std::rc::Rc;
 
 use gpui::{Context, Window};
 
+/// Pure decision: notify only for a new completion outside the user's view.
+pub fn should_notify(enabled: bool, newly_completed: bool, unread_completion: bool) -> bool {
+    enabled && newly_completed && unread_completion
+}
+
 /// Maximum number of cards painted at once; the rest stay in FIFO order.
 pub const MAX_VISIBLE: usize = 2;
 
@@ -53,6 +58,47 @@ impl NotificationQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_enabled_unread_new_completions_notify() {
+        for enabled in [false, true] {
+            for newly_completed in [false, true] {
+                for unread_completion in [false, true] {
+                    assert_eq!(
+                        should_notify(enabled, newly_completed, unread_completion),
+                        enabled && newly_completed && unread_completion,
+                        "enabled={enabled} newly_completed={newly_completed} unread={unread_completion}"
+                    );
+                }
+            }
+        }
+        assert!(!should_notify(false, true, true), "desligado nunca notifica");
+        assert!(!should_notify(true, false, true), "streaming, histórico e conclusões já contadas não notificam");
+        assert!(!should_notify(true, true, false), "sessão à vista nunca notifica");
+    }
+
+    #[test]
+    fn history_streaming_and_repeated_agent_end_do_not_notify() {
+        use crate::session_activity::ResponseTracker;
+        use serde_json::json;
+
+        let mut tracker = ResponseTracker::default();
+        let mut seen_completed_runs = 0;
+        for (kind, record, expected) in [
+            ("response", json!({"data":{"messages":[{"role":"assistant","content":"history"}]}}), false),
+            ("agent_end", json!({}), false),
+            ("agent_start", json!({}), false),
+            ("message_update", json!({"assistantMessageEvent":{"type":"text_delta","delta":"partial"}}), false),
+            ("message_end", json!({"message":{"role":"assistant","content":[{"type":"text","text":"response"}]}}), false),
+            ("agent_end", json!({}), true),
+            ("agent_end", json!({}), false),
+        ] {
+            tracker.observe(kind, &record);
+            let newly_completed = tracker.completed != seen_completed_runs;
+            assert_eq!(should_notify(true, newly_completed, true), expected, "{kind}");
+            seen_completed_runs = tracker.completed;
+        }
+    }
 
     fn item(id: &str) -> Notification {
         Notification { id: id.into(), title: id.into(), detail: String::new(), action_label: None, action: None }
