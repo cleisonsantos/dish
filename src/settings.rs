@@ -15,6 +15,7 @@ pub enum Section { App, Appearance, Navigation, Providers, Models, Sessions, Key
 pub enum SettingsEvent {
     Closed,
     Preference(&'static str, bool),
+    CompletionSoundVolume(u8),
     /// O usuário escolheu escuro, claro ou seguir o desktop.
     Appearance(AppearanceMode),
     /// Ordem e agrupamento da lista de sessões.
@@ -151,6 +152,7 @@ pub struct Settings {
     thinking: bool,
     titles: bool,
     sound: bool,
+    sound_volume: u8,
     appearance: AppearanceMode,
     /// Ordem e agrupamento da lista de sessões.
     navigation_choice: crate::preferences::NavigationChoice,
@@ -203,6 +205,7 @@ pub struct Settings {
 pub struct SettingsView {
     /// `[detalhes, navegação, raciocínio, títulos, som]`.
     pub options: [bool; 5],
+    pub completion_sound_volume: u8,
     pub appearance: AppearanceMode,
     /// Ordem e agrupamento escolhidos para a navegação de sessões.
     pub navigation_choice: crate::preferences::NavigationChoice,
@@ -249,6 +252,7 @@ impl Settings {
             open: false, section: Section::App, focus: cx.focus_handle(),
             previous_focus: None, search,
             details: true, navigation: true, thinking: true, titles: false, sound: false,
+            sound_volume: crate::preferences::Preferences::default().completion_sound_volume,
             appearance: AppearanceMode::System,
             navigation_choice: Default::default(),
             theme: None,
@@ -289,6 +293,7 @@ impl Settings {
         self.open = true;
         self.section = section;
         [self.details, self.navigation, self.thinking, self.titles, self.sound] = view.options;
+        self.sound_volume = view.completion_sound_volume.min(100);
         self.appearance = view.appearance;
         self.navigation_choice = view.navigation_choice;
         self.theme = view.theme;
@@ -2060,6 +2065,26 @@ impl Render for Settings {
                                     cx.emit(SettingsEvent::Preference(id, !current)); cx.notify();
                                 }))),
                     );
+                    if id == "completion_sound" && self.sound {
+                        page = page.child(
+                            div().flex().flex_row().items_center().gap(px(12.))
+                                .px(px(12.)).py(px(8.))
+                                .child(div().flex_1().text_size(px(theme::TEXT_SM))
+                                    .text_color(theme::dim()).child("Volume do som"))
+                                .child(control("completion-volume-down", "−", cx.listener(|this, _, _, cx| {
+                                    this.sound_volume = this.sound_volume.saturating_sub(5);
+                                    cx.emit(SettingsEvent::CompletionSoundVolume(this.sound_volume));
+                                    cx.notify();
+                                })))
+                                .child(div().text_size(px(theme::TEXT_SM)).text_color(theme::text())
+                                    .child(format!("{}%", self.sound_volume)))
+                                .child(control("completion-volume-up", "+", cx.listener(|this, _, _, cx| {
+                                    this.sound_volume = this.sound_volume.saturating_add(5).min(100);
+                                    cx.emit(SettingsEvent::CompletionSoundVolume(this.sound_volume));
+                                    cx.notify();
+                                }))),
+                        );
+                    }
                 }
                 page = page.child(note("Gera um nome curto para o primeiro pedido relevante com o modelo da sessão (gasta tokens) e salva no Pi ao terminar a rodada. Nomes já definidos são preservados. Se falhar, mantém o texto do pedido e avisa; desative e reative para tentar novamente."));
                 page.into_any_element()
