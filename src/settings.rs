@@ -1,6 +1,9 @@
 use crate::providers::local;
-use crate::{editor::{self, Editor}, theme::{self, AppearanceMode}};
 use crate::ui::test_probe::TestProbe;
+use crate::{
+    editor::{self, Editor},
+    theme::{self, AppearanceMode},
+};
 use gpui::{prelude::*, *};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet};
@@ -10,11 +13,21 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 #[derive(Clone, Copy, PartialEq)]
-pub enum Section { App, Appearance, Navigation, Providers, Models, Sessions, Keys, About }
+pub enum Section {
+    App,
+    Appearance,
+    Navigation,
+    Providers,
+    Models,
+    Sessions,
+    Keys,
+    About,
+}
 
 pub enum SettingsEvent {
     Closed,
     Preference(&'static str, bool),
+    CompletionSoundVolume(u8),
     /// O usuário escolheu escuro, claro ou seguir o desktop.
     Appearance(AppearanceMode),
     /// Ordem e agrupamento da lista de sessões.
@@ -48,7 +61,9 @@ pub enum SettingsEvent {
     /// abertas releem `get_available_models` e comparam essa lista com os
     /// provedores configurados; o processo do Pi não recalcula o snapshot
     /// sozinho. `None` quando o estado não pôde ser verificado.
-    ProvidersChanged { catalog: Option<crate::providers::ProviderCatalog> },
+    ProvidersChanged {
+        catalog: Option<crate::providers::ProviderCatalog>,
+    },
 }
 impl EventEmitter<SettingsEvent> for Settings {}
 
@@ -129,15 +144,22 @@ struct EndpointForm {
 #[derive(Clone)]
 enum LoginStep {
     /// Escolher como entrar nesse provedor.
-    ChoosingMethod { provider: String },
+    ChoosingMethod {
+        provider: String,
+    },
     /// Login em andamento: uma pergunta pendente ou os avisos já recebidos.
     Running {
         provider: String,
         ask: Option<crate::provider_login::Ask>,
         notices: Vec<crate::provider_login::Notice>,
     },
-    Done { provider: String },
-    Failed { message: String, provider: String },
+    Done {
+        provider: String,
+    },
+    Failed {
+        message: String,
+        provider: String,
+    },
 }
 
 pub struct Settings {
@@ -152,6 +174,7 @@ pub struct Settings {
     titles: bool,
     sound: bool,
     notification: bool,
+    sound_volume: u8,
     appearance: AppearanceMode,
     /// Ordem e agrupamento da lista de sessões.
     navigation_choice: crate::preferences::NavigationChoice,
@@ -204,6 +227,7 @@ pub struct Settings {
 pub struct SettingsView {
     /// `[detalhes, navegação, raciocínio, títulos, som, notificação]`.
     pub options: [bool; 6],
+    pub completion_sound_volume: u8,
     pub appearance: AppearanceMode,
     /// Ordem e agrupamento escolhidos para a navegação de sessões.
     pub navigation_choice: crate::preferences::NavigationChoice,
@@ -243,17 +267,33 @@ impl Settings {
         cx.observe(&endpoint_key, |_, _, cx| cx.notify()).detach();
         endpoint_key.update(cx, |editor, cx| editor.set_masked(true, cx));
         let endpoint_models = cx.new(|cx| {
-            Editor::new("", "deixe vazio para usar todos os modelos listados", window, cx)
+            Editor::new(
+                "",
+                "deixe vazio para usar todos os modelos listados",
+                window,
+                cx,
+            )
         });
-        cx.observe(&endpoint_models, |_, _, cx| cx.notify()).detach();
+        cx.observe(&endpoint_models, |_, _, cx| cx.notify())
+            .detach();
         Self {
-            open: false, section: Section::App, focus: cx.focus_handle(),
-            previous_focus: None, search,
-            details: true, navigation: true, thinking: true, titles: false, sound: false, notification: true,
+            open: false,
+            section: Section::App,
+            focus: cx.focus_handle(),
+            previous_focus: None,
+            search,
+            details: true,
+            navigation: true,
+            thinking: true,
+            titles: false,
+            sound: false,
+            notification: true,
+            sound_volume: crate::preferences::Preferences::default().completion_sound_volume,
             appearance: AppearanceMode::System,
             navigation_choice: Default::default(),
             theme: None,
-            models: Vec::new(), hidden: BTreeSet::new(),
+            models: Vec::new(),
+            hidden: BTreeSet::new(),
             providers: ProvidersView::Idle,
             provider_notice: None,
             login: None,
@@ -286,10 +326,20 @@ impl Settings {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.open { self.previous_focus = window.focused(cx); }
+        if !self.open {
+            self.previous_focus = window.focused(cx);
+        }
         self.open = true;
         self.section = section;
-        [self.details, self.navigation, self.thinking, self.titles, self.sound, self.notification] = view.options;
+        [
+            self.details,
+            self.navigation,
+            self.thinking,
+            self.titles,
+            self.sound,
+            self.notification,
+        ] = view.options;
+        self.sound_volume = view.completion_sound_volume.min(100);
         self.appearance = view.appearance;
         self.navigation_choice = view.navigation_choice;
         self.theme = view.theme;
@@ -299,13 +349,19 @@ impl Settings {
         self.sessions = view.sessions;
         self.confirm_folder = None;
         self.focus.focus(window, cx);
-        if section == Section::Keys { self.search.read(cx).focus_handle.clone().focus(window, cx); } else { self.focus.focus(window, cx); }
+        if section == Section::Keys {
+            self.search.read(cx).focus_handle.clone().focus(window, cx);
+        } else {
+            self.focus.focus(window, cx);
+        }
         self.provider_notice = None;
         if section == Section::Providers {
             self.refresh_providers(cx);
             self.start_local_detection(cx);
         }
-        if section == Section::About { self.refresh_pi_version(cx); }
+        if section == Section::About {
+            self.refresh_pi_version(cx);
+        }
         cx.notify();
     }
 
@@ -317,7 +373,9 @@ impl Settings {
 
     /// Atualiza a lista de pastas com sessões enquanto a tela está aberta.
     pub fn set_sessions(&mut self, view: SessionsView, cx: &mut Context<Self>) {
-        if self.sessions == view { return; }
+        if self.sessions == view {
+            return;
+        }
         if let Some(confirm) = &self.confirm_folder {
             if !view.folders.iter().any(|folder| folder.cwd == confirm.cwd) {
                 self.confirm_folder = None;
@@ -367,7 +425,9 @@ impl Settings {
             let _ = this.update(cx, |this, cx| {
                 this.providers = match probed {
                     crate::providers::Probed::Ready(snapshot) => ProvidersView::Ready(snapshot),
-                    crate::providers::Probed::Unavailable(reason) => ProvidersView::Unavailable(reason),
+                    crate::providers::Probed::Unavailable(reason) => {
+                        ProvidersView::Unavailable(reason)
+                    }
                 };
                 if std::mem::take(&mut this.provider_change_pending) {
                     let catalog = match &this.providers {
@@ -394,7 +454,10 @@ impl Settings {
         self.local_cancel = Some(Arc::clone(&token));
         self.local_generation = self.local_generation.wrapping_add(1);
         let generation = self.local_generation;
-        self.local = local::LocalService::ALL.iter().map(|_| LocalProbe::Searching).collect();
+        self.local = local::LocalService::ALL
+            .iter()
+            .map(|_| LocalProbe::Searching)
+            .collect();
         cx.notify();
         for service in local::LocalService::ALL {
             let token = Arc::clone(&token);
@@ -494,7 +557,9 @@ impl Settings {
         self.open = false;
         self.reset_local_and_endpoint(cx);
         self.search.update(cx, |editor, cx| editor.clear(cx));
-        if let Some(focus) = self.previous_focus.take() { focus.focus(window, cx); }
+        if let Some(focus) = self.previous_focus.take() {
+            focus.focus(window, cx);
+        }
         cx.emit(SettingsEvent::Closed);
         cx.notify();
     }
@@ -522,9 +587,14 @@ impl Settings {
     /// Só emite se a caixa foi marcada e a pasta continua livre agora: o
     /// estado pode ter mudado enquanto a confirmação estava aberta.
     fn confirm_folder_delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(confirm) = self.confirm_folder.take() else { return; };
+        let Some(confirm) = self.confirm_folder.take() else {
+            return;
+        };
         let free = self.sessions.deleting.is_none()
-            && self.sessions.folders.iter()
+            && self
+                .sessions
+                .folders
+                .iter()
                 .any(|folder| folder.cwd == confirm.cwd && !folder.open && !folder.running);
         if confirm.checked && free {
             cx.emit(SettingsEvent::DeleteFolderSessions(confirm.cwd));
@@ -534,40 +604,91 @@ impl Settings {
     }
 
     /// Confirmação da exclusão em lote, sobre o cartão de configurações.
-    fn folder_confirmation_element(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn folder_confirmation_element(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let confirm = self.confirm_folder.as_ref()?;
-        let folder = self.sessions.folders.iter().find(|folder| folder.cwd == confirm.cwd)?;
+        let folder = self
+            .sessions
+            .folders
+            .iter()
+            .find(|folder| folder.cwd == confirm.cwd)?;
         let checked = confirm.checked;
         let selected = confirm.confirm_selected;
         let mut controls = div().flex().justify_end().flex_wrap().gap(px(theme::S2));
         for (is_confirm, label) in [(false, "Cancelar"), (true, "Excluir sessões")] {
             let enabled = !is_confirm || checked;
-            controls = controls.child(div().id(if is_confirm { "confirm-folder-delete" } else { "cancel-folder-delete" })
-                .px(px(theme::S3)).py(px(theme::S2)).rounded(theme::r_control())
-                .border_1().border_color(theme::line_strong()).text_size(px(theme::TEXT_SM))
-                .text_color(if is_confirm { theme::danger() } else { theme::text() })
-                .when(selected == is_confirm, |el| el.shadow(theme::focus_ring()))
-                .when(!enabled, |el| el.opacity(0.5))
-                .when(enabled, |el| el.cursor_pointer().hover(|style| style.bg(theme::hover()))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        cx.stop_propagation();
-                        if is_confirm { this.confirm_folder_delete(window, cx); } else { this.cancel_folder_confirm(window, cx); }
-                    })))
-                .child(label));
+            controls = controls.child(
+                div()
+                    .id(if is_confirm {
+                        "confirm-folder-delete"
+                    } else {
+                        "cancel-folder-delete"
+                    })
+                    .px(px(theme::S3))
+                    .py(px(theme::S2))
+                    .rounded(theme::r_control())
+                    .border_1()
+                    .border_color(theme::line_strong())
+                    .text_size(px(theme::TEXT_SM))
+                    .text_color(if is_confirm {
+                        theme::danger()
+                    } else {
+                        theme::text()
+                    })
+                    .when(selected == is_confirm, |el| el.shadow(theme::focus_ring()))
+                    .when(!enabled, |el| el.opacity(0.5))
+                    .when(enabled, |el| {
+                        el.cursor_pointer()
+                            .hover(|style| style.bg(theme::hover()))
+                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                cx.stop_propagation();
+                                if is_confirm {
+                                    this.confirm_folder_delete(window, cx);
+                                } else {
+                                    this.cancel_folder_confirm(window, cx);
+                                }
+                            }))
+                    })
+                    .child(label),
+            );
         }
-        let checkbox = div().id("folder-delete-ack").flex().flex_row().items_center().gap(px(theme::S2))
+        let checkbox = div()
+            .id("folder-delete-ack")
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(theme::S2))
             .cursor_pointer()
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 cx.stop_propagation();
-                if let Some(confirm) = this.confirm_folder.as_mut() { confirm.checked = !confirm.checked; }
+                if let Some(confirm) = this.confirm_folder.as_mut() {
+                    confirm.checked = !confirm.checked;
+                }
                 cx.notify();
             }))
-            .child(div().flex_none().size(px(14.)).rounded(theme::r_small()).border_1()
-                .border_color(theme::line_strong()).flex().items_center().justify_center()
-                .text_size(px(theme::TEXT_XS)).text_color(theme::text())
-                .when(checked, |el| el.child("✓")))
-            .child(div().text_size(px(theme::TEXT_SM)).text_color(theme::text())
-                .child("Entendi que os arquivos vão para a lixeira"));
+            .child(
+                div()
+                    .flex_none()
+                    .size(px(14.))
+                    .rounded(theme::r_small())
+                    .border_1()
+                    .border_color(theme::line_strong())
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(theme::TEXT_XS))
+                    .text_color(theme::text())
+                    .when(checked, |el| el.child("✓")),
+            )
+            .child(
+                div()
+                    .text_size(px(theme::TEXT_SM))
+                    .text_color(theme::text())
+                    .child("Entendi que os arquivos vão para a lixeira"),
+            );
         Some(div().id("folder-delete-scrim").occlude().absolute().inset(px(0.))
             .p(px(theme::S4)).flex().items_center().justify_center()
             .bg(theme::scrim()).track_focus(&self.confirm_focus)
@@ -654,13 +775,27 @@ impl Settings {
             } else {
                 format!("{count} sessões movidas para a lixeira")
             };
-            page = page.child(div().flex().flex_row().items_center().gap(px(theme::S3))
-                .child(note(&label))
-                .child(control("sessions-undo", if restoring { "Restaurando…" } else { "Desfazer" }, cx.listener(
-                    move |_, _, _, cx| {
-                        if !restoring { cx.emit(SettingsEvent::UndoFolderDelete); }
-                    },
-                ))));
+            page = page.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(theme::S3))
+                    .child(note(&label))
+                    .child(control(
+                        "sessions-undo",
+                        if restoring {
+                            "Restaurando…"
+                        } else {
+                            "Desfazer"
+                        },
+                        cx.listener(move |_, _, _, cx| {
+                            if !restoring {
+                                cx.emit(SettingsEvent::UndoFolderDelete);
+                            }
+                        }),
+                    )),
+            );
         }
         if view.folders.is_empty() {
             page = page.child(note("Nenhuma sessão salva pelo Pi."));
@@ -668,7 +803,13 @@ impl Settings {
         let now = std::time::SystemTime::now();
         for (index, folder) in view.folders.iter().enumerate() {
             let blocked = folder.open || folder.running;
-            let badge = if folder.running { Some("Executando") } else if folder.open { Some("Aberta") } else { None };
+            let badge = if folder.running {
+                Some("Executando")
+            } else if folder.open {
+                Some("Aberta")
+            } else {
+                None
+            };
             let reason = if blocked {
                 Some("Feche as conversas desta pasta antes de excluir — o Pi pode estar usando os arquivos.")
             } else if view.deleting.is_some() {
@@ -688,25 +829,69 @@ impl Settings {
                 disabled_control(id, label)
             } else {
                 let cwd = folder.cwd.clone();
-                control(id, label, cx.listener(move |this, _, window, cx| {
-                    this.confirm_folder = Some(FolderConfirm { cwd: cwd.clone(), checked: false, confirm_selected: false });
-                    this.confirm_focus.focus(window, cx);
-                    cx.notify();
-                }))
+                control(
+                    id,
+                    label,
+                    cx.listener(move |this, _, window, cx| {
+                        this.confirm_folder = Some(FolderConfirm {
+                            cwd: cwd.clone(),
+                            checked: false,
+                            confirm_selected: false,
+                        });
+                        this.confirm_focus.focus(window, cx);
+                        cx.notify();
+                    }),
+                )
             };
-            page = page.child(div().flex().flex_col().gap(px(theme::S2)).pt(px(theme::S3))
-                .border_t_1().border_color(theme::line_soft())
-                .child(div().flex().flex_row().items_center().gap(px(theme::S2)).min_w(px(0.))
-                    .child(div().flex_1().min_w(px(0.)).truncate().font_family(theme::FONT_MONO)
-                        .text_size(px(theme::TEXT_SM)).text_color(theme::text())
-                        .child(SharedString::from(folder.cwd.display().to_string())))
-                    .when_some(badge, |el, badge| el.child(div().flex_none().px(px(6.)).py(px(1.))
-                        .rounded(theme::r_small()).border_1().border_color(theme::line())
-                        .text_size(px(theme::TEXT_XS)).text_color(theme::dim()).child(badge))))
-                .child(div().text_size(px(theme::TEXT_XS)).text_color(theme::dim())
-                    .child(SharedString::from(detail)))
-                .child(div().flex().child(button))
-                .when_some(reason, |el, reason| el.child(note(reason))));
+            page = page.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(theme::S2))
+                    .pt(px(theme::S3))
+                    .border_t_1()
+                    .border_color(theme::line_soft())
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(theme::S2))
+                            .min_w(px(0.))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .truncate()
+                                    .font_family(theme::FONT_MONO)
+                                    .text_size(px(theme::TEXT_SM))
+                                    .text_color(theme::text())
+                                    .child(SharedString::from(folder.cwd.display().to_string())),
+                            )
+                            .when_some(badge, |el, badge| {
+                                el.child(
+                                    div()
+                                        .flex_none()
+                                        .px(px(6.))
+                                        .py(px(1.))
+                                        .rounded(theme::r_small())
+                                        .border_1()
+                                        .border_color(theme::line())
+                                        .text_size(px(theme::TEXT_XS))
+                                        .text_color(theme::dim())
+                                        .child(badge),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(theme::TEXT_XS))
+                            .text_color(theme::dim())
+                            .child(SharedString::from(detail)),
+                    )
+                    .child(div().flex().child(button))
+                    .when_some(reason, |el, reason| el.child(note(reason))),
+            );
         }
         page.into_any_element()
     }
@@ -725,37 +910,48 @@ impl Settings {
             page = page.child(note(&notice));
         }
         match self.login.clone() {
-            Some(LoginStep::ChoosingMethod { provider }) => self.method_chooser(page, &provider, cx),
-            Some(LoginStep::Running { provider, ask, notices }) => {
-                self.login_running(page, &provider, ask, &notices, cx)
+            Some(LoginStep::ChoosingMethod { provider }) => {
+                self.method_chooser(page, &provider, cx)
             }
-            Some(LoginStep::Done { provider }) => {
-                page.child(note(&format!("Provedor {provider} conectado.")))
-                    .child(actions_row(vec![
-                        control("providers-back", "Voltar à lista", cx.listener(|this, _, window, cx| {
-                            this.login = None;
-                            this.focus.focus(window, cx);
-                            cx.notify();
-                        })),
-                    ]))
-                    .into_any_element()
-            }
+            Some(LoginStep::Running {
+                provider,
+                ask,
+                notices,
+            }) => self.login_running(page, &provider, ask, &notices, cx),
+            Some(LoginStep::Done { provider }) => page
+                .child(note(&format!("Provedor {provider} conectado.")))
+                .child(actions_row(vec![control(
+                    "providers-back",
+                    "Voltar à lista",
+                    cx.listener(|this, _, window, cx| {
+                        this.login = None;
+                        this.focus.focus(window, cx);
+                        cx.notify();
+                    }),
+                )]))
+                .into_any_element(),
             Some(LoginStep::Failed { message, provider }) => page
                 .child(note(&message))
                 .child(actions_row(vec![
-                    control("providers-retry-login", "Tentar de novo", cx.listener(
-                        move |this, _, window, cx| {
+                    control(
+                        "providers-retry-login",
+                        "Tentar de novo",
+                        cx.listener(move |this, _, window, cx| {
                             let provider = provider.clone();
                             this.login = Some(LoginStep::ChoosingMethod { provider });
                             this.focus.focus(window, cx);
                             cx.notify();
-                        },
-                    )),
-                    control("providers-back", "Voltar à lista", cx.listener(|this, _, window, cx| {
-                        this.login = None;
-                        this.focus.focus(window, cx);
-                        cx.notify();
-                    })),
+                        }),
+                    ),
+                    control(
+                        "providers-back",
+                        "Voltar à lista",
+                        cx.listener(|this, _, window, cx| {
+                            this.login = None;
+                            this.focus.focus(window, cx);
+                            cx.notify();
+                        }),
+                    ),
                 ]))
                 .into_any_element(),
             None => {
@@ -772,7 +968,12 @@ impl Settings {
     fn provider_list(&mut self, mut page: Div, cx: &mut Context<Self>) -> AnyElement {
         // Três controles numa linha só não cabem na largura da seção com a
         // sidebar aberta: sem quebra, os rótulos comprimem e ficam ilegíveis.
-        let mut actions = div().flex().flex_row().flex_wrap().items_center().gap(px(8.));
+        let mut actions = div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .items_center()
+            .gap(px(8.));
         match self.providers.clone() {
             ProvidersView::Idle | ProvidersView::Loading => {
                 page = page.child(note("Consultando o Pi…"));
@@ -781,21 +982,29 @@ impl Settings {
                 page = page.child(note(&reason));
                 // O caminho de saída quando o pacote não foi encontrado: a
                 // pessoa aponta o executável sem precisar editar variável.
-                actions = actions.child(control(
-                    "providers-choose-pi",
-                    "Escolher executável do Pi",
-                    cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::ChoosePi)),
-                ).flex_none());
+                actions = actions.child(
+                    control(
+                        "providers-choose-pi",
+                        "Escolher executável do Pi",
+                        cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::ChoosePi)),
+                    )
+                    .flex_none(),
+                );
                 // Sem Node ou sem pacote, o terminal ainda resolve: o Dish
                 // abre o Pi e a pessoa usa /login lá.
-                actions = actions.child(control("providers-terminal", "Abrir o Pi num terminal", cx.listener(
-                    |this, _, _, cx| {
-                        this.provider_notice = crate::installation::launch_pi_login()
-                            .err()
-                            .map(|error| format!("{error:#}"));
-                        cx.notify();
-                    },
-                )).flex_none());
+                actions = actions.child(
+                    control(
+                        "providers-terminal",
+                        "Abrir o Pi num terminal",
+                        cx.listener(|this, _, _, cx| {
+                            this.provider_notice = crate::installation::launch_pi_login()
+                                .err()
+                                .map(|error| format!("{error:#}"));
+                            cx.notify();
+                        }),
+                    )
+                    .flex_none(),
+                );
             }
             ProvidersView::Ready(snapshot) => {
                 if snapshot.empty() {
@@ -806,38 +1015,84 @@ impl Settings {
                     ));
                 }
                 let mut providers = snapshot.providers.clone();
-                providers.sort_by(|a, b| b.configured.cmp(&a.configured).then_with(|| a.id.cmp(&b.id)));
+                providers.sort_by(|a, b| {
+                    b.configured
+                        .cmp(&a.configured)
+                        .then_with(|| a.id.cmp(&b.id))
+                });
                 for provider in providers {
                     let status = if provider.configured {
-                        provider.source.map(|source| source.label()).unwrap_or("conectado")
+                        provider
+                            .source
+                            .map(|source| source.label())
+                            .unwrap_or("conectado")
                     } else {
                         "sem credencial"
                     };
                     let methods = provider.methods();
-                    let mut row = div().flex().flex_row().items_center().gap(px(12.))
-                        .px(px(12.)).py(px(8.)).rounded(theme::r_control())
-                        .bg(theme::surface_2()).border_1().border_color(theme::line_soft())
-                        .child(div().flex_1().min_w(px(0.)).truncate()
-                            .font_family(theme::FONT_MONO).text_size(px(theme::TEXT_SM))
-                            .text_color(if provider.configured { theme::text() } else { theme::faint() })
-                            .child(SharedString::from(provider.id.clone())))
-                        .child(div().flex_none().text_size(px(theme::TEXT_XS))
-                            .text_color(if provider.configured { theme::dim() } else { theme::faint() })
-                            .child(SharedString::from(status)))
-                        .child(div().flex_none().font_family(theme::FONT_MONO)
-                            .text_size(px(theme::TEXT_XS)).text_color(theme::faint())
-                            .child(SharedString::from(model_count(provider.models))));
+                    let mut row = div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(12.))
+                        .px(px(12.))
+                        .py(px(8.))
+                        .rounded(theme::r_control())
+                        .bg(theme::surface_2())
+                        .border_1()
+                        .border_color(theme::line_soft())
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .truncate()
+                                .font_family(theme::FONT_MONO)
+                                .text_size(px(theme::TEXT_SM))
+                                .text_color(if provider.configured {
+                                    theme::text()
+                                } else {
+                                    theme::faint()
+                                })
+                                .child(SharedString::from(provider.id.clone())),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_size(px(theme::TEXT_XS))
+                                .text_color(if provider.configured {
+                                    theme::dim()
+                                } else {
+                                    theme::faint()
+                                })
+                                .child(SharedString::from(status)),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .font_family(theme::FONT_MONO)
+                                .text_size(px(theme::TEXT_XS))
+                                .text_color(theme::faint())
+                                .child(SharedString::from(model_count(provider.models))),
+                        );
                     if provider.configured {
                         if self.confirming_logout.as_deref() == Some(provider.id.as_str()) {
                             let id = provider.id.clone();
                             row = row
                                 .child(control(
-                                    SharedString::from(format!("providers-logout-confirm-{}", provider.id)),
+                                    SharedString::from(format!(
+                                        "providers-logout-confirm-{}",
+                                        provider.id
+                                    )),
                                     "Confirmar remoção",
-                                    cx.listener(move |this, _, _, cx| this.logout_provider(id.clone(), cx)),
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.logout_provider(id.clone(), cx)
+                                    }),
                                 ))
                                 .child(control(
-                                    SharedString::from(format!("providers-logout-cancel-{}", provider.id)),
+                                    SharedString::from(format!(
+                                        "providers-logout-cancel-{}",
+                                        provider.id
+                                    )),
                                     "Cancelar",
                                     cx.listener(|this, _, _, cx| {
                                         this.confirming_logout = None;
@@ -862,7 +1117,9 @@ impl Settings {
                             SharedString::from(format!("providers-connect-{}", provider.id)),
                             "Conectar",
                             cx.listener(move |this, _, _, cx| {
-                                this.login = Some(LoginStep::ChoosingMethod { provider: id.clone() });
+                                this.login = Some(LoginStep::ChoosingMethod {
+                                    provider: id.clone(),
+                                });
                                 this.provider_notice = None;
                                 cx.notify();
                             }),
@@ -882,10 +1139,17 @@ impl Settings {
                 page = page.child(note(&summary));
             }
         }
-        actions = actions.child(control("providers-retry", "Verificar de novo", cx.listener(
-            |this, _, _, cx| this.refresh_providers(cx),
-        )).flex_none());
-        page.child(actions).child(self.local_block(cx)).into_any_element()
+        actions = actions.child(
+            control(
+                "providers-retry",
+                "Verificar de novo",
+                cx.listener(|this, _, _, cx| this.refresh_providers(cx)),
+            )
+            .flex_none(),
+        );
+        page.child(actions)
+            .child(self.local_block(cx))
+            .into_any_element()
     }
 
     /// Descoberta dos serviços locais e a porta de entrada do endpoint
@@ -929,11 +1193,7 @@ impl Settings {
                 "{names} são procurados no endereço padrão de cada serviço."
             )));
         for (index, service) in local::LocalService::ALL.into_iter().enumerate() {
-            let probe = self
-                .local
-                .get(index)
-                .cloned()
-                .unwrap_or(LocalProbe::Idle);
+            let probe = self.local.get(index).cloned().unwrap_or(LocalProbe::Idle);
             let mut row = div()
                 .flex()
                 .flex_row()
@@ -961,10 +1221,7 @@ impl Settings {
                 }
                 LocalProbe::Searching => {
                     row = row.child(local_status(
-                        &format!(
-                            "procurando em {}…",
-                            root_label(service.default_root())
-                        ),
+                        &format!("procurando em {}…", root_label(service.default_root())),
                         theme::dim(),
                     ));
                 }
@@ -1044,12 +1301,26 @@ impl Settings {
         for (kind, label) in methods {
             let provider = provider_owned.clone();
             page = page.child(
-                div().flex().flex_row().items_center().gap(px(12.))
-                    .px(px(12.)).py(px(8.)).rounded(theme::r_control())
-                    .bg(theme::surface_2()).border_1().border_color(theme::line_soft())
-                    .child(div().flex_1().min_w(px(0.)).truncate()
-                        .text_size(px(theme::TEXT_SM)).text_color(theme::text())
-                        .child(SharedString::from(label)))
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(12.))
+                    .px(px(12.))
+                    .py(px(8.))
+                    .rounded(theme::r_control())
+                    .bg(theme::surface_2())
+                    .border_1()
+                    .border_color(theme::line_soft())
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .truncate()
+                            .text_size(px(theme::TEXT_SM))
+                            .text_color(theme::text())
+                            .child(SharedString::from(label)),
+                    )
                     .child(control(
                         SharedString::from(format!("providers-method-{}", kind.wire())),
                         "Usar",
@@ -1059,12 +1330,15 @@ impl Settings {
                     )),
             );
         }
-        page.child(actions_row(vec![control("providers-back", "Voltar", cx.listener(
-            |this, _, _, cx| {
+        page.child(actions_row(vec![control(
+            "providers-back",
+            "Voltar",
+            cx.listener(|this, _, _, cx| {
                 this.login = None;
                 cx.notify();
-            },
-        ))])).into_any_element()
+            }),
+        )]))
+        .into_any_element()
     }
 
     /// O login em andamento: pergunta pendente, avisos e a saída de emergência.
@@ -1104,15 +1378,21 @@ impl Settings {
                         cx.listener(move |_, _, _, _| crate::platform::open_url(&open)),
                     )]));
                 }
-                Notice::DeviceCode { user_code, verification_uri, .. } => {
+                Notice::DeviceCode {
+                    user_code,
+                    verification_uri,
+                    ..
+                } => {
                     page = page.child(note(&format!("Código: {user_code}")));
                     if let Some(uri) = verification_uri {
                         let uri = uri.clone();
-                        page = page.child(note(&format!("Em {uri}"))).child(actions_row(vec![control(
-                            "providers-open-device",
-                            "Abrir a página do código",
-                            cx.listener(move |_, _, _, _| crate::platform::open_url(&uri)),
-                        )]));
+                        page = page
+                            .child(note(&format!("Em {uri}")))
+                            .child(actions_row(vec![control(
+                                "providers-open-device",
+                                "Abrir a página do código",
+                                cx.listener(move |_, _, _, _| crate::platform::open_url(&uri)),
+                            )]));
                     }
                 }
                 Notice::Progress { message } => {
@@ -1127,38 +1407,70 @@ impl Settings {
                     // Cada opção é uma resposta: o valor vai como o id do Pi.
                     for option in &ask.options {
                         let id = option.id.clone();
-                        let mut row = div().flex().flex_row().items_center().gap(px(12.))
-                            .px(px(12.)).py(px(8.)).rounded(theme::r_control())
-                            .bg(theme::surface_2()).border_1().border_color(theme::line_soft())
-                            .child(div().flex_1().min_w(px(0.)).child(div().truncate()
-                                .text_size(px(theme::TEXT_SM)).text_color(theme::text())
-                                .child(SharedString::from(option.label.clone()))));
+                        let mut row = div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(12.))
+                            .px(px(12.))
+                            .py(px(8.))
+                            .rounded(theme::r_control())
+                            .bg(theme::surface_2())
+                            .border_1()
+                            .border_color(theme::line_soft())
+                            .child(
+                                div().flex_1().min_w(px(0.)).child(
+                                    div()
+                                        .truncate()
+                                        .text_size(px(theme::TEXT_SM))
+                                        .text_color(theme::text())
+                                        .child(SharedString::from(option.label.clone())),
+                                ),
+                            );
                         if let Some(description) = &option.description {
-                            row = row.child(div().flex_none().font_family(theme::FONT_MONO)
-                                .text_size(px(theme::TEXT_XS)).text_color(theme::faint())
-                                .child(SharedString::from(description.clone())));
+                            row = row.child(
+                                div()
+                                    .flex_none()
+                                    .font_family(theme::FONT_MONO)
+                                    .text_size(px(theme::TEXT_XS))
+                                    .text_color(theme::faint())
+                                    .child(SharedString::from(description.clone())),
+                            );
                         }
                         page = page.child(row.child(control(
                             SharedString::from(format!("providers-option-{}", option.id)),
                             "Escolher",
-                            cx.listener(move |this, _, _, cx| this.submit_answer(Some(id.clone()), cx)),
+                            cx.listener(move |this, _, _, cx| {
+                                this.submit_answer(Some(id.clone()), cx)
+                            }),
                         )));
                     }
                 } else {
                     let placeholder = ask.placeholder.clone().unwrap_or_default();
                     let hint = match ask.kind {
-                        AskKind::Secret => "O valor não é guardado pelo Dish nem aparece em registro.",
+                        AskKind::Secret => {
+                            "O valor não é guardado pelo Dish nem aparece em registro."
+                        }
                         AskKind::ManualCode => "Cole o código devolvido pelo provedor.",
                         _ => "",
                     };
                     page = page.child(
-                        div().id("providers-answer")
-                            .test_probe(|| "providers-answer".into(), || serde_json::json!({
-                                "masked": self.answer.read(cx).masked,
-                                "length": self.answer.read(cx).text(cx).chars().count(),
-                            }))
-                            .p(px(8.)).rounded(theme::r_technical())
-                            .bg(theme::inset()).border_1().border_color(theme::line_soft())
+                        div()
+                            .id("providers-answer")
+                            .test_probe(
+                                || "providers-answer".into(),
+                                || {
+                                    serde_json::json!({
+                                        "masked": self.answer.read(cx).masked,
+                                        "length": self.answer.read(cx).text(cx).chars().count(),
+                                    })
+                                },
+                            )
+                            .p(px(8.))
+                            .rounded(theme::r_technical())
+                            .bg(theme::inset())
+                            .border_1()
+                            .border_color(theme::line_soft())
                             .child(self.answer.clone()),
                     );
                     if !placeholder.is_empty() {
@@ -1447,9 +1759,8 @@ impl Settings {
         let fingerprint =
             endpoint_fingerprint(&provider, &base_url, api, key_text.trim(), &models_text);
         if validated != Some(fingerprint) {
-            self.provider_notice = Some(
-                "Valide de novo: os campos mudaram desde a última validação.".to_string(),
-            );
+            self.provider_notice =
+                Some("Valide de novo: os campos mudaram desde a última validação.".to_string());
             cx.notify();
             return;
         }
@@ -1541,17 +1852,12 @@ impl Settings {
             )
             .child(endpoint_field("Nome do provedor", self.endpoint_id.clone()))
             .child(endpoint_field("URL base", self.endpoint_url.clone()));
-        let mut selector = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(6.))
-            .child(
-                div()
-                    .text_size(px(theme::TEXT_XS))
-                    .text_color(theme::dim())
-                    .child("Tipo de API"),
-            );
+        let mut selector = div().flex().flex_row().items_center().gap(px(6.)).child(
+            div()
+                .text_size(px(theme::TEXT_XS))
+                .text_color(theme::dim())
+                .child("Tipo de API"),
+        );
         for choice in [local::Api::OpenAiCompletions, local::Api::OpenAiResponses] {
             let active = choice == api;
             let id = match choice {
@@ -1559,12 +1865,16 @@ impl Settings {
                 local::Api::OpenAiResponses => "providers-endpoint-api-responses",
             };
             selector = selector.child(
-                control(id, choice.label(), cx.listener(move |this, _, _, cx| {
-                    if let Some(form) = this.endpoint.as_mut() {
-                        form.api = choice;
-                    }
-                    cx.notify();
-                }))
+                control(
+                    id,
+                    choice.label(),
+                    cx.listener(move |this, _, _, cx| {
+                        if let Some(form) = this.endpoint.as_mut() {
+                            form.api = choice;
+                        }
+                        cx.notify();
+                    }),
+                )
                 .when(active, |el| {
                     el.bg(theme::surface_2())
                         .border_color(theme::line())
@@ -1601,8 +1911,7 @@ impl Settings {
                         .text_size(px(theme::TEXT_XS))
                         .text_color(theme::dim());
                     for id in models.iter().take(12) {
-                        list = list
-                            .child(div().truncate().child(SharedString::from(id.clone())));
+                        list = list.child(div().truncate().child(SharedString::from(id.clone())));
                     }
                     form = form.child(list);
                 }
@@ -1655,14 +1964,19 @@ impl Settings {
     }
 }
 
-fn column() -> Div { div().flex().flex_col().gap(px(12.)).min_w(px(0.)) }
+fn column() -> Div {
+    div().flex().flex_col().gap(px(12.)).min_w(px(0.))
+}
 
 /// Agrupa os modelos por provedor, com os nomes em ordem alfabética dentro de
 /// cada grupo. O `BTreeMap` mantém os provedores em ordem alfabética também.
 fn grouped_models(models: &[(String, String)]) -> BTreeMap<&str, Vec<&str>> {
     let mut providers: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for (provider, id) in models {
-        providers.entry(provider.as_str()).or_default().push(id.as_str());
+        providers
+            .entry(provider.as_str())
+            .or_default()
+            .push(id.as_str());
     }
     for ids in providers.values_mut() {
         ids.sort_unstable();
@@ -1672,7 +1986,11 @@ fn grouped_models(models: &[(String, String)]) -> BTreeMap<&str, Vec<&str>> {
 
 /// Estado de um grupo no seletor: tudo ligado, tudo desligado ou misto.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum SwitchState { Off, Mixed, On }
+enum SwitchState {
+    Off,
+    Mixed,
+    On,
+}
 
 /// Estado do grupo a partir das chaves dos seus modelos.
 fn group_state(keys: &[String], hidden: &BTreeSet<String>) -> SwitchState {
@@ -1688,7 +2006,11 @@ fn group_state(keys: &[String], hidden: &BTreeSet<String>) -> SwitchState {
 
 /// Chave de liga/desliga: trilho com o botão, na linguagem da interface
 /// (acento quando ligada, linha quando desligada, botão centrado quando misto).
-fn switch(id: impl Into<ElementId>, state: SwitchState, click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Stateful<Div> {
+fn switch(
+    id: impl Into<ElementId>,
+    state: SwitchState,
+    click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
     let on = state == SwitchState::On;
     let id: ElementId = id.into();
     let knob_color = match state {
@@ -1706,18 +2028,28 @@ fn switch(id: impl Into<ElementId>, state: SwitchState, click: impl Fn(&ClickEve
         .cursor_pointer()
         .bg(if on { theme::accent() } else { theme::inset() })
         .border_1()
-        .border_color(if on { theme::accent() } else { theme::line_strong() })
+        .border_color(if on {
+            theme::accent()
+        } else {
+            theme::line_strong()
+        })
         .child(match state {
             SwitchState::Mixed => crate::ui::switch_knob_mixed(knob_color).into_any_element(),
-            _ => crate::ui::switch_knob((id, if on { "knob-on" } else { "knob-off" }), on, knob_color)
-                .into_any_element(),
+            _ => crate::ui::switch_knob(
+                (id, if on { "knob-on" } else { "knob-off" }),
+                on,
+                knob_color,
+            )
+            .into_any_element(),
         })
         // O interruptor é o alvo próprio; em linhas toda-clicáveis ele não
         // pode repetir o mesmo giro duas vezes.
-        .on_click(move |event: &ClickEvent, window: &mut Window, cx: &mut App| {
-            cx.stop_propagation();
-            click(event, window, cx);
-        })
+        .on_click(
+            move |event: &ClickEvent, window: &mut Window, cx: &mut App| {
+                cx.stop_propagation();
+                click(event, window, cx);
+            },
+        )
 }
 fn local_idle() -> Vec<LocalProbe> {
     local::LocalService::ALL
@@ -1775,7 +2107,11 @@ fn split_models(text: &str) -> Vec<String> {
     let mut models = Vec::new();
     for token in text.split(|character: char| character == ',' || character.is_whitespace()) {
         let token = token.trim();
-        if token.is_empty() || models.iter().any(|existing: &String| existing.as_str() == token) {
+        if token.is_empty()
+            || models
+                .iter()
+                .any(|existing: &String| existing.as_str() == token)
+        {
             continue;
         }
         models.push(token.to_string());
@@ -1818,23 +2154,47 @@ fn note(value: &str) -> Div {
 }
 /// Fileira de ações: mesma medida em toda a seção.
 fn actions_row(actions: Vec<Stateful<Div>>) -> Div {
-    div().flex().flex_row().items_center().gap(px(8.)).children(actions)
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(8.))
+        .children(actions)
 }
 
-fn control(id: impl Into<ElementId>, label: impl Into<SharedString>, click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Stateful<Div> {
+fn control(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
     // O padding desconta a borda: a caixa final fica com as mesmas medidas da
     // versão sem fio, e o conteúdo abaixo não desliza um pixel.
-    div().id(id).px(px(11.)).py(px(7.)).rounded(theme::r_control())
-        .bg(theme::surface_2()).border_1().border_color(theme::line_soft())
+    div()
+        .id(id)
+        .px(px(11.))
+        .py(px(7.))
+        .rounded(theme::r_control())
+        .bg(theme::surface_2())
+        .border_1()
+        .border_color(theme::line_soft())
         .text_color(theme::dim())
-        .cursor_pointer().hover(|s| s.bg(theme::hover()).text_color(theme::text()))
-        .on_click(click).child(label.into())
+        .cursor_pointer()
+        .hover(|s| s.bg(theme::hover()).text_color(theme::text()))
+        .on_click(click)
+        .child(label.into())
 }
 /// Mesma caixa de `control`, sem clique: a ação existe mas está bloqueada.
 fn disabled_control(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
-    div().id(id).px(px(11.)).py(px(7.)).rounded(theme::r_control())
-        .bg(theme::surface_2()).border_1().border_color(theme::line_soft())
-        .text_color(theme::dim()).opacity(0.5)
+    div()
+        .id(id)
+        .px(px(11.))
+        .py(px(7.))
+        .rounded(theme::r_control())
+        .bg(theme::surface_2())
+        .border_1()
+        .border_color(theme::line_soft())
+        .text_color(theme::dim())
+        .opacity(0.5)
         .child(label.into())
 }
 
@@ -1853,7 +2213,10 @@ fn theme_row(item: &theme::Theme, selected: bool, cx: &mut Context<Settings>) ->
     }
     let appearance = if item.dark { "Escuro" } else { "Claro" };
     let detail = if item.user {
-        format!("{appearance} · {}.json", item.id.trim_start_matches("user:"))
+        format!(
+            "{appearance} · {}.json",
+            item.id.trim_start_matches("user:")
+        )
     } else {
         appearance.to_string()
     };
@@ -1883,21 +2246,34 @@ fn theme_row(item: &theme::Theme, selected: bool, cx: &mut Context<Settings>) ->
         }))
         .child(swatches)
         .child(
-            div().flex_1().min_w(px(0.)).flex().flex_col().gap(px(2.))
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .flex()
+                .flex_col()
+                .gap(px(2.))
                 .child(
-                    div().text_size(px(theme::TEXT_SM)).text_color(theme::text())
-                        .truncate().child(SharedString::from(item.name.clone())),
+                    div()
+                        .text_size(px(theme::TEXT_SM))
+                        .text_color(theme::text())
+                        .truncate()
+                        .child(SharedString::from(item.name.clone())),
                 )
                 .child(
-                    div().text_size(px(theme::TEXT_XS)).text_color(theme::faint())
-                        .truncate().child(SharedString::from(detail)),
+                    div()
+                        .text_size(px(theme::TEXT_XS))
+                        .text_color(theme::faint())
+                        .truncate()
+                        .child(SharedString::from(detail)),
                 ),
         )
-        .when(selected, |el| el.child(crate::ui::icons::icon(
-            crate::ui::icons::Icon::Check,
-            13.,
-            theme::accent(),
-        )))
+        .when(selected, |el| {
+            el.child(crate::ui::icons::icon(
+                crate::ui::icons::Icon::Check,
+                13.,
+                theme::accent(),
+            ))
+        })
         .into_any_element()
 }
 
@@ -1986,12 +2362,15 @@ fn page_title(label: &str) -> Div {
 
 impl Render for Settings {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if !self.open { return div().into_any_element(); }
+        if !self.open {
+            return div().into_any_element();
+        }
         let height = (f32::from(window.bounds().size.height) - 48.).max(300.);
         let width = (f32::from(window.bounds().size.width) - 48.).min(840.);
         let compact = width < 680.;
-        let mut menu = column().w(px(184.)).flex_none()
-            .when(compact, |el| el.w_full().flex_row().flex_wrap().gap(px(theme::S1)));
+        let mut menu = column().w(px(184.)).flex_none().when(compact, |el| {
+            el.w_full().flex_row().flex_wrap().gap(px(theme::S1))
+        });
         for (section, label, id) in [
             (Section::App, "Aplicativo", "settings-app"),
             (Section::Appearance, "Aparência", "settings-appearance"),
@@ -2002,20 +2381,36 @@ impl Render for Settings {
             (Section::Keys, "Atalhos de teclado", "settings-keys"),
             (Section::About, "Sobre / Pi", "settings-about"),
         ] {
-            menu = menu.child(control(id, label, cx.listener(move |this, _, window, cx| {
-                this.section = section;
-                if section == Section::Keys { this.search.read(cx).focus_handle.clone().focus(window, cx); }
-                else { this.focus.focus(window, cx); }
-                if section == Section::Providers {
-                    this.refresh_providers(cx);
-                    this.start_local_detection(cx);
-                }
-                if section == Section::About { this.refresh_pi_version(cx); }
-                cx.notify();
-            })).when(self.section == section, |el| el
-                // A escolha na esquerda é neutra: o accent é do raciocínio,
-                // e não muda de cor porque uma tela de configurações abriu.
-                .bg(theme::surface_2()).border_color(theme::line()).text_color(theme::text())));
+            menu = menu.child(
+                control(
+                    id,
+                    label,
+                    cx.listener(move |this, _, window, cx| {
+                        this.section = section;
+                        if section == Section::Keys {
+                            this.search.read(cx).focus_handle.clone().focus(window, cx);
+                        } else {
+                            this.focus.focus(window, cx);
+                        }
+                        if section == Section::Providers {
+                            this.refresh_providers(cx);
+                            this.start_local_detection(cx);
+                        }
+                        if section == Section::About {
+                            this.refresh_pi_version(cx);
+                        }
+                        cx.notify();
+                    }),
+                )
+                .when(self.section == section, |el| {
+                    el
+                        // A escolha na esquerda é neutra: o accent é do raciocínio,
+                        // e não muda de cor porque uma tela de configurações abriu.
+                        .bg(theme::surface_2())
+                        .border_color(theme::line())
+                        .text_color(theme::text())
+                }),
+            );
         }
         let content = match self.section {
             Section::App => {
@@ -2024,16 +2419,37 @@ impl Render for Settings {
                     ("details", "Painel de detalhes", self.details),
                     ("navigation", "Navegação de sessões", self.navigation),
                     ("thinking", "Raciocínio expandido", self.thinking),
-                    ("generated_titles", "Títulos gerados por modelo", self.titles),
-                    ("completion_sound", "Som ao concluir em segundo plano", self.sound),
-                    ("completion_notification", "Notificação ao concluir em segundo plano", self.notification),
+                    (
+                        "generated_titles",
+                        "Títulos gerados por modelo",
+                        self.titles,
+                    ),
+                    (
+                        "completion_sound",
+                        "Som ao concluir em segundo plano",
+                        self.sound,
+                    ),
+                    (
+                        "completion_notification",
+                        "Notificação ao concluir em segundo plano",
+                        self.notification,
+                    ),
                 ] {
                     // Linha inteira clicável — o interruptor é o estado, não
                     // o único alvo.
                     page = page.child(
-                        div().id(id).flex().flex_row().items_center().gap(px(12.))
-                            .px(px(12.)).py(px(8.)).rounded(theme::r_control())
-                            .bg(theme::surface_2()).border_1().border_color(theme::line_soft())
+                        div()
+                            .id(id)
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(12.))
+                            .px(px(12.))
+                            .py(px(8.))
+                            .rounded(theme::r_control())
+                            .bg(theme::surface_2())
+                            .border_1()
+                            .border_color(theme::line_soft())
                             .cursor_pointer()
                             .hover(|s| s.bg(theme::hover()).border_color(theme::line()))
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -2045,13 +2461,24 @@ impl Render for Settings {
                                     "completion_sound" => this.sound = !current,
                                     _ => this.notification = !current,
                                 }
-                                cx.emit(SettingsEvent::Preference(id, !current)); cx.notify();
+                                cx.emit(SettingsEvent::Preference(id, !current));
+                                cx.notify();
                             }))
-                            .child(div().flex_1().min_w(px(0.))
-                                .text_size(px(theme::TEXT_SM)).text_color(theme::dim())
-                                .child(SharedString::from(label.to_owned())))
-                            .child(switch(SharedString::from(format!("{id}-switch")),
-                                if current { SwitchState::On } else { SwitchState::Off },
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .text_size(px(theme::TEXT_SM))
+                                    .text_color(theme::dim())
+                                    .child(SharedString::from(label.to_owned())),
+                            )
+                            .child(switch(
+                                SharedString::from(format!("{id}-switch")),
+                                if current {
+                                    SwitchState::On
+                                } else {
+                                    SwitchState::Off
+                                },
                                 cx.listener(move |this, _, _, cx| {
                                     match id {
                                         "details" => this.details = !current,
@@ -2061,9 +2488,58 @@ impl Render for Settings {
                                         "completion_sound" => this.sound = !current,
                                         _ => this.notification = !current,
                                     }
-                                    cx.emit(SettingsEvent::Preference(id, !current)); cx.notify();
-                                }))),
+                                    cx.emit(SettingsEvent::Preference(id, !current));
+                                    cx.notify();
+                                }),
+                            )),
                     );
+                    if id == "completion_sound" && self.sound {
+                        page = page.child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(12.))
+                                .px(px(12.))
+                                .py(px(8.))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .text_size(px(theme::TEXT_SM))
+                                        .text_color(theme::dim())
+                                        .child("Volume do som"),
+                                )
+                                .child(control(
+                                    "completion-volume-down",
+                                    "−",
+                                    cx.listener(|this, _, _, cx| {
+                                        this.sound_volume = this.sound_volume.saturating_sub(5);
+                                        cx.emit(SettingsEvent::CompletionSoundVolume(
+                                            this.sound_volume,
+                                        ));
+                                        cx.notify();
+                                    }),
+                                ))
+                                .child(
+                                    div()
+                                        .text_size(px(theme::TEXT_SM))
+                                        .text_color(theme::text())
+                                        .child(format!("{}%", self.sound_volume)),
+                                )
+                                .child(control(
+                                    "completion-volume-up",
+                                    "+",
+                                    cx.listener(|this, _, _, cx| {
+                                        this.sound_volume =
+                                            this.sound_volume.saturating_add(5).min(100);
+                                        cx.emit(SettingsEvent::CompletionSoundVolume(
+                                            this.sound_volume,
+                                        ));
+                                        cx.notify();
+                                    }),
+                                )),
+                        );
+                    }
                 }
                 page = page.child(note("Gera um nome curto para o primeiro pedido relevante com o modelo da sessão (gasta tokens) e salva no Pi ao terminar a rodada. Nomes já definidos são preservados. Se falhar, mantém o texto do pedido e avisa; desative e reative para tentar novamente."));
                 page.into_any_element()
@@ -2104,10 +2580,25 @@ impl Render for Settings {
                     ));
                 }
                 page = page.child(
-                    div().flex().flex_row().items_center().gap(px(12.))
-                        .px(px(12.)).py(px(8.)).rounded(theme::r_control())
-                        .bg(theme::surface_2()).border_1().border_color(theme::line_soft())
-                        .child(div().flex_1().min_w(px(0.)).text_size(px(theme::TEXT_SM)).text_color(theme::dim()).child("Tema padrão"))
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(12.))
+                        .px(px(12.))
+                        .py(px(8.))
+                        .rounded(theme::r_control())
+                        .bg(theme::surface_2())
+                        .border_1()
+                        .border_color(theme::line_soft())
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .text_size(px(theme::TEXT_SM))
+                                .text_color(theme::dim())
+                                .child("Tema padrão"),
+                        )
                         .child(segments),
                 );
                 let reduced = cx.reduce_motion();
@@ -2146,9 +2637,12 @@ impl Render for Settings {
                 );
                 let mut themes = div().flex().flex_col().gap(px(6.));
                 for (label, dark) in [("Escuros", true), ("Claros", false)] {
-                    let mut group = div().flex().flex_col().gap(px(6.))
-                        .child(div().text_size(px(theme::TEXT_SM)).text_color(theme::dim())
-                            .child(label));
+                    let mut group = div().flex().flex_col().gap(px(6.)).child(
+                        div()
+                            .text_size(px(theme::TEXT_SM))
+                            .text_color(theme::dim())
+                            .child(label),
+                    );
                     for item in theme::themes().iter().filter(|item| item.dark == dark) {
                         // Sem tema fixado, o marcado é o que está em uso agora —
                         // inclusive quando `Sistema` escolheu pelo desktop.
@@ -2161,11 +2655,20 @@ impl Render for Settings {
                     themes = themes.child(group);
                 }
                 page = page.child(themes).child(
-                    div().flex().flex_row().items_center().gap(px(12.)).flex_wrap()
-                        .child(control("themes-open", "Abrir pasta de temas", cx.listener(
-                            |_, _, _, cx| cx.emit(SettingsEvent::OpenThemes),
-                        )))
-                        .child(note("Um arquivo .json por tema, lido quando o Dish abre (docs/themes.md).")),
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(12.))
+                        .flex_wrap()
+                        .child(control(
+                            "themes-open",
+                            "Abrir pasta de temas",
+                            cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenThemes)),
+                        ))
+                        .child(note(
+                            "Um arquivo .json por tema, lido quando o Dish abre (docs/themes.md).",
+                        )),
                 );
                 page.into_any_element()
             }
@@ -2187,13 +2690,15 @@ impl Render for Settings {
                     .count();
                 let mut actions = div().flex().flex_row().gap(px(8.));
                 if hidden_count > 0 {
-                    actions = actions.child(control("models-show-all", "Mostrar todos", cx.listener(
-                        |this, _, _, cx| {
+                    actions = actions.child(control(
+                        "models-show-all",
+                        "Mostrar todos",
+                        cx.listener(|this, _, _, cx| {
                             this.hidden.clear();
                             cx.emit(SettingsEvent::ShowAllModels);
                             cx.notify();
-                        },
-                    )));
+                        }),
+                    ));
                 }
                 if hidden_count < self.models.len() {
                     let all: Vec<String> = self
@@ -2201,22 +2706,25 @@ impl Render for Settings {
                         .iter()
                         .map(|(provider, id)| format!("{provider}/{id}"))
                         .collect();
-                    actions = actions.child(control("models-hide-all", "Ocultar todos", cx.listener(
-                        move |this, _, _, cx| {
+                    actions = actions.child(control(
+                        "models-hide-all",
+                        "Ocultar todos",
+                        cx.listener(move |this, _, _, cx| {
                             for key in &all {
                                 this.hidden.insert(key.clone());
                             }
                             cx.emit(SettingsEvent::ModelsVisibility(all.clone(), false));
                             cx.notify();
-                        },
-                    )));
+                        }),
+                    ));
                 }
                 if hidden_count > 0 || hidden_count < self.models.len() {
                     page = page.child(actions);
                 }
                 // Agrupado por provedor, em ordem alfabética dentro do grupo.
                 for (provider, ids) in grouped_models(&self.models) {
-                    let keys: Vec<String> = ids.iter().map(|id| format!("{provider}/{id}")).collect();
+                    let keys: Vec<String> =
+                        ids.iter().map(|id| format!("{provider}/{id}")).collect();
                     let state = group_state(&keys, &self.hidden);
                     let group_keys = keys.clone();
                     let mut group = column().gap(px(2.)).child(
@@ -2243,9 +2751,16 @@ impl Render for Settings {
                                     // estado devolve todos os modelos do provedor.
                                     let hide = state == SwitchState::On;
                                     for key in &group_keys {
-                                        if hide { this.hidden.insert(key.clone()); } else { this.hidden.remove(key); }
+                                        if hide {
+                                            this.hidden.insert(key.clone());
+                                        } else {
+                                            this.hidden.remove(key);
+                                        }
                                     }
-                                    cx.emit(SettingsEvent::ModelsVisibility(group_keys.clone(), !hide));
+                                    cx.emit(SettingsEvent::ModelsVisibility(
+                                        group_keys.clone(),
+                                        !hide,
+                                    ));
                                     cx.notify();
                                 }),
                             )),
@@ -2268,16 +2783,31 @@ impl Render for Settings {
                                         .truncate()
                                         .font_family(theme::FONT_MONO)
                                         .text_size(px(theme::TEXT_SM))
-                                        .text_color(if visible { theme::text() } else { theme::faint() })
+                                        .text_color(if visible {
+                                            theme::text()
+                                        } else {
+                                            theme::faint()
+                                        })
                                         .child(SharedString::from(id.to_string())),
                                 )
                                 .child(switch(
                                     row_id,
-                                    if visible { SwitchState::On } else { SwitchState::Off },
+                                    if visible {
+                                        SwitchState::On
+                                    } else {
+                                        SwitchState::Off
+                                    },
                                     cx.listener(move |this, _, _, cx| {
                                         let visible = !this.hidden.contains(&toggled);
-                                        if visible { this.hidden.insert(toggled.clone()); } else { this.hidden.remove(&toggled); }
-                                        cx.emit(SettingsEvent::ModelVisibility(toggled.clone(), !visible));
+                                        if visible {
+                                            this.hidden.insert(toggled.clone());
+                                        } else {
+                                            this.hidden.remove(&toggled);
+                                        }
+                                        cx.emit(SettingsEvent::ModelVisibility(
+                                            toggled.clone(),
+                                            !visible,
+                                        ));
                                         cx.notify();
                                     }),
                                 )),
@@ -2292,19 +2822,43 @@ impl Render for Settings {
                 let focus = self.search.read(cx).focus_handle.clone();
                 let click_focus = focus.clone();
                 let query = self.search.read(cx).text(cx).trim().to_lowercase();
-                let mut page = column().child(page_title("Atalhos de teclado")).child(div().id("settings-key-search")
-                    .key_context("DishHelpSearch").track_focus(&focus)
-                    .on_mouse_down(MouseButton::Left, move |_, window, cx| click_focus.focus(window, cx))
-                    .map(editor::standard_actions(self.search.clone()))
-                    .p(px(8.)).rounded(theme::r_technical()).bg(theme::inset())
-                    .border_1().border_color(theme::line_soft()).child(self.search.clone()));
+                let mut page = column().child(page_title("Atalhos de teclado")).child(
+                    div()
+                        .id("settings-key-search")
+                        .key_context("DishHelpSearch")
+                        .track_focus(&focus)
+                        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                            click_focus.focus(window, cx)
+                        })
+                        .map(editor::standard_actions(self.search.clone()))
+                        .p(px(8.))
+                        .rounded(theme::r_technical())
+                        .bg(theme::inset())
+                        .border_1()
+                        .border_color(theme::line_soft())
+                        .child(self.search.clone()),
+                );
                 let mut count = 0;
                 for (key, description) in crate::ui::overlays::keyboard_shortcuts() {
-                    if !query.is_empty() && !format!("{key} {description}").to_lowercase().contains(&query) { continue; }
+                    if !query.is_empty()
+                        && !format!("{key} {description}")
+                            .to_lowercase()
+                            .contains(&query)
+                    {
+                        continue;
+                    }
                     count += 1;
-                    page = page.child(div().flex().gap(px(12.)).child(crate::ui::keycap_all(key)).child(note(description)));
+                    page = page.child(
+                        div()
+                            .flex()
+                            .gap(px(12.))
+                            .child(crate::ui::keycap_all(key))
+                            .child(note(description)),
+                    );
                 }
-                if count == 0 { page = page.child(note("Nenhum atalho encontrado.")); }
+                if count == 0 {
+                    page = page.child(note("Nenhum atalho encontrado."));
+                }
                 page.into_any_element()
             }
             Section::About => {
@@ -2414,52 +2968,124 @@ impl Render for Settings {
                 if !crate::pi_update::installer_supported() {
                     page = page.child(note("Neste sistema, o Dish não abre o instalador oficial do Pi. Atualize pelo instalador do Pi em https://pi.dev."));
                 }
-                page.child(control("settings-pi-choose", "Escolher executável do Pi", cx.listener(
-                    |_, _, _, cx| cx.emit(SettingsEvent::ChoosePi),
-                )))
-                .child(control("settings-pi-setup", "Reabrir o assistente do Pi", cx.listener(
-                    |_, _, _, cx| cx.emit(SettingsEvent::OpenPiSetup),
-                )))
-                .child(control("settings-docs", "Documentação oficial do Pi", |_, _, cx| cx.open_url("https://github.com/earendil-works/pi"))).into_any_element()
+                page.child(control(
+                    "settings-pi-choose",
+                    "Escolher executável do Pi",
+                    cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::ChoosePi)),
+                ))
+                .child(control(
+                    "settings-pi-setup",
+                    "Reabrir o assistente do Pi",
+                    cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenPiSetup)),
+                ))
+                .child(control(
+                    "settings-docs",
+                    "Documentação oficial do Pi",
+                    |_, _, cx| cx.open_url("https://github.com/earendil-works/pi"),
+                ))
+                .into_any_element()
             }
         };
-        let card = column().id("settings-card").w(px(width)).h(px(height.min(700.)))
-            .p(px(theme::S5)).rounded(theme::r_surface()).border_1().border_color(theme::line_strong())
-            .bg(theme::surface()).shadow(theme::shadow_overlay())
+        let card = column()
+            .id("settings-card")
+            .w(px(width))
+            .h(px(height.min(700.)))
+            .p(px(theme::S5))
+            .rounded(theme::r_surface())
+            .border_1()
+            .border_color(theme::line_strong())
+            .bg(theme::surface())
+            .shadow(theme::shadow_overlay())
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(div().flex().justify_between().items_center()
-                .child(div().text_size(px(theme::TITLE)).font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme::text()).child("Configurações"))
-                .child(control("settings-close", "Fechar · Esc", cx.listener(|this, _, window, cx| this.close(window, cx)))))
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_size(px(theme::TITLE))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme::text())
+                            .child("Configurações"),
+                    )
+                    .child(control(
+                        "settings-close",
+                        "Fechar · Esc",
+                        cx.listener(|this, _, window, cx| this.close(window, cx)),
+                    )),
+            )
             .child(crate::ui::rule())
-            .child(div().flex().flex_1().gap(px(theme::S5)).min_h(px(0.))
-                .when(compact, |el| el.flex_col())
-                .child(menu)
-                .child(div().id("settings-content").flex_1().min_w(px(0.)).min_h(px(0.)).overflow_y_scroll()
-                    .child(crate::ui::motion::reveal(div().child(content),
-                        ElementId::NamedInteger("settings-page-enter".into(), self.section as u64)))));
+            .child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .gap(px(theme::S5))
+                    .min_h(px(0.))
+                    .when(compact, |el| el.flex_col())
+                    .child(menu)
+                    .child(
+                        div()
+                            .id("settings-content")
+                            .flex_1()
+                            .min_w(px(0.))
+                            .min_h(px(0.))
+                            .overflow_y_scroll()
+                            .child(crate::ui::motion::reveal(
+                                div().child(content),
+                                ElementId::NamedInteger(
+                                    "settings-page-enter".into(),
+                                    self.section as u64,
+                                ),
+                            )),
+                    ),
+            );
         let confirmation = self.folder_confirmation_element(window, cx);
 
-        div().id("settings-scrim").occlude()
+        div()
+            .id("settings-scrim")
+            .occlude()
             // Overlays are input boundaries: the page behind must not scroll.
             .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-            .absolute().inset(px(0.)).flex().items_center().justify_center()
-            .track_focus(&self.focus).key_context("DishSettings")
-            .bg(theme::scrim()).backdrop_blur(px(theme::SCRIM_BLUR))
-            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| { cx.stop_propagation(); this.close(window, cx); }))
-            .on_action(cx.listener(|this, _: &crate::ui::Dismiss, window, cx| { cx.stop_propagation(); this.close(window, cx); }))
+            .absolute()
+            .inset(px(0.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .track_focus(&self.focus)
+            .key_context("DishSettings")
+            .bg(theme::scrim())
+            .backdrop_blur(px(theme::SCRIM_BLUR))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.close(window, cx);
+                }),
+            )
+            .on_action(cx.listener(|this, _: &crate::ui::Dismiss, window, cx| {
+                cx.stop_propagation();
+                this.close(window, cx);
+            }))
             .on_action(cx.listener(|this, _: &editor::Paste, window, cx| {
                 cx.stop_propagation();
                 let target = if this.search.read(cx).focus_handle.is_focused(window) {
                     Some(this.search.clone())
-                } else { None };
-                if let (Some(target), Some(text)) = (target, cx.read_from_clipboard().and_then(|item| item.text())) {
+                } else {
+                    None
+                };
+                if let (Some(target), Some(text)) = (
+                    target,
+                    cx.read_from_clipboard().and_then(|item| item.text()),
+                ) {
                     target.update(cx, |editor, cx| editor.insert_text(&text, cx));
                 }
             }))
             .on_action(cx.listener(|this, _: &editor::CopySelection, window, cx| {
                 cx.stop_propagation();
-                if !this.search.read(cx).focus_handle.is_focused(window) { return; }
+                if !this.search.read(cx).focus_handle.is_focused(window) {
+                    return;
+                }
                 let target = &this.search;
                 if let Some(text) = target.read(cx).selected_text(cx) {
                     cx.write_to_clipboard(ClipboardItem::new_string(text));
@@ -2467,7 +3093,9 @@ impl Render for Settings {
             }))
             .on_action(cx.listener(|this, _: &editor::CutSelection, window, cx| {
                 cx.stop_propagation();
-                if !this.search.read(cx).focus_handle.is_focused(window) { return; }
+                if !this.search.read(cx).focus_handle.is_focused(window) {
+                    return;
+                }
                 let target = &this.search;
                 if let Some(text) = target.read(cx).selected_text(cx) {
                     cx.write_to_clipboard(ClipboardItem::new_string(text));
@@ -2477,7 +3105,8 @@ impl Render for Settings {
             // Capture actions from global shortcuts, without blocking field editing.
             .on_key_down(|event, _, cx| {
                 if (event.keystroke.modifiers.control || event.keystroke.modifiers.platform)
-                    && ["n", "w", "k", "l", "b", "tab", "m", "e"].contains(&event.keystroke.key.as_str())
+                    && ["n", "w", "k", "l", "b", "tab", "m", "e"]
+                        .contains(&event.keystroke.key.as_str())
                 {
                     cx.stop_propagation();
                 }
@@ -2491,11 +3120,26 @@ impl Render for Settings {
 /// Par rótulo/valor da tela "Sobre": o rótulo numa linha própria (curta,
 /// legível) e o caminho qualquer abaixo, em fonte de máquina.
 fn about_pair(label: &str, value: &str) -> Div {
-    div().flex().flex_col().gap(px(2.)).min_w(px(0.))
-        .child(div().text_size(px(theme::TEXT_SM)).text_color(theme::text()).child(SharedString::from(label.to_owned())))
-        .child(div().min_w(px(0.)).truncate().font_family(theme::FONT_MONO)
-            .text_size(px(theme::TEXT_XS)).text_color(theme::dim())
-            .child(SharedString::from(value.to_owned())))
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(2.))
+        .min_w(px(0.))
+        .child(
+            div()
+                .text_size(px(theme::TEXT_SM))
+                .text_color(theme::text())
+                .child(SharedString::from(label.to_owned())),
+        )
+        .child(
+            div()
+                .min_w(px(0.))
+                .truncate()
+                .font_family(theme::FONT_MONO)
+                .text_size(px(theme::TEXT_XS))
+                .text_color(theme::dim())
+                .child(SharedString::from(value.to_owned())),
+        )
 }
 
 impl Settings {
@@ -2518,11 +3162,25 @@ impl Settings {
         }
 
         fn row(label: &str, control: Div) -> Div {
-            div().flex().flex_row().items_center().gap(px(12.))
-                .px(px(12.)).py(px(8.)).rounded(theme::r_control())
-                .bg(theme::surface_2()).border_1().border_color(theme::line_soft())
-                .child(div().flex_1().min_w(px(0.)).text_size(px(theme::TEXT_SM))
-                    .text_color(theme::dim()).child(SharedString::from(label.to_owned())))
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(12.))
+                .px(px(12.))
+                .py(px(8.))
+                .rounded(theme::r_control())
+                .bg(theme::surface_2())
+                .border_1()
+                .border_color(theme::line_soft())
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .text_size(px(theme::TEXT_SM))
+                        .text_color(theme::dim())
+                        .child(SharedString::from(label.to_owned())),
+                )
                 .child(control)
         }
 
@@ -2537,31 +3195,57 @@ impl Settings {
                 div()
                     .flex_1()
                     .flex()
-                    .test_probe(move || id.to_string(), move || serde_json::json!({ "active": active }))
-                    .child(appearance_segment(id, label, active, cx, move |this, cx| {
-                        this.navigation_choice.session_order = value;
-                        cx.emit(SettingsEvent::Navigation(this.navigation_choice));
-                        cx.notify();
-                    })),
+                    .test_probe(
+                        move || id.to_string(),
+                        move || serde_json::json!({ "active": active }),
+                    )
+                    .child(appearance_segment(
+                        id,
+                        label,
+                        active,
+                        cx,
+                        move |this, cx| {
+                            this.navigation_choice.session_order = value;
+                            cx.emit(SettingsEvent::Navigation(this.navigation_choice));
+                            cx.notify();
+                        },
+                    )),
             );
         }
 
         let mut layout = segments();
         for (value, label, id) in [
-            (crate::preferences::SessionLayout::Projects, "Por pasta", "nav-layout-projects"),
-            (crate::preferences::SessionLayout::Flat, "Lista única", "nav-layout-flat"),
+            (
+                crate::preferences::SessionLayout::Projects,
+                "Por pasta",
+                "nav-layout-projects",
+            ),
+            (
+                crate::preferences::SessionLayout::Flat,
+                "Lista única",
+                "nav-layout-flat",
+            ),
         ] {
             let active = choice.session_layout == value;
             layout = layout.child(
                 div()
                     .flex_1()
                     .flex()
-                    .test_probe(move || id.to_string(), move || serde_json::json!({ "active": active }))
-                    .child(appearance_segment(id, label, active, cx, move |this, cx| {
-                        this.navigation_choice.session_layout = value;
-                        cx.emit(SettingsEvent::Navigation(this.navigation_choice));
-                        cx.notify();
-                    })),
+                    .test_probe(
+                        move || id.to_string(),
+                        move || serde_json::json!({ "active": active }),
+                    )
+                    .child(appearance_segment(
+                        id,
+                        label,
+                        active,
+                        cx,
+                        move |this, cx| {
+                            this.navigation_choice.session_layout = value;
+                            cx.emit(SettingsEvent::Navigation(this.navigation_choice));
+                            cx.notify();
+                        },
+                    )),
             );
         }
 
@@ -2575,12 +3259,21 @@ impl Settings {
                 div()
                     .flex_1()
                     .flex()
-                    .test_probe(move || id.to_string(), move || serde_json::json!({ "active": active }))
-                    .child(appearance_segment(id, label, active, cx, move |this, cx| {
-                        this.navigation_choice.project_order = value;
-                        cx.emit(SettingsEvent::Navigation(this.navigation_choice));
-                        cx.notify();
-                    })),
+                    .test_probe(
+                        move || id.to_string(),
+                        move || serde_json::json!({ "active": active }),
+                    )
+                    .child(appearance_segment(
+                        id,
+                        label,
+                        active,
+                        cx,
+                        move |this, cx| {
+                            this.navigation_choice.project_order = value;
+                            cx.emit(SettingsEvent::Navigation(this.navigation_choice));
+                            cx.notify();
+                        },
+                    )),
             );
         }
 
@@ -2604,7 +3297,10 @@ mod model_grouping_tests {
     use std::collections::BTreeSet;
 
     fn models(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
-        pairs.iter().map(|(provider, id)| (provider.to_string(), id.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(provider, id)| (provider.to_string(), id.to_string()))
+            .collect()
     }
 
     fn keys(values: &[&str]) -> Vec<String> {
@@ -2615,8 +3311,14 @@ mod model_grouping_tests {
     fn group_state_reports_on_off_and_mixed() {
         let group = keys(&["a/1", "a/2"]);
         assert_eq!(group_state(&group, &BTreeSet::new()), SwitchState::On);
-        assert_eq!(group_state(&group, &keys(&["a/1"]).into_iter().collect()), SwitchState::Mixed);
-        assert_eq!(group_state(&group, &keys(&["a/1", "a/2"]).into_iter().collect()), SwitchState::Off);
+        assert_eq!(
+            group_state(&group, &keys(&["a/1"]).into_iter().collect()),
+            SwitchState::Mixed
+        );
+        assert_eq!(
+            group_state(&group, &keys(&["a/1", "a/2"]).into_iter().collect()),
+            SwitchState::Off
+        );
         // Um grupo vazio aparece ligado, não misto.
         assert_eq!(group_state(&[], &BTreeSet::new()), SwitchState::On);
     }

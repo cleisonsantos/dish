@@ -302,6 +302,10 @@ fn main() {
             KeyBinding::new("right", workspace::NavExpand, Some("DishNavSearch")),
             KeyBinding::new("up", ui::ModalUp, Some("DishModal")),
             KeyBinding::new("down", ui::ModalDown, Some("DishModal")),
+            // GPUI keymap.rs: binding_enabled returns contexts.len() for globals, so global ctrl-f wins.
+            KeyBinding::new("alt-f", ui::FindInComposer, Some("DishInput")),
+            KeyBinding::new("f3", ui::NextComposerMatch, Some("DishInput")),
+            KeyBinding::new("shift-f3", ui::PreviousComposerMatch, Some("DishInput")),
             KeyBinding::new("enter", SendPrompt, Some("DishInput")),
             KeyBinding::new("shift-enter", Newline, Some("DishInput")),
             KeyBinding::new("enter", ModalSubmit, Some("DishModal")),
