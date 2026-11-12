@@ -19,9 +19,13 @@ pub fn composer(
     state: &AppState,
     matches: &[(String, String)],
     selected: usize,
-    window: &Window,
-    cx: &Context<AppState>,
+    window: &mut Window,
+    cx: &mut Context<AppState>,
 ) -> Div {
+    let source = state.editor.clone();
+    let search = window.use_keyed_state(("composer-search", source.entity_id()), cx, |window, cx| {
+        ComposerSearch::new(source, window, cx)
+    });
     let expanded = state.composer_expanded;
     let stats = state.editor.read(cx).stats(cx);
     let mut counter = format!("{} {}", stats.chars, if stats.chars == 1 { "caractere" } else { "caracteres" });
@@ -58,6 +62,61 @@ pub fn composer(
     if expanded {
         column = column.flex_1().min_h(px(0.));
     }
+
+    column = column
+        .on_action({
+            let search = search.clone();
+            move |_: &super::FindInComposer, window, cx| {
+                search.update(cx, |search, cx| search.open(window, cx));
+            }
+        })
+        .capture_action({
+            let search = search.clone();
+            cx.listener(move |state, _: &super::Dismiss, window, cx| {
+                // Esc: modal → ajuda → menus → / → busca → expandido → abort → banner.
+                // Os ramos anteriores e posteriores continuam no handler da raiz.
+                if state.modal.is_none()
+                    && !state.help_open
+                    && !state.effort_menu
+                    && !state.model_menu
+                    && state.slash_state(cx).0.is_empty()
+                    && search.read(cx).is_open()
+                {
+                    search.update(cx, |search, cx| search.close(window, cx));
+                    cx.stop_propagation();
+                }
+            })
+        })
+        .capture_action({
+            let search = search.clone();
+            move |_: &crate::editor::SendPrompt, _, cx| {
+                if search.read(cx).is_open() {
+                    search.update(cx, |search, cx| search.navigate(false, cx));
+                    cx.stop_propagation();
+                }
+            }
+        })
+        .capture_action({
+            let search = search.clone();
+            move |_: &crate::editor::Newline, _, cx| {
+                if search.read(cx).is_open() {
+                    search.update(cx, |search, cx| search.navigate(true, cx));
+                    cx.stop_propagation();
+                }
+            }
+        })
+        .on_action({
+            let search = search.clone();
+            move |_: &super::NextComposerMatch, _, cx| {
+                search.update(cx, |search, cx| search.navigate(false, cx));
+            }
+        })
+        .on_action({
+            let search = search.clone();
+            move |_: &super::PreviousComposerMatch, _, cx| {
+                search.update(cx, |search, cx| search.navigate(true, cx));
+            }
+        });
 
     if !state.ext_widget.is_empty() {
         column = column.child(inset_block(state));
@@ -115,6 +174,9 @@ pub fn composer(
     if expanded {
         surface = surface.flex_1().min_h(px(0.));
     }
+    if search.read(cx).is_open() {
+        surface = surface.child(search_bar(&search, cx));
+    }
     let surface = surface
             .child(
                 div()
@@ -135,6 +197,16 @@ pub fn composer(
                                 "focused": focused,
                                 "expanded": expanded,
                                 "stats": stats,
+                                "search": ({
+                                    let search = search.read(cx);
+                                    let open = search.is_open();
+                                    serde_json::json!({
+                                        "open": open,
+                                        "query_chars": if open { search.query.read(cx).stats(cx).chars } else { 0 },
+                                        "matches": if open { search.matches.len() } else { 0 },
+                                        "current": if open && !search.matches.is_empty() { search.current + 1 } else { 0 },
+                                    })
+                                }),
                                 "loading": state.paste_loading,
                                 "drop_hint": drop_hint,
                                 "attachments": state.pasted_images.iter().map(|(name, _)| serde_json::json!({"kind": "image", "name": name}))
@@ -228,6 +300,252 @@ pub fn composer(
         surface.into_any_element()
     };
     column.child(surface)
+}
+
+// Estado local ao composer: não compartilha o texto nem o undo do campo de busca.
+struct ComposerSearch {
+    source: Entity<crate::editor::Editor>,
+    query: Entity<crate::editor::Editor>,
+    saved_selection: Option<crate::editor::Selection>,
+    matches: Vec<std::ops::Range<usize>>,
+    current: usize,
+    _subscriptions: Vec<Subscription>,
+}
+
+fn composer_matches(text: &str, query: &str) -> Vec<std::ops::Range<usize>> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    text.match_indices(query)
+        .map(|(start, found)| start..start + found.len())
+        .collect()
+}
+
+fn composer_match_step(current: usize, total: usize, backwards: bool) -> usize {
+    if total == 0 {
+        return 0;
+    }
+    if backwards {
+        (current + total - 1) % total
+    } else {
+        (current + 1) % total
+    }
+}
+
+fn composer_selection(
+    text: &str,
+    mut selection: crate::editor::Selection,
+) -> crate::editor::Selection {
+    for offset in [&mut selection.anchor, &mut selection.head] {
+        *offset = (*offset).min(text.len());
+        while !text.is_char_boundary(*offset) {
+            *offset -= 1;
+        }
+    }
+    selection
+}
+
+impl ComposerSearch {
+    fn new(
+        source: Entity<crate::editor::Editor>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let query = cx.new(|cx| crate::editor::Editor::new("", "Buscar no composer", window, cx));
+        let query_value = query.read(cx).value.clone();
+        let source_value = source.read(cx).value.clone();
+        let query_sub = cx.observe(&query_value, |search, _, cx| search.refresh(cx));
+        let source_sub = cx.observe(&source_value, |search, _, cx| search.refresh(cx));
+        let release_sub = cx.on_release(|search, cx| {
+            if let Some(selection) = search.saved_selection.take() {
+                search.select_source(selection, cx);
+            }
+        });
+        Self {
+            source,
+            query,
+            saved_selection: None,
+            matches: Vec::new(),
+            current: 0,
+            _subscriptions: vec![query_sub, source_sub, release_sub],
+        }
+    }
+
+    fn is_open(&self) -> bool {
+        self.saved_selection.is_some()
+    }
+
+    fn open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.is_open() {
+            self.saved_selection = Some(self.source.read(cx).selection);
+            self.refresh(cx);
+        }
+        self.query.update(cx, |query, cx| {
+            query.select_all(&crate::editor::SelectAllText, window, cx)
+        });
+        let focus = self.query.read(cx).focus_handle.clone();
+        focus.focus(window, cx);
+        cx.notify();
+    }
+
+    fn refresh(&mut self, cx: &mut Context<Self>) {
+        if !self.is_open() {
+            return;
+        }
+        self.matches = composer_matches(
+            &self.source.read(cx).text(cx),
+            &self.query.read(cx).text(cx),
+        );
+        self.current = 0;
+        self.highlight(cx);
+    }
+
+    fn navigate(&mut self, backwards: bool, cx: &mut Context<Self>) {
+        if !self.is_open() {
+            return;
+        }
+        self.current = composer_match_step(self.current, self.matches.len(), backwards);
+        self.highlight(cx);
+    }
+
+    fn highlight(&self, cx: &mut Context<Self>) {
+        let selection = self
+            .matches
+            .get(self.current)
+            .map(|range| crate::editor::Selection::new(range.start, range.end))
+            .or(self.saved_selection);
+        if let Some(selection) = selection {
+            self.select_source(selection, cx);
+        }
+        cx.notify();
+    }
+
+    fn select_source(&self, mut selection: crate::editor::Selection, cx: &mut App) {
+        // Se o usuário editou o composer enquanto buscava, respeitar os novos limites UTF-8.
+        selection = composer_selection(&self.source.read(cx).text(cx), selection);
+        self.source.update(cx, |editor, cx| {
+            editor.selection = selection;
+            cx.notify();
+        });
+    }
+
+    fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(selection) = self.saved_selection.take() {
+            self.select_source(selection, cx);
+            let focus = self.source.read(cx).focus_handle.clone();
+            focus.focus(window, cx);
+            cx.notify();
+        }
+    }
+}
+
+fn search_bar(search: &Entity<ComposerSearch>, cx: &App) -> Div {
+    let state = search.read(cx);
+    let query = state.query.clone();
+    let focus = query
+        .read(cx)
+        .focus_handle
+        .clone()
+        .tab_stop(true)
+        .tab_index(0);
+    let query_for_click = query.clone();
+    let current = if state.matches.is_empty() {
+        0
+    } else {
+        state.current + 1
+    };
+    div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(theme::S2))
+        .px(px(theme::S4))
+        .py(px(theme::S2))
+        .border_b_1()
+        .border_color(theme::line_soft())
+        .child(
+            div()
+                .id("composer-search-input")
+                .test_probe(
+                    || "composer-search-input".into(),
+                    || {
+                        serde_json::json!({
+                            "query_chars": query.read(cx).stats(cx).chars,
+                            "current": current,
+                            "total": state.matches.len(),
+                        })
+                    },
+                )
+                .flex_1()
+                .min_w(px(0.))
+                .key_context("DishInput")
+                .track_focus(&focus)
+                .cursor_text()
+                .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                    focus.focus(window, cx);
+                    query_for_click.update(cx, |query, cx| {
+                        query.mouse_press(
+                            event.position,
+                            event.click_count.max(1),
+                            event.modifiers.shift,
+                            cx,
+                        )
+                    });
+                    cx.stop_propagation();
+                })
+                .map(standard_actions(query.clone()))
+                .on_action(|_: &super::MenuAccept, window, cx| window.focus_next(cx))
+                .on_action({
+                    let query = query.clone();
+                    move |_: &super::MenuUp, window, cx| {
+                        query.update(cx, |query, cx| query.up(&crate::editor::Up, window, cx));
+                    }
+                })
+                .on_action({
+                    let query = query.clone();
+                    move |_: &super::MenuDown, window, cx| {
+                        query.update(cx, |query, cx| query.down(&crate::editor::Down, window, cx));
+                    }
+                })
+                .on_action({
+                    let query = query.clone();
+                    move |_: &crate::editor::CopySelection, _, cx| {
+                        let editor = query.read(cx);
+                        let text = editor.selected_text(cx).unwrap_or_else(|| editor.text(cx));
+                        cx.write_to_clipboard(ClipboardItem::new_string(text));
+                    }
+                })
+                .on_action({
+                    let query = query.clone();
+                    move |_: &crate::editor::CutSelection, _, cx| {
+                        if let Some(text) = query.read(cx).selected_text(cx) {
+                            cx.write_to_clipboard(ClipboardItem::new_string(text));
+                            query.update(cx, |query, cx| query.delete_selection(cx));
+                        }
+                    }
+                })
+                .on_action({
+                    let query = query.clone();
+                    move |_: &crate::editor::Paste, _, cx| {
+                        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                            query.update(cx, |query, cx| query.insert_text(&text, cx));
+                        }
+                    }
+                })
+                .child(query),
+        )
+        .child(
+            div()
+                .text_size(px(theme::TEXT_XS))
+                .text_color(theme::dim())
+                .child(format!("{current}/{}", state.matches.len())),
+        )
+        .child(
+            div()
+                .text_size(px(theme::TEXT_XS))
+                .text_color(theme::faint())
+                .child("Enter ↓ · Shift+Enter ↑ · Esc"),
+        )
 }
 
 // ------------------------------------------------------------------ controles
@@ -907,7 +1225,53 @@ fn inset_block(state: &AppState) -> Div {
 
 #[cfg(test)]
 mod tests {
-    use super::effort_step;
+    use super::{composer_match_step, composer_matches, composer_selection, effort_step};
+    use crate::editor::Selection;
+
+    #[test]
+    fn composer_search_finds_literal_utf8_ranges_and_handles_empty_queries() {
+        let text = "ação🙂 ação\nação";
+        let matches = composer_matches(text, "ação");
+        assert_eq!(matches, vec![0..6, 11..17, 18..24]);
+        for range in matches {
+            assert_eq!(&text[range], "ação");
+        }
+        assert!(composer_matches(text, "").is_empty());
+        assert!(composer_matches(text, "ausente").is_empty());
+        assert_eq!(composer_matches("aaaa", "aa"), vec![0..2, 2..4]);
+    }
+
+    #[test]
+    fn composer_search_navigation_wraps_and_handles_no_results() {
+        assert_eq!(composer_match_step(0, 3, false), 1);
+        assert_eq!(composer_match_step(2, 3, false), 0);
+        assert_eq!(composer_match_step(0, 3, true), 2);
+        assert_eq!(composer_match_step(2, 3, true), 1);
+        assert_eq!(composer_match_step(0, 1, false), 0);
+        assert_eq!(composer_match_step(0, 1, true), 0);
+        assert_eq!(composer_match_step(0, 0, false), 0);
+        assert_eq!(composer_match_step(0, 0, true), 0);
+    }
+
+    #[test]
+    fn composer_search_restores_caret_and_selection_direction() {
+        let text = "ação🙂";
+        for selection in [
+            Selection::caret(6),
+            Selection::new(10, 0),
+            Selection::new(0, 6),
+        ] {
+            assert_eq!(composer_selection(text, selection), selection);
+        }
+        assert_eq!(
+            composer_selection("é", Selection::new(1, 11)),
+            Selection::new(0, 2)
+        );
+        assert_eq!(
+            composer_selection("", Selection::caret(11)),
+            Selection::caret(0)
+        );
+    }
 
     #[test]
     fn keyboard_effort_uses_pi_capabilities_and_stops_at_edges() {

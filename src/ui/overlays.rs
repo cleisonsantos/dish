@@ -631,7 +631,8 @@ pub fn keyboard_shortcuts() -> Vec<(&'static str, &'static str)> {
         ("ctrl-⇧b", "mostrar ou ocultar as sessões do projeto"),
         ("ctrl-q", "fechar o app"),
     ];
-    let editing: [(&'static str, &'static str); 13] = [
+    let editing: [(&'static str, &'static str); 14] = [
+        ("alt-f", "buscar no compositor"),
         ("← →", "mover por caractere"),
         ("⇧ ← →", "selecionar por caractere"),
         ("ctrl ← →", "mover por palavra"),
