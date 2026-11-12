@@ -1,4 +1,4 @@
-"""Composer expandido: alt-shift-e, Esc e envio (#172)."""
+"""Composer expandido (#172) e busca por alt-f (#191)."""
 from pathlib import Path
 
 helper_path = Path(__file__).with_name("desktop_smoke.py")
@@ -110,8 +110,50 @@ with tempfile.TemporaryDirectory(prefix="dish-composer-") as temporary:
         wait_probe("composer-input", "Duplicate line did not update stats",
                    condition=lambda node: node["data"]["stats"]["lines"] == lines_before + 1)
 
+        # 6. Alt+F busca sem inserir a query nem as teclas de navegação no rascunho.
+        click_ui(window, "composer-input")
+        chord("Control_L", "a")
+        press("BackSpace")
+        wait_probe("composer-input", "Composer was not cleared for search",
+                   condition=lambda node: node["data"]["stats"]["chars"] == 0)
+        text = "alfa beta alfa gama alfa"
+        for char in text:
+            press("space" if char == " " else char)
+        node = wait_probe("composer-input", "Search draft stats did not update",
+                          condition=lambda node: node["data"]["stats"]["chars"] == len(text))
+        chars_before = node["data"]["stats"]["chars"]
+
+        def wait_search(opened, query_chars=0, matches=0, current=0):
+            expected = {"open": opened, "query_chars": query_chars,
+                        "matches": matches, "current": current}
+            node = wait_probe("composer-input", f"Search did not reach {expected!r}",
+                              condition=lambda node: node["data"]["search"] == expected)
+            assert node["data"]["stats"]["chars"] == chars_before == len(text), \
+                f"Search changed the composer character count: {node['data']['stats']!r}"
+            return node
+
+        wait_search(False)
+        chord("Alt_L", "f")
+        wait_search(True)
+        for char in "alfa":
+            press(char)
+        wait_search(True, 4, 3, 1)
+        press("Return")
+        wait_search(True, 4, 3, 2)
+        chord("Shift_L", "Return")
+        wait_search(True, 4, 3, 1)
+        press("Return")
+        wait_search(True, 4, 3, 2)
+        press("Return")
+        wait_search(True, 4, 3, 3)
+        press("Return")
+        wait_search(True, 4, 3, 1)
+        press("Escape")
+        node = wait_search(False)
+        assert node["data"]["stats"]["chars"] == chars_before == len(text)
+
         assert process.poll() is None, (temp / "dish.log").read_text()
-        print("Composer expanded smoke passed")
+        print("Composer expanded and search smoke passed")
     except Exception:
         screenshot = tempfile.mktemp(prefix="dish-composer-failure-", suffix=".png")
         subprocess.run(["import", "-window", str(window) if window else "root", screenshot], check=False)
