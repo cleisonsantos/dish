@@ -45,20 +45,28 @@ por caminhos com espaço.
   (`pi.cmd` na raiz do prefixo). O `PATH` não muda: o Dish procura nesse
   prefixo privado.
 
-O `PATH` do usuário costuma passar de 1024 caracteres, então o instalador não o
-lê nem escreve pelas strings do NSIS: o PowerShell edita `HKCU\Environment`
-direto, preservando o tipo `REG_EXPAND_SZ` e as entradas `%VAR%` sem expandir, e
-em seguida envia um `WM_SETTINGCHANGE` para o Explorer recarregar o ambiente. O
-`npm.cmd` recebe o diretório do Node pelo próprio `cmd` (`set "PATH=...;%PATH%"`),
-sem alterar o ambiente do processo do instalador.
+O instalador não usa PowerShell. O download usa a API do Windows
+(`urlmon::URLDownloadToFileW`, pelo plug-in `System` que acompanha o NSIS), a
+conferência usa o `certutil.exe` do próprio Windows e a extração usa o `tar.exe`
+(bsdtar) do Windows 10 1803+. Nada é baixado no build e nenhum utilitário é
+instalado.
+
+O `PATH` do usuário é lido com `ReadRegStr` (que devolve o `REG_EXPAND_SZ` como
+está, sem expandir `%VAR%`) e gravado com `WriteRegExpandStr`; depois da escrita
+o instalador envia um `WM_SETTINGCHANGE` para o Explorer recarregar o ambiente.
+Como as strings do NSIS têm 1024 caracteres, se o `PATH` não couber junto com o
+novo diretório o instalador **não escreve nada** e mostra uma mensagem para
+acrescentar `%LOCALAPPDATA%\dish\node` manualmente: ele nunca grava um `PATH`
+truncado. O `npm.cmd` recebe o diretório do Node pelo próprio `cmd`
+(`set "PATH=...;%PATH%"`), sem alterar o ambiente do processo do instalador.
 
 ## Consentimento
 
 Nada é baixado sem escolha explícita: as caixas de Node e de Pi começam
 **desmarcadas**. Um `/S` (instalação silenciosa) não executa páginas customizadas,
 logo as variáveis ficam vazias e a seção de dependências não instala nada. O
-PowerShell roda sempre inline (`-Command`), sem `-ExecutionPolicy Bypass`, sem
-`iex` e sem `-File`, e usa o proxy do sistema. A saída do npm não vai para o
+download usa o proxy e o TLS do sistema; não há shell, script externo, `iex`
+nem arquivo `.ps1` no fluxo. A saída do npm não vai para o
 registro porque pode conter credencial de registry privado; ela fica num arquivo
 temporário e apenas as linhas de código de erro são mostradas.
 
@@ -91,8 +99,14 @@ usam esses dois defines; não há consulta a "latest".
 Esta branch não foi testada numa máquina Windows real. A validação automática é
 o build do `makensis` no CI; o teste manual recomendado é: VM nova sem Node,
 Node antigo (abaixo de 22.19.0), Pi instalado fora do `PATH`, instalador offline
-(erro de download e "Tentar de novo") e reexecução para conferir que o `PATH` e
-o prefixo do Pi não duplicam.
+(erro de download e "Tentar de novo"), `PATH` do usuário acima de 1024
+caracteres (mensagem clara e `PATH` intacto) e reexecução para conferir que o
+`PATH` e o prefixo do Pi não duplicam.
+
+O fluxo depende de três componentes do Windows 10 1803 ou superior: `urlmon`
+(WinINet, para o download), `certutil.exe` (SHA-256) e `tar.exe` (zip). Se algum
+faltar, a etapa falha com mensagem e o app continua instalado; nada é baixado
+para substituí-los.
 
 O diretório do Node é acrescentado ao `PATH` **do usuário**, e o Windows coloca o
 `PATH` da máquina na frente. Se houver um Node antigo (abaixo de 22.19.0) no
