@@ -92,16 +92,52 @@ with tempfile.TemporaryDirectory(prefix="dish-composer-files-") as temporary:
 
         def attach(*paths):
             """Serve os caminhos ao botão Anexar; o gancho é relido a cada clique."""
+            # `attach_paths` ignora clique novo enquanto a ingestão anterior está
+            # em andamento; esperar o fim evita perder o anexo por corrida — era
+            # assim que este smoke falhava de vez em quando no CI.
+            wait_probe("composer-input", "Anexo anterior não terminou",
+                       lambda node: not node["data"]["loading"])
             pick_list.write_text("\n".join(str(path) for path in paths))
-            click_ui(window, "attach-button")
 
-        def probe(condition, description):
-            return wait_probe("composer-input", description,
-                              condition=lambda node: condition(node["data"]))["data"]
+            def estado():
+                expose_window(window)
+                node = UI_TRACES[window].node("composer-input")
+                return json.dumps(node["data"], sort_keys=True) if node else ""
+
+            antes = estado()
+            for tentativa in (1, 2):
+                click_ui(window, "attach-button")
+                # Um clique perdido (janela sem foco no instante do evento)
+                # deixaria o passo seguinte esperando para sempre: refaz uma vez.
+                fim = time.monotonic() + 3
+                while time.monotonic() < fim:
+                    if estado() != antes:
+                        return
+                    time.sleep(0.05)
+                if tentativa == 2:
+                    raise AssertionError(
+                        f"O clique em Anexar não teve efeito; probe={antes}")
+
+        def probe(condition, description, timeout=10):
+            def pronto():
+                expose_window(window)
+                node = UI_TRACES[window].node("composer-input")
+                return node and visible_point(node) and condition(node["data"])
+            wait_for(pronto, description, timeout=timeout)
+            return UI_TRACES[window].node("composer-input")["data"]
 
         def attach_and_wait(paths, condition):
             attach(*paths)
-            return probe(condition, "O anexo não produziu o estado esperado")
+            try:
+                # A ingestão é IO no executor de background; num runner carregado
+                # ela pode demorar bem mais que os 10 s padrão.
+                return probe(condition, "O anexo não produziu o estado esperado", timeout=30)
+            except AssertionError:
+                node = UI_TRACES[window].node("composer-input")
+                raise AssertionError(
+                    f"O anexo {[path.name for path in paths]} não produziu o estado esperado; "
+                    f"probe={json.dumps(node['data']) if node else 'ausente'}"
+                )
 
         def toast(fragment):
             return lambda data: any(fragment in text for text in data["toasts"])
@@ -150,8 +186,6 @@ with tempfile.TemporaryDirectory(prefix="dish-composer-files-") as temporary:
         print("Composer expanded failure screenshot:", screenshot)
         if window:
             save_ui_trace(window, "dish-composer")
-        print("PATH:", env.get("PATH"))
-        print("shim chamado:", shim_log.read_text() if shim_log.exists() else "NAO")
         print(log_path.read_text() if log_path.exists() else "No fixture events")
         print((temp / "dish.log").read_text())
         raise
