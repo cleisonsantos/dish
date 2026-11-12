@@ -10,6 +10,8 @@
 //! via `platform::hide_console`, e `logging::warn` escreve em stderr sem pânico.
 #![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
 
+mod mcp_registry;
+mod mcp_server;
 mod demand;
 mod limits;
 mod logging;
@@ -180,6 +182,9 @@ fn looks_like_path(argument: &str) -> bool {
 }
 
 fn main() {
+    if let Some(code) = mcp_command() {
+        std::process::exit(code);
+    }
     logging::init();
     // `DISH_TEST_PANIC` existe só para o smoke de privacidade dos diagnósticos
     // (tests/diagnostic_privacy_smoke.py), no mesmo espírito de `DISH_TEST_UI_LOG`:
@@ -389,6 +394,64 @@ fn main() {
 
         cx.activate(true);
     });
+}
+
+/// MCP commands are consumed before any GUI or Pi argument handling.
+fn mcp_command() -> Option<i32> {
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    let commands = ["--install-mcp", "--uninstall-mcp", "--mcp-serve"];
+    let command = args
+        .iter()
+        .find_map(|arg| commands.iter().find(|flag| arg == *flag).copied())?;
+    let result = (|| -> anyhow::Result<()> {
+        if std::env::consts::OS != "linux" {
+            anyhow::bail!("MCP do Dish ainda não é suportado no Windows/macOS; use Linux.");
+        }
+        let project = args.iter().any(|arg| arg == "--project");
+        if args.len() != 1 + usize::from(project) || (command == "--mcp-serve" && project) {
+            anyhow::bail!("Argumentos inválidos para o comando MCP.");
+        }
+        if command == "--mcp-serve" {
+            return mcp_server::serve().map_err(Into::into);
+        }
+        let path = if project {
+            std::env::current_dir()?.join(".pi/mcp.json")
+        } else {
+            let home = std::env::var_os("HOME")
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("HOME não está definido."))?;
+            PathBuf::from(home).join(".pi/agent/mcp.json")
+        };
+        let outcome = if command == "--install-mcp" {
+            mcp_registry::install(&path)?
+        } else {
+            mcp_registry::uninstall(&path)?
+        };
+        println!(
+            "MCP do Dish: {}.{}",
+            match outcome {
+                mcp_registry::Outcome::Changed => "registro atualizado",
+                mcp_registry::Outcome::Unchanged => "registro já está correto",
+            },
+            if project {
+                " O Pi só lê este registro após confiar no projeto."
+            } else {
+                ""
+            }
+        );
+        Ok(())
+    })();
+    Some(match result {
+        Ok(()) => 0,
+        Err(error) => {
+            if command == "--mcp-serve" {
+                eprintln!("MCP do Dish: {error}");
+            } else {
+                println!("MCP do Dish: {error}");
+            }
+            1
+        }
+    })
 }
 
 #[cfg(test)]
