@@ -14,16 +14,22 @@ pub fn should_play(enabled: bool, newly_completed: bool, unread_completion: bool
 }
 
 /// Fire-and-forget: plays on a dedicated thread, never blocks the caller, never panics.
-pub fn play() {
+/// Volume 0 é mudo: não cria thread nem executa processo, inclusive o override.
+pub fn play(volume: u8) {
+    let volume = volume.min(100);
+    if volume == 0 { return; }
     let override_cmd = std::env::var_os("DISH_SOUND_CMD").filter(|v| !v.is_empty());
     let spawned = std::thread::Builder::new().name("dish-sound".into()).spawn(move || {
-        if let Err(error) = play_blocking(override_cmd.as_deref()) { warn_once(&error); }
+        if let Err(error) = play_blocking(override_cmd.as_deref(), volume) { warn_once(&error); }
     });
     if let Err(error) = spawned { warn_once(&anyhow::Error::from(error)); }
 }
 
-fn play_blocking(override_cmd: Option<&std::ffi::OsStr>) -> anyhow::Result<()> {
+fn play_blocking(override_cmd: Option<&std::ffi::OsStr>, volume: u8) -> anyhow::Result<()> {
     use anyhow::Context;
+    // Mudo também nos caminhos síncronos e nos fallbacks sem controle de volume.
+    let volume = volume.min(100);
+    if volume == 0 { return Ok(()); }
     if let Some(cmd) = override_cmd {
         let status = std::process::Command::new(cmd)
             .stdin(std::process::Stdio::null())
@@ -36,7 +42,7 @@ fn play_blocking(override_cmd: Option<&std::ffi::OsStr>) -> anyhow::Result<()> {
         }
         return Ok(());
     }
-    play_native()
+    play_native(volume)
 }
 
 #[cfg(target_os = "linux")]
@@ -45,21 +51,24 @@ const LINUX_SOUND_FILE: &str = "/usr/share/sounds/freedesktop/stereo/complete.og
 /// Candidatos na ordem de preferência; ausência do arquivo elimina os tocadores
 /// que dependem dele.
 #[cfg(target_os = "linux")]
-fn linux_candidates(sound_file_exists: bool) -> Vec<(&'static str, Vec<&'static str>)> {
+fn linux_candidates(sound_file_exists: bool, volume: u8) -> Vec<(&'static str, Vec<String>)> {
+    let volume = volume.min(100);
     let mut candidates = Vec::new();
     if sound_file_exists {
-        candidates.push(("pw-play", vec![LINUX_SOUND_FILE]));
-        candidates.push(("paplay", vec![LINUX_SOUND_FILE]));
+        candidates.push(("pw-play", vec!["--volume".into(), format!("{:.2}", f64::from(volume) / 100.), LINUX_SOUND_FILE.into()]));
+        candidates.push(("paplay", vec!["--volume".into(), ((u32::from(volume) * 65536 + 50) / 100).to_string(), LINUX_SOUND_FILE.into()]));
     }
-    candidates.push(("canberra-gtk-play", vec!["-i", "complete"]));
+    // Fallback mantido sem ajuste de volume nesta tarefa. A opção --volume
+    // do canberra-gtk-play usa dB, não percentual ou a escala dos outros tocadores.
+    candidates.push(("canberra-gtk-play", vec!["-i".into(), "complete".into()]));
     candidates
 }
 
 #[cfg(target_os = "linux")]
-fn play_native() -> anyhow::Result<()> {
+fn play_native(volume: u8) -> anyhow::Result<()> {
     let sound_file_exists = std::path::Path::new(LINUX_SOUND_FILE).exists();
     let mut failures = Vec::new();
-    for (program, args) in linux_candidates(sound_file_exists) {
+    for (program, args) in linux_candidates(sound_file_exists, volume) {
         let status = std::process::Command::new(program)
             .args(args)
             .stdin(std::process::Stdio::null())
@@ -80,17 +89,18 @@ fn play_native() -> anyhow::Result<()> {
 }
 
 #[cfg(windows)]
-fn play_native() -> anyhow::Result<()> {
+fn play_native(_volume: u8) -> anyhow::Result<()> {
     use anyhow::Context;
     use windows::Win32::System::Diagnostics::Debug::MessageBeep;
     use windows::Win32::UI::WindowsAndMessaging::MB_ICONASTERISK;
+    // MessageBeep não oferece volume por chamada; usa o volume do sistema.
     // SAFETY: MessageBeep só toca um som do sistema; sem ponteiros ou estado.
     unsafe { MessageBeep(MB_ICONASTERISK) }.context("falha ao tocar o som do sistema")?;
     Ok(())
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]
-fn play_native() -> anyhow::Result<()> {
+fn play_native(_volume: u8) -> anyhow::Result<()> {
     Ok(())
 }
 
@@ -176,7 +186,7 @@ mod tests {
         let mut attempt = 0;
         loop {
             attempt += 1;
-            match play_blocking(Some(path)) {
+            match play_blocking(Some(path), 35) {
                 Err(error) if attempt < ATTEMPTS && text_file_busy(&error) => {
                     std::thread::sleep(std::time::Duration::from_millis(10));
                 }
@@ -190,7 +200,7 @@ mod tests {
     fn missing_or_failing_player_is_an_error() {
         let directory = temp_dir("errors");
         let missing = directory.join("nao-existe");
-        assert!(play_blocking(Some(missing.as_os_str())).is_err());
+        assert!(play_blocking(Some(missing.as_os_str()), 35).is_err());
         let failing = write_script(&directory, "falha", "#!/bin/sh\nexit 1\n");
         assert!(play_written_script(failing.as_os_str()).is_err());
         std::fs::remove_dir_all(directory).unwrap();
@@ -222,17 +232,59 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_candidates_prefer_the_sound_file() {
-        let without_file = linux_candidates(false);
+        let without_file = linux_candidates(false, 35);
         assert_eq!(without_file.len(), 1);
         assert_eq!(without_file[0].0, "canberra-gtk-play");
-        let with_file = linux_candidates(true);
+        let with_file = linux_candidates(true, 35);
         assert_eq!(
             with_file.iter().map(|(program, _)| *program).collect::<Vec<_>>(),
             vec!["pw-play", "paplay", "canberra-gtk-play"]
         );
-        assert_eq!(with_file[0].1, vec![LINUX_SOUND_FILE]);
-        assert_eq!(with_file[1].1, vec![LINUX_SOUND_FILE]);
+        assert_eq!(with_file[0].1, vec!["--volume", "0.35", LINUX_SOUND_FILE]);
+        assert_eq!(with_file[1].1, vec!["--volume", "22938", LINUX_SOUND_FILE]);
         assert_eq!(with_file[2].1, vec!["-i", "complete"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn zero_volume_never_executes_a_player() {
+        let directory = temp_dir("muted");
+        let log = directory.join("sound.log");
+        let script = write_script(&directory, "toca", &format!(
+            "#!/bin/sh\nprintf 'x' > '{}'\n", log.display(),
+        ));
+        play_blocking(Some(script.as_os_str()), 0).unwrap();
+        play(0);
+        assert!(!log.exists(), "mudo não executa nem o comando de override");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_players_receive_volume_arguments() {
+        let directory = temp_dir("volume-args");
+        let log = directory.join("args.log");
+        for (program, args) in linux_candidates(true, 35).into_iter().take(2) {
+            write_script(&directory, program, &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n", log.display(),
+            ));
+            // PATH só do filho: não altera o ambiente dos testes concorrentes.
+            let status = std::process::Command::new("/bin/sh")
+                .args(["-c", "exec \"$@\"", "dish-sound-test", program])
+                .args(&args)
+                .env("PATH", &directory)
+                .status().unwrap();
+            assert!(status.success());
+            let expected = if program == "pw-play" { "0.35" } else { "22938" };
+            assert_eq!(std::fs::read_to_string(&log).unwrap(),
+                format!("--volume\n{expected}\n{LINUX_SOUND_FILE}\n"));
+        }
+        for (volume, pw, pa) in [(0, "0.00", "0"), (100, "1.00", "65536"), (255, "1.00", "65536")] {
+            let candidates = linux_candidates(true, volume);
+            assert_eq!(candidates[0].1[1], pw);
+            assert_eq!(candidates[1].1[1], pa);
+        }
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

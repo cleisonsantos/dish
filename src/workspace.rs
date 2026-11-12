@@ -1090,6 +1090,10 @@ impl Workspace {
                             });
                         }
                     }
+                    SettingsEvent::CompletionSoundVolume(volume) => {
+                        this.preferences.completion_sound_volume = (*volume).min(100);
+                        crate::preferences::save(this.preferences.clone());
+                    }
                     SettingsEvent::Appearance(mode) => {
                         // Escolher o modo solta o tema fixado: cada aparência
                         // volta ao seu tema padrão.
@@ -1249,6 +1253,7 @@ impl Workspace {
         let pi = self.pi_status();
         let view = crate::settings::SettingsView {
             options: [state.sidebar, self.visible, state.show_thinking, state.generated_titles, self.preferences.completion_sound],
+            completion_sound_volume: self.preferences.completion_sound_volume,
             appearance: self.preferences.appearance,
             navigation_choice: crate::preferences::NavigationChoice {
                 session_order: self.preferences.session_order,
@@ -2523,7 +2528,7 @@ impl Render for Workspace {
                 conversation.unread_completion = index != self.active || !active_viewed;
                 conversation.seen_completed_runs = completed;
                 if crate::sound::should_play(self.preferences.completion_sound, newly_completed, conversation.unread_completion) {
-                    crate::sound::play();
+                    crate::sound::play(self.preferences.completion_sound_volume);
                 }
             }
             if index == self.active && active_viewed { conversation.unread_completion = false; }
