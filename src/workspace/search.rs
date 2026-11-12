@@ -3,8 +3,8 @@ use super::*;
 use crate::content_search::{Document, Hit, Index, Results};
 use crate::state::Block;
 use std::sync::{
-    Arc, Mutex,
     atomic::{AtomicU64, Ordering},
+    Arc, Mutex,
 };
 
 #[derive(Default)]
@@ -438,8 +438,7 @@ impl Workspace {
             state.update(cx, |state, cx| reveal_match(state, hit.message, query, cx));
         } else if let Some(path) = &hit.path {
             if let Some(info) = self.catalog.iter().find(|info| &info.path == path).cloned() {
-                self.content_search.pending_jump =
-                    Some((path.clone(), hit.snippet.trim_matches('…').to_owned()));
+                self.content_search.pending_jump = Some((path.clone(), hit.snippet.clone()));
                 self.open(info, window, cx);
             }
         }
@@ -503,12 +502,13 @@ impl Workspace {
             "Buscando…".into()
         } else {
             format!(
-                "{count} {} · {occurrences} ocorrências{}",
+                "{count} {} · {occurrences} ocorrências · {} arquivos{}",
                 if count == 1 {
                     "resultado"
                 } else {
                     "resultados"
                 },
+                self.content_search.results.by_file.len(),
                 if self.content_search.results.limited {
                     " · refine a busca"
                 } else {
@@ -656,8 +656,9 @@ impl Workspace {
             "query": self.content_search.editor.as_ref().map(|editor| editor.read(cx).text(cx)),
             "loading": self.content_search.loading,
             "hits": self.content_search.results.hits.iter().map(|hit| serde_json::json!({
-                "title": hit.title, "snippet": hit.snippet,
+                "title": hit.title, "snippet": hit.snippet, "score": hit.score,
             })).collect::<Vec<_>>(),
+            "by_file": self.content_search.results.by_file,
             "selected": self.content_search.selected,
         })))
     }
@@ -680,6 +681,7 @@ mod tests {
             snippet: "needle".into(),
             message,
             occurrences: 1,
+            score: 2,
         }
     }
 
