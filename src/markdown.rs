@@ -457,7 +457,7 @@ fn table_with_scroll(
         rows.iter().filter_map(|row| row.get(col))
             // Estimativa por caractere na prosa de 15px; código inline é
             // monoespaçado e mais largo, então a margem é generosa.
-            .map(|cell| cell.chars().count() as f32 * 9. + 24.)
+            .map(|cell| cell.chars().count() as f32 * 11. + 28.)
             .fold(100., f32::max).min(360.)
     }).collect();
     let mut body = div().flex().flex_col().min_w(px(widths.iter().sum()));

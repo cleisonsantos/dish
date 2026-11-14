@@ -2242,7 +2242,7 @@ fn disabled_control(id: impl Into<ElementId>, label: impl Into<SharedString>) ->
 /// Uma linha do catálogo de temas: amostras, nome, aparência e a escolha.
 fn theme_row(item: &theme::Theme, selected: bool, cx: &mut Context<Settings>) -> AnyElement {
     let mut swatches = div().flex().flex_row().gap(px(2.)).flex_none();
-    for color in [item.bg, item.surface_2, item.text, item.effort[3]] {
+    for color in [item.bg, item.surface_2, item.text, item.brand] {
         swatches = swatches.child(
             div()
                 .size(px(14.))
@@ -2395,8 +2395,11 @@ fn model_count(models: usize) -> String {
 /// do menu à esquerda.
 fn page_title(label: &str) -> Div {
     div()
-        .text_size(px(14.))
-        .font_weight(FontWeight::MEDIUM)
+        .mb(px(theme::S2))
+        .font_family(theme::FONT_PROSE)
+        .text_size(px(30.))
+        .line_height(px(38.))
+        .font_weight(FontWeight::SEMIBOLD)
         .text_color(theme::text())
         .child(SharedString::from(label.to_owned()))
 }
@@ -2406,9 +2409,9 @@ impl Render for Settings {
         if !self.open {
             return div().into_any_element();
         }
-        let height = (f32::from(window.bounds().size.height) - 48.).max(300.);
-        let width = (f32::from(window.bounds().size.width) - 48.).min(840.);
-        let compact = width < 680.;
+        // Configurações é uma página ao lado do trilho, não um modal.
+        let width = f32::from(window.bounds().size.width) - theme::RAIL_WIDTH;
+        let compact = width < 760.;
         let mut menu = div().flex().flex_col().gap(px(2.)).w(px(184.)).flex_none().when(compact, |el| {
             el.w_full().flex_row().flex_wrap().gap(px(theme::S1))
         });
@@ -2786,7 +2789,9 @@ impl Render for Settings {
                                     .text_color(theme::faint())
                                     .child(SharedString::from(provider.to_string())),
                             )
-                            .child(switch(
+                            .child({
+                                let probe_name = format!("provider-switch-{provider}");
+                                switch(
                                 SharedString::from(format!("provider-visibility-{provider}")),
                                 state,
                                 cx.listener(move |this, _, _, cx| {
@@ -2806,11 +2811,14 @@ impl Render for Settings {
                                     ));
                                     cx.notify();
                                 }),
-                            )),
+                            )
+                            .test_probe(move || probe_name.clone(), || serde_json::json!({}))
+                            }),
                     );
                     for id in ids {
                         let key = format!("{provider}/{id}");
                         let row_id = SharedString::from(format!("model-visibility-{key}"));
+                        let probe_name = format!("model-switch-{key}");
                         let visible = !self.hidden.contains(&key);
                         let toggled = key.clone();
                         group = group.child(
@@ -2853,7 +2861,8 @@ impl Render for Settings {
                                         ));
                                         cx.notify();
                                     }),
-                                )),
+                                )
+                                .test_probe(move || probe_name.clone(), || serde_json::json!({}))),
                         );
                     }
                     page = page.child(group);
@@ -3049,54 +3058,65 @@ impl Render for Settings {
                 .into_any_element()
             }
         };
-        let card = column()
+        let card = div()
             .id("settings-card")
-            .w(px(width))
-            .h(px(height.min(700.)))
-            .p(px(theme::S5))
+            .absolute()
+            .top(px(0.))
+            .bottom(px(0.))
+            .right(px(0.))
+            .left(px(theme::RAIL_WIDTH))
+            .bg(theme::bg())
             // Sem tamanho explícito o GPUI cai nos 16px padrão, maiores que o
-            // resto do app; o painel herda a escala da interface.
+            // resto do app; a página herda a escala da interface.
             .text_size(px(theme::TEXT))
             .line_height(theme::body_line_height())
-            .rounded(theme::r_surface())
-            .border_1()
-            .border_color(theme::line_strong())
-            .bg(theme::surface())
-            .shadow(theme::shadow_overlay())
+            .text_color(theme::text())
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
                 div()
+                    .size_full()
                     .flex()
-                    .justify_between()
-                    .items_center()
+                    .when(!compact, |el| {
+                        el.flex_row().justify_center().gap(px(64.)).pt(px(56.)).px(px(48.))
+                    })
+                    .when(compact, |el| el.flex_col().gap(px(theme::S4)).pt(px(theme::S5)).px(px(theme::S5)))
                     .child(
                         div()
-                            .text_size(px(theme::TITLE))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme::text())
-                            .child("Configurações"),
+                            .flex_none()
+                            .when(!compact, |el| el.w(px(200.)))
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .child(
+                                div()
+                                    .ml(px(theme::S3))
+                                    .mb(px(theme::S4 + 2.))
+                                    .font_family(theme::FONT_PROSE)
+                                    .text_size(px(26.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("Configurações"),
+                            )
+                            .child(menu)
+                            .child(
+                                div().mt(px(theme::S4)).flex().child(
+                                    menu_item(
+                                        "settings-close",
+                                        "Fechar · Esc",
+                                        cx.listener(|this, _, window, cx| this.close(window, cx)),
+                                    )
+                                    .text_color(theme::faint()),
+                                ),
+                            ),
                     )
-                    .child(control(
-                        "settings-close",
-                        "Fechar · Esc",
-                        cx.listener(|this, _, window, cx| this.close(window, cx)),
-                    )),
-            )
-            .child(crate::ui::rule())
-            .child(
-                div()
-                    .flex()
-                    .flex_1()
-                    .gap(px(theme::S5))
-                    .min_h(px(0.))
-                    .when(compact, |el| el.flex_col())
-                    .child(menu)
                     .child(
                         div()
                             .id("settings-content")
                             .flex_1()
+                            .max_w(px(640.))
                             .min_w(px(0.))
                             .min_h(px(0.))
+                            .h_full()
+                            .pb(px(theme::S6))
                             .overflow_y_scroll()
                             .child(crate::ui::motion::reveal(
                                 div().child(content),
@@ -3127,8 +3147,8 @@ impl Render for Settings {
                 "section": section_id(section),
                 "about_ready": section == Section::About,
             }))
-            .bg(theme::scrim())
-            .backdrop_blur(px(theme::SCRIM_BLUR))
+            // A página cobre a conversa; o que sobra visível é o trilho, e
+            // clicar nele volta para a conversa.
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {

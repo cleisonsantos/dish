@@ -3707,6 +3707,11 @@ impl Render for Workspace {
         // Janela larga: a gaveta encaixa ao lado da conversa. Estreita: flutua
         // por cima e fecha com um clique fora, sem espremer a leitura.
         let drawer_floats = f32::from(window.bounds().size.width) < theme::DRAWER_DOCK_WIDTH;
+        let left_chrome = theme::RAIL_WIDTH
+            + if self.visible && !drawer_floats { self.nav_width } else { 0. };
+        self.conversations[self.active]
+            .state
+            .update(cx, |state, _| state.left_chrome = left_chrome);
         let mut floating_drawer = None;
         if self.visible {
             let drawer = crate::ui::motion::panel(self.navigation(window, cx), "navigation-enter", false);

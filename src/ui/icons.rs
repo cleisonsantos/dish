@@ -235,11 +235,12 @@ fn build(icon: Icon, stroke: f32, scale: f32, origin: Point<Pixels>) -> Option<P
             rounded_rect(&mut b, 4., 4., 8., 8., 1.);
         }
         Icon::Send => {
-            b.move_to(to(3., 8.));
-            b.line_to(to(12.4, 8.));
-            b.move_to(to(8.6, 4.2));
-            b.line_to(to(12.6, 8.));
-            b.line_to(to(8.6, 11.8));
+            // Seta para cima: o texto sobe para a página.
+            b.move_to(to(8., 13.));
+            b.line_to(to(8., 3.4));
+            b.move_to(to(3.8, 7.6));
+            b.line_to(to(8., 3.4));
+            b.line_to(to(12.2, 7.6));
         }
         Icon::Clock => {
             circle(&mut b, 8., 8., 5.6, false);

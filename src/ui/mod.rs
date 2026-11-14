@@ -69,19 +69,34 @@ impl Render for AppState {
             .flex()
             .flex_col()
             .child(conversation_header(self, cx));
-        if !expanded {
+        // Sessão vazia: o composer sobe para o centro, entre a pergunta e as
+        // sugestões. Com mensagens, a página de leitura assume.
+        let welcome = !expanded && self.messages.is_empty() && !self.is_loading_session();
+        if welcome {
+            main_column = main_column
+                .child(div().flex_1().min_h(px(theme::S5)))
+                .child(reading_column(transcript::welcome_heading(self), false));
+        } else if !expanded {
             main_column = main_column.child(transcript::transcript(self, cx));
         }
 
+        // Com margem, a coluna e a margem centram juntas: o composer acompanha
+        // a coluna, não o centro da janela.
+        let margin = marginalia(self, window) && !welcome;
         if let Some(banner) = self.banner.clone() {
-            main_column = main_column.child(reading_column(banner_element(self, &banner, cx)));
+            main_column = main_column.child(reading_column(banner_element(self, &banner, cx), margin));
         }
         main_column = main_column
             .child(
-                reading_column(composer::composer(self, &slash, slash_index, window, cx))
+                reading_column(composer::composer(self, &slash, slash_index, window, cx), margin)
                     .when(expanded, |el| el.flex_1().min_h(px(0.))),
             )
-            .child(reading_column(git_context_view::footer(&self.git_context)));
+            .when(welcome, |el| {
+                let weak = cx.entity().downgrade();
+                el.child(reading_column(transcript::welcome_suggestions(&weak), false))
+                    .child(div().flex_1().min_h(px(theme::S5)))
+            })
+            .child(reading_column(git_context_view::footer(&self.git_context), margin));
 
         let mut root = div()
             .id("dish-root")
@@ -281,59 +296,35 @@ fn conversation_header(state: &AppState, cx: &Context<AppState>) -> Div {
         .w_full()
         .min_w(px(0.))
         .flex_none()
-        .min_h(px(theme::HEADER_HEIGHT))
+        .h(px(52.))
         .flex()
         .flex_row()
         .items_center()
         .justify_between()
         .gap(px(theme::S3))
-        .px(px(theme::CHAT_INSET))
-        .py(px(theme::S3))
+        .pl(px(theme::S5))
+        .pr(px(theme::S4))
         // Hairline: o transcript rola por baixo e não aparece "fatiado".
         .border_b_1()
         .border_color(theme::line_soft())
+        // Uma linha de contexto: pasta / título. O título grande vive na página.
         .child(
             div()
                 .flex()
-                .flex_col()
-                .gap(px(theme::S1))
+                .flex_row()
+                .items_center()
+                .gap(px(theme::S2))
                 .min_w(px(0.))
                 .flex_1()
+                .text_size(px(theme::TEXT))
+                .child(div().flex_none().text_color(theme::faint()).child(SharedString::from(folder)))
+                .child(div().flex_none().text_color(theme::faint()).child("/"))
                 .child(
                     div()
+                        .min_w(px(0.))
                         .truncate()
-                        .text_size(px(theme::TITLE))
-                        .line_height(px(24.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme::text())
+                        .text_color(theme::dim())
                         .child(SharedString::from(state.display_title())),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(theme::S2))
-                        .child(
-                            div()
-                                .min_w(px(0.))
-                                .truncate()
-                                .font_family(theme::font_mono())
-                                .text_size(px(theme::TEXT_XS))
-                                .text_color(theme::faint())
-                                .child(SharedString::from(folder)),
-                        )
-                        .when(!state.messages.is_empty(), |el| {
-                            el.child(crate::ui::dot(theme::line_strong(), 3.)).child(
-                                div()
-                                    .text_size(px(theme::TEXT_SM))
-                                    .text_color(theme::faint())
-                                    .child(SharedString::from(format!(
-                                        "{} mensagens",
-                                        state.messages.len()
-                                    ))),
-                            )
-                        }),
                 ),
         )
         .child(
@@ -384,18 +375,19 @@ fn conversation_header(state: &AppState, cx: &Context<AppState>) -> Div {
                 .child(
                     div()
                         .id("toggle-details")
+                        .size(px(34.))
                         .flex()
-                        .flex_row()
                         .items_center()
-                        .gap(px(theme::S1 + 2.))
-                        .px(px(theme::S3))
-                        .py(px(theme::S1 + 3.))
-                        .rounded(theme::r_control())
+                        .justify_center()
+                        .rounded(px(9.))
                         .border_1()
                         .border_color(if state.sidebar {
                             theme::line_strong()
                         } else {
-                            theme::line_soft()
+                            theme::line()
+                        })
+                        .tooltip(|_, cx| {
+                            cx.new(|_| crate::ui::copy_button::TextTooltip("Detalhes da sessão".into())).into()
                         })
                         .when(state.sidebar, |el| el.bg(theme::surface_2()))
                         .cursor_pointer()
@@ -418,13 +410,7 @@ fn conversation_header(state: &AppState, cx: &Context<AppState>) -> Div {
                             state.sidebar = !state.sidebar;
                             cx.notify();
                         }))
-                        .child(icon(Icon::Panel, 13., theme::faint()))
-                        .child(
-                            div()
-                                .text_size(px(theme::TEXT_SM))
-                                .text_color(theme::dim())
-                                .child("Detalhes"),
-                        ),
+                        .child(icon(Icon::Panel, 15., theme::dim())),
                 ),
         )
 }
@@ -768,18 +754,38 @@ pub fn tone_color(tone: crate::state::Tone) -> Hsla {
 
 
 
+/// Whether the conversation has room for marginalia: the column plus the
+/// activity margin beside it, after the rail, the docked drawer and the inspector.
+pub fn marginalia(state: &AppState, window: &Window) -> bool {
+    let viewport = f32::from(window.bounds().size.width);
+    let inspector = if state.sidebar && !inspector::uses_overlay(viewport) {
+        inspector::WIDTH
+    } else {
+        0.
+    };
+    viewport - state.left_chrome - inspector
+        >= theme::READING_WIDTH + theme::MARGIN_WIDTH + 2. * theme::S5
+}
+
 /// Centres `content` in the shared reading measure (`theme::READING_WIDTH`).
 /// The column keeps full width below the measure, so narrow windows lose nothing.
-pub fn reading_column(content: impl IntoElement) -> Div {
-    div().w_full().min_w(px(0.)).flex().flex_row().justify_center().child(
-        div()
-            .w_full()
-            .min_w(px(0.))
-            .max_w(px(theme::READING_WIDTH))
-            .flex()
-            .flex_col()
-            .child(content),
-    )
+pub fn reading_column(content: impl IntoElement, margin: bool) -> Div {
+    div()
+        .w_full()
+        .min_w(px(0.))
+        .flex()
+        .flex_row()
+        .justify_center()
+        .child(
+            div()
+                .w_full()
+                .min_w(px(0.))
+                .max_w(px(theme::READING_WIDTH))
+                .flex()
+                .flex_col()
+                .child(content),
+        )
+        .when(margin, |el| el.child(div().flex_none().w(px(theme::MARGIN_WIDTH))))
 }
 
 /// A square marker. Reads as a valve light rather than a bullet.
@@ -910,7 +916,7 @@ pub fn content_id(prefix: &str, body: &str) -> ElementId {
 /// The Markdown style used for assistant output.
 pub fn markdown_style() -> MarkdownStyle {
     MarkdownStyle {
-        font: font(theme::font_ui()),
+        font: font(theme::FONT_PROSE),
         color: theme::text(),
         accent: theme::accent(),
         dim: theme::dim(),

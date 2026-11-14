@@ -154,12 +154,12 @@ pub fn composer(
     // foco e um pulso lento enquanto o Pi realmente trabalha.
     let mut surface = div()
         .mx(px(theme::CHAT_INSET))
-        .rounded(theme::r_surface())
+        .rounded(px(16.))
         .border_1()
         .border_color(if focused || streaming {
             theme::accent_edge()
         } else {
-            theme::line_strong()
+            theme::line()
         })
         .group_drag_over::<ExternalPaths>("conversation-drop", |style| style.border_color(theme::accent_edge()).bg(theme::wash(theme::accent(), 0.06)))
         .bg(theme::surface_2())
@@ -187,12 +187,17 @@ pub fn composer(
                     // o `surface` ganhou; senão o texto fica espremido no topo.
                     .when(expanded, |el| el.flex_1().min_h(px(0.)).items_stretch())
                     .gap(px(theme::S2))
-                    .px(px(theme::S4))
+                    .pl(px(theme::S5 - 2.))
+                    .pr(px(theme::S4))
                     .pt(px(theme::S4))
-                    .pb(px(theme::S4))
+                    .pb(px(theme::S3))
                     .child(
                         div()
                             .id("composer-input")
+                            // Escreve-se na mesma voz em que se lê.
+                            .font_family(theme::FONT_PROSE)
+                            .text_size(px(17.))
+                            .line_height(px(27.))
                             .test_probe(|| "composer-input".into(), || serde_json::json!({
                                 "focused": focused,
                                 "expanded": expanded,
@@ -590,8 +595,10 @@ fn attach_control(state: &AppState, cx: &Context<AppState>) -> AnyElement {
             }
         }))
         .on_click(cx.listener(|state, _: &ClickEvent, _, cx| state.pick_attachments(cx)))
-        .child(icon(Icon::Plus, 12., theme::faint()))
-        .child(div().text_size(px(theme::TEXT_SM)).text_color(theme::dim()).child("Anexar"))
+        .tooltip(|_, cx| cx.new(|_| super::copy_button::TextTooltip("Anexar arquivos ou imagens".into())).into())
+        .size(px(30.))
+        .justify_center()
+        .child(icon(Icon::Plus, 15., theme::dim()))
         .into_any_element()
 }
 
@@ -698,13 +705,16 @@ fn effort_control(state: &AppState, cx: &Context<AppState>) -> AnyElement {
             state.effort_menu = !state.effort_menu;
             cx.notify();
         }))
+        // Esforço como texto: "raciocínio" e o nível na cor do acento.
+        .child(div().text_size(px(theme::TEXT_SM)).text_color(theme::faint()).child("raciocínio"))
         .child(
             div()
                 .text_size(px(theme::TEXT_SM))
-                .text_color(theme::effort_color(&level, &state.thinking_levels))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme::accent())
                 .child(crate::state::effort_label(&level)),
         )
-        .child(icon(Icon::ChevronDown, 12., theme::faint()))
+        .child(icon(Icon::ChevronDown, 12., theme::accent()))
         .into_any_element()
 }
 
@@ -731,8 +741,10 @@ fn actions(streaming: bool, empty: bool, cx: &Context<AppState>) -> AnyElement {
         div()
             .id("stop-button")
             .flex_none()
-            .size(px(36.))
-            .rounded(theme::r_action())
+            .h(px(34.))
+            .px(px(theme::S3 + 2.))
+            .gap(px(theme::S2))
+            .rounded(px(17.))
             .focusable()
             .tab_index(0)
             .focus(|style| style.shadow(theme::focus_ring()))
@@ -748,12 +760,12 @@ fn actions(streaming: bool, empty: bool, cx: &Context<AppState>) -> AnyElement {
             }))
             .border_1()
             .border_color(theme::line())
-            .bg(theme::inset())
             .flex()
+            .flex_row()
             .items_center()
             .justify_center()
             .cursor_pointer()
-            .hover(|style| style.bg(theme::wash(theme::failure(), 0.14)).border_color(theme::failure()))
+            .hover(|style| style.bg(theme::wash(theme::failure(), 0.12)).border_color(theme::failure()))
             .active(|style| style.opacity(0.8))
             .on_click(move |_event: &ClickEvent, window: &mut Window, cx: &mut App| {
                 weak.update(cx, |state, cx| {
@@ -761,7 +773,8 @@ fn actions(streaming: bool, empty: bool, cx: &Context<AppState>) -> AnyElement {
                     focus_composer(state, window, cx);
                 }).ok();
             })
-            .child(icon(Icon::Stop, 13., theme::failure()))
+            .child(icon(Icon::Stop, 11., theme::failure()))
+            .child(div().text_size(px(theme::TEXT)).text_color(theme::failure()).child("Parar"))
     };
 
     let send = {
@@ -769,10 +782,9 @@ fn actions(streaming: bool, empty: bool, cx: &Context<AppState>) -> AnyElement {
         div()
             .id("send-button")
             .flex_none()
-            .h(px(36.))
-            .px(px(theme::S3))
-            .gap(px(theme::S2))
-            .rounded(theme::r_action())
+            .size(px(36.))
+            .rounded(px(18.))
+            .tooltip(|_, cx| cx.new(|_| super::copy_button::TextTooltip("Enviar (Enter)".into())).into())
             .flex()
             .items_center()
             .justify_center()
@@ -791,25 +803,17 @@ fn actions(streaming: bool, empty: bool, cx: &Context<AppState>) -> AnyElement {
                     cx.stop_propagation();
                 }
             }))
-            .child(div().text_size(px(theme::TEXT_SM)).font_weight(FontWeight::MEDIUM).text_color(if empty {
-                theme::faint()
-            } else {
-                theme::on_accent()
-            }).child("Enviar"))
-            // Sem texto, o botão fica como contorno legível: não some, e não
-            // finge ser uma ação disponível.
+            // Sem texto: contorno legível, que não finge estar disponível.
             .when(empty, |el| {
                 el.border_color(theme::line_strong())
                     .child(icon(Icon::Send, 15., theme::faint()))
             })
-            // Com texto, a ação principal é o preenchimento neutro invertido
-            // (regra do DESIGN.md: Enviar não é preenchido com o esforço); o
-            // acento só aparece como brilho ao passar o mouse.
+            // Com texto: o círculo de tinta do acento, a única ação cheia da tela.
             .when(!empty, |el| {
-                el.bg(theme::text())
-                    .border_color(theme::text())
+                el.bg(theme::accent())
+                    .border_color(theme::accent())
                     .cursor_pointer()
-                    .hover(|style| style.bg(theme::dim()).shadow(theme::accent_glow(0.7)))
+                    .hover(|style| style.bg(theme::accent_hover()))
                     .active(|style| style.opacity(0.85))
                     .child(icon(Icon::Send, 15., theme::on_accent()))
             })
@@ -1020,7 +1024,7 @@ fn queue_item(label: &str, text: &str, color: Hsla) -> AnyElement {
         .into_any_element()
 }
 
-/// Menu do esforço: cada nível na sua cor do Pi, como no rail antigo.
+/// Menu do esforço: os níveis que o Pi oferece, o escolhido marcado no acento.
 fn effort_menu(state: &AppState, cx: &Context<AppState>) -> Div {
     let current = state.thinking_level.clone().unwrap_or_default();
     // Pi owns capabilities. Never invent a fallback ladder for an empty list.
@@ -1028,7 +1032,6 @@ fn effort_menu(state: &AppState, cx: &Context<AppState>) -> Div {
 
     let rows = levels.iter().enumerate().map(|(index, level)| {
         let selected = *level == current;
-        let color = theme::effort_color(level, &levels);
         let level_for_click = level.clone();
         div()
             .id(SharedString::from(format!("effort-{index}")))
@@ -1050,7 +1053,12 @@ fn effort_menu(state: &AppState, cx: &Context<AppState>) -> Div {
                 div()
                     .flex_none()
                     .w(px(14.))
-                    .child(crate::ui::dot(color, if selected { 8. } else { 6. })),
+                    // Sem cor por nível: o escolhido é o ponto cheio do acento.
+                    .child(if selected {
+                        crate::ui::dot(theme::accent(), 8.).rounded(px(4.))
+                    } else {
+                        div().size(px(7.)).rounded(px(4.)).border_1().border_color(theme::faint())
+                    }),
             )
             .child(
                 div()

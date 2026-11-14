@@ -1,22 +1,22 @@
 //! Visual language for Dish.
 //!
-//! Three rules hold the design together:
+//! Three rules hold the design together ("Editorial calmo", issue #206):
 //!
-//! 1. **Graphite with separation.** Surfaces step up from the conversation to
-//!    the panels; nothing is outlined just to be outlined. Steps between
-//!    layers carry a touch more blue as they rise, so the depth is felt
-//!    instead of only measured.
-//! 2. **The accent is the effort meter.** Pi's own effort palette drives the
-//!    accent, so the window looks different when the model is thinking hard.
-//!    It stays concentrated on the effort control, focus and small indicators.
-//! 3. **Effort colours are not status colours.** Execution, success and failure
-//!    live on their own hues so that `max` never reads as an error — enforced by
+//! 1. **Paper and ink.** The conversation is a page: a quiet ground, a darker
+//!    rail and recessed wells for code. Surfaces separate by tone and
+//!    hairlines, never by cards for their own sake.
+//! 2. **One accent per theme.** The accent belongs to the theme (verdigris on
+//!    Noite, ink green on Papel) and marks what is alive or actionable: send,
+//!    focus, the running agent, the chosen effort level. The effort level is
+//!    shown as text; it no longer recolours the window.
+//! 3. **States stay apart.** Running, failure, warning and new content keep
+//!    distinct colours and always come with an icon or a word — enforced by
 //!    the tests at the bottom of this file, not by opinion.
 //!
-//! The palette is a [`Theme`] value. `dish-dark` is the original look and
-//! `dish-light` is its light counterpart. Six additional presets cover warm,
-//! dim, blue, plum, lavender and sage surfaces. User themes live in
-//! `$XDG_CONFIG_HOME/dish/themes/*.json` (see
+//! The palette is a [`Theme`] value: Noite (`dish-dark`), Ardósia
+//! (`dish-slate`), Papel (`dish-light`) and Névoa (`dish-mist`). The old ids
+//! `dish-dark`/`dish-light` are kept so saved preferences still resolve. User
+//! themes live in `$XDG_CONFIG_HOME/dish/themes/*.json` (see
 //! `docs/themes.md`). The active one is resolved at render time from the
 //! user's choice and the desktop, so switching never needs a restart.
 
@@ -84,22 +84,28 @@ pub fn font_mono() -> &'static str {
 
 // ----------------------------------------------------------------- tipografia
 
-/// Reading text: the assistant's answer and the user's request.
-pub const PROSE: f32 = 15.0;
-/// Leading for reading text: 1.55 of the prose size, comfortable for long answers.
-pub const PROSE_LINE: f32 = 23.0;
+/// Reading text: the assistant's answer, set in the bundled serif.
+pub const PROSE: f32 = 18.0;
+/// Leading for reading text: 1.65 of the prose size, an editorial measure.
+pub const PROSE_LINE: f32 = 30.0;
+/// The conversation title at the top of the page.
+pub const PAGE_TITLE: f32 = 34.0;
+/// The user's request, set as an italic pull quote.
+pub const QUOTE: f32 = 21.0;
 /// Session title.
 pub const TITLE: f32 = 20.0;
 /// Default interface text.
 pub const TEXT: f32 = 13.0;
 /// Welcome heading: the only display-sized type in the workspace.
-pub const DISPLAY: f32 = 32.0;
+pub const DISPLAY: f32 = 46.0;
 /// Fixed inset, shared by header, transcript and composer at any window width.
 pub const CHAT_INSET: f32 = 16.0;
 /// Reading measure: transcript, composer and the rows around them share one
 /// centred column, so prose stays near 90 characters per line on wide windows.
 /// Includes the `CHAT_INSET` on both sides.
-pub const READING_WIDTH: f32 = 840.0;
+pub const READING_WIDTH: f32 = 712.0;
+/// Marginalia: the agent's activity sits beside the column when there is room.
+pub const MARGIN_WIDTH: f32 = 260.0;
 /// Popup controls keep their own measure when the writing area grows.
 pub const EFFORT_MENU_WIDTH: f32 = 360.0;
 pub const COMPOSER_PICKER_WIDTH: f32 = 640.0;
@@ -107,8 +113,6 @@ pub const COMPOSER_PICKER_WIDTH: f32 = 640.0;
 /// Code fills the reading column, aligned with tables and prose.
 pub const CODE_BLOCK_MAX_WIDTH: f32 = READING_WIDTH - 2.0 * CHAT_INSET;
 pub const CODE_BLOCK_MAX_HEIGHT: f32 = 340.0;
-/// User bubbles stay compact but long requests can use a wide workspace.
-pub const REQUEST_MAX_FRACTION: f32 = 0.9;
 /// The writing surface reserves space without growing on every short draft.
 pub const WRITING_HEIGHT: f32 = 52.0;
 /// Header rhythm shared by the conversation and inspector.
@@ -190,8 +194,7 @@ pub enum AppearanceMode {
     System,
 }
 
-/// Um esquema de cores completo. `effort` guarda a rampa na ordem
-/// `off, minimal, low, medium, high, xhigh, max`.
+/// Um esquema de cores completo.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Theme {
     /// Identificador estável de um tema embutido, ou `user:<arquivo>`.
@@ -222,11 +225,8 @@ pub struct Theme {
     pub ok: Hsla,
     pub git_added: Hsla,
     pub git_removed: Hsla,
-    pub effort: [Hsla; 7],
 }
 
-/// Níveis de raciocínio, na ordem da rampa de esforço.
-pub const LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 fn base_theme(id: &str, name: &str, dark: bool) -> Theme {
     Theme {
@@ -254,7 +254,6 @@ fn base_theme(id: &str, name: &str, dark: bool) -> Theme {
         ok: c(0x000000ff),
         git_added: c(0x000000ff),
         git_removed: c(0x000000ff),
-        effort: [c(0x000000ff); 7],
     }
 }
 
@@ -282,15 +281,6 @@ fn dark_theme() -> Theme {
         ok: c(0xb5bcb5ff),
         git_added: c(0x81b88bff),
         git_removed: c(0xd98282ff),
-        effort: [
-            c(0x6c767bff),
-            c(0x68808dff),
-            c(0x5489a4ff),
-            c(0x6185ccff),
-            c(0x9776e5ff),
-            c(0xde54c1ff),
-            c(0xfe5462ff),
-        ],
         ..base_theme("dish-dark", "Noite", true)
     }
 }
@@ -319,15 +309,6 @@ fn light_theme() -> Theme {
         ok: c(0x444a45ff),
         git_added: c(0x2f6f38ff),
         git_removed: c(0xa83c3cff),
-        effort: [
-            c(0x6a7378ff),
-            c(0x53778bff),
-            c(0x4a778fff),
-            c(0x4670c3ff),
-            c(0x7d54deff),
-            c(0xca27a8ff),
-            c(0xe50c1eff),
-        ],
         ..base_theme("dish-light", "Papel", false)
     }
 }
@@ -384,7 +365,6 @@ impl Theme {
         self.attention = base.attention;
         self.git_added = base.git_added;
         self.git_removed = base.git_removed;
-        self.effort = base.effort;
         self.brand = base.brand;
         self
     }
@@ -582,7 +562,6 @@ fn load_theme(path: &std::path::Path) -> Result<Theme, String> {
         ok: pick(colors.ok, "ok", base.ok)?,
         git_added: pick(colors.git_added, "gitAdded", base.git_added)?,
         git_removed: pick(colors.git_removed, "gitRemoved", base.git_removed)?,
-        effort: base.effort,
     };
     Ok(theme)
 }
@@ -731,8 +710,7 @@ pub fn on_accent() -> Hsla {
 
 // --------------------------------------------------------------- semântica
 //
-// Fora da rampa de effort, que vai do cinza-azulado ao coral passando pelo
-// magenta. Estas ficam a ΔE ≥ 25 de todos os níveis (ver testes).
+// Estados semânticos: ficam a ΔE ≥ 25 uns dos outros (ver testes).
 
 /// Executando. Verde-água.
 pub fn running() -> Hsla {
@@ -810,15 +788,6 @@ pub fn accent_edge() -> Hsla {
     }
 }
 
-
-fn effort_index(level: &str) -> usize {
-    LEVELS.iter().position(|name| *name == level).unwrap_or(0)
-}
-
-/// The colour of a single reasoning level, so the selector can show the ramp.
-pub fn effort_color(level: &str, _available: &[String]) -> Hsla {
-    active().effort[effort_index(level)]
-}
 
 /// Kept for callers that still report the level: since the editorial
 /// redesign the accent belongs to the theme and the level is shown as text.
@@ -1061,23 +1030,6 @@ mod tests {
         }
     }
 
-    /// Sucesso é neutro de propósito (decisão de produto): o significado vem do
-    /// ícone e do texto, não da cor. Ele só não pode encostar no neutro do
-    /// esforço `off`, senão vira mingau.
-    #[test]
-    fn success_neutral_stays_off_the_neutral_effort() {
-        for theme in built_ins() {
-            for (level, effort) in [("off", theme.effort[0]), ("minimal", theme.effort[1])] {
-                let distance = delta_e(theme.ok, effort);
-                assert!(
-                    distance > 15.0,
-                    "{} ok vs effort {level}: ΔE {distance:.1}",
-                    theme.name
-                );
-            }
-        }
-    }
-
     /// A cor de resposta nova é a mais saliente da lista: precisa ficar longe
     /// dos outros estados e legível sobre as superfícies em que aparece.
     #[test]
@@ -1101,43 +1053,6 @@ mod tests {
                 let ratio = contrast(theme.attention, surface);
                 assert!(ratio >= 4.5, "{} attention: {ratio:.2}:1", theme.name);
             }
-        }
-    }
-
-    #[test]
-    fn effort_colors_match_pi_dark_theme() {
-        let dark = dark_theme();
-        for (index, level) in LEVELS.iter().enumerate() {
-            let actual = dark.effort[index].color;
-            let hex = [
-                0x6c767bff, 0x68808dff, 0x5489a4ff, 0x6185ccff, 0x9776e5ff, 0xde54c1ff, 0xfe5462ff,
-            ][index];
-            let expected = c(hex).color;
-            assert!(
-                (actual.hue.into_positive_degrees() - expected.hue.into_positive_degrees()).abs()
-                    < 0.001,
-                "{level}"
-            );
-            assert!((actual.saturation - expected.saturation).abs() < 0.00001, "{level}");
-            assert!((actual.lightness - expected.lightness).abs() < 0.00001, "{level}");
-        }
-        // Nível desconhecido cai no `off`, como no Pi.
-        assert_eq!(effort_index("desconhecido"), effort_index("off"));
-    }
-
-    /// A rampa clara é a mesma progressão do Pi com a luminosidade baixada: os
-    /// matizes seguem o tema escuro e cada nível lê sobre o branco.
-    #[test]
-    fn light_effort_ramp_keeps_the_dark_hues_and_stays_readable() {
-        let dark = built_in("dish-dark");
-        let light = built_in("dish-light");
-        for (index, level) in LEVELS.iter().enumerate() {
-            let a = dark.effort[index].color.hue.into_positive_degrees();
-            let b = light.effort[index].color.hue.into_positive_degrees();
-            let difference = (a - b).abs().min(360.0 - (a - b).abs());
-            assert!(difference < 2.0, "{level}: hue {a:.1} vs {b:.1}");
-            let ratio = contrast(light.effort[index], light.surface_2);
-            assert!(ratio >= 4.5, "{level} clear: {ratio:.2}:1");
         }
     }
 
@@ -1199,7 +1114,7 @@ mod tests {
         assert_eq!(theme.attention, c(0x118844ff));
         // O que falta vem do base claro, não do tema ativo.
         assert_eq!(theme.text, light_theme().text);
-        assert_eq!(theme.effort, light_theme().effort);
+        assert_eq!(theme.brand, light_theme().brand);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
