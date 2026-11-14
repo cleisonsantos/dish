@@ -488,8 +488,63 @@ pub enum BannerAction {
 #[derive(Clone)]
 pub struct Banner {
     pub text: String,
+    /// Structured metadata from a Pi turn error, never transport diagnostics.
+    pub detail: Option<String>,
     pub tone: Tone,
     pub action: Option<BannerAction>,
+}
+
+impl Banner {
+    fn from_pi_error(message: &Value) -> Option<Self> {
+        let (text, aborted) = turn_end_error(message)?;
+        // Only metadata on Pi's failing assistant message. Do not serialize the
+        // whole message: content, usage and arbitrary fields are not diagnostics.
+        let mut detail = serde_json::Map::new();
+        for key in ["stopReason", "api", "provider", "model"] {
+            if let Some(value) = message.get(key).filter(|value| !value.is_null()) {
+                detail.insert(key.to_owned(), value.clone());
+            }
+        }
+        Some(Self {
+            text,
+            detail: if detail.is_empty() {
+                None
+            } else {
+                serde_json::to_string_pretty(&detail).ok()
+            },
+            tone: if aborted { Tone::Warning } else { Tone::Error },
+            action: None,
+        })
+    }
+}
+
+/// Assemble clipboard text solely from the banner and metadata already in memory.
+pub fn banner_copy_text(
+    banner: &Banner,
+    pi_version: Option<&str>,
+    pi_program: Option<&str>,
+    session: Option<&str>,
+) -> String {
+    let mut text = format!(
+        "Dish {} — {}/{}\nPi {}",
+        crate::version::release_version(),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        pi_version.filter(|s| !s.trim().is_empty()).unwrap_or("desconhecido"),
+    );
+    if let Some(program) = pi_program.filter(|s| !s.trim().is_empty()) {
+        text.push_str(&format!(" — {program}"));
+    }
+    if let Some(session) = session.filter(|s| !s.trim().is_empty()) {
+        text.push_str(&format!("\nSessão: {session}"));
+    }
+    text.push_str("\nErro do Pi: ");
+    text.push_str(&banner.text);
+    if let Some(detail) = banner.detail.as_deref().filter(|s| !s.trim().is_empty()) {
+        text.push_str("\n\n");
+        text.push_str(detail);
+    }
+    text
 }
 
 /// Pedidos que a conversa não consegue executar sozinha, porque dependem de
@@ -1044,13 +1099,9 @@ impl AppState {
                     let (failed, interrupted) = crate::session_activity::message_outcome(message);
                     self.activity_interrupted |= interrupted;
                     self.activity_error |= failed;
-                    if let Some((error, aborted)) = turn_end_error(message) {
-                        self.activity_error |= !aborted;
-                        self.banner = Some(Banner {
-                            text: error,
-                            tone: if aborted { Tone::Warning } else { Tone::Error },
-                            action: None,
-                        });
+                    if let Some(banner) = Banner::from_pi_error(message) {
+                        self.activity_error |= banner.tone == Tone::Error;
+                        self.banner = Some(banner);
                         if let Some(note) = turn_end_note(message, self.run_error_in_transcript) {
                             pushed = Some(self.push_message(note));
                         }
@@ -1100,6 +1151,7 @@ impl AppState {
                     .unwrap_or("manual");
                 self.banner = Some(Banner {
                     text: format!("Compactando o contexto ({reason})…"),
+                    detail: None,
                     tone: Tone::Info,
                     action: None,
                 });
@@ -1148,6 +1200,7 @@ impl AppState {
                     .unwrap_or("transient error");
                 self.banner = Some(Banner {
                     text: format!("Tentando novamente ({attempt}/{max}) — {message}"),
+                    detail: None,
                     tone: Tone::Warning,
                     action: None,
                 });
@@ -1164,6 +1217,7 @@ impl AppState {
                         .unwrap_or("request failed");
                     self.banner = Some(Banner {
                         text: format!("A solicitação falhou: {error}"),
+                        detail: None,
                         tone: Tone::Error,
                         action: None,
                     });
@@ -1173,6 +1227,7 @@ impl AppState {
             "summarization_retry_scheduled" => {
                 self.banner = Some(Banner {
                     text: "Tentando resumir novamente…".into(),
+                    detail: None,
                     tone: Tone::Warning,
                     action: None,
                 });
@@ -1260,6 +1315,7 @@ impl AppState {
             if let Some(error) = &response.error {
                 self.banner = Some(Banner {
                     text: format!("{}: {error}", response.command),
+                    detail: None,
                     tone: Tone::Error,
                     action: None,
                 });
@@ -1370,6 +1426,7 @@ impl AppState {
                     if let Some(text) = catalog_warning(&mismatch) {
                         self.banner = Some(Banner {
                             text,
+                            detail: None,
                             tone: Tone::Warning,
                             action: Some(BannerAction::ReopenConversation),
                         });
@@ -2588,6 +2645,7 @@ impl AppState {
                 }
                 self.banner = Some(Banner {
                     text: "Compactando o contexto…".into(),
+                    detail: None,
                     tone: Tone::Info,
                     action: None,
                 });
@@ -3148,6 +3206,7 @@ impl AppState {
         }
         self.banner = Some(Banner {
             text: "Compactando o contexto…".into(),
+            detail: None,
             tone: Tone::Info,
             action: None,
         });
@@ -4074,6 +4133,74 @@ fn turn_end_note(message: &Value, already_in_transcript: bool) -> Option<Message
         tone: if aborted { Tone::Warning } else { Tone::Error },
     });
     Some(note)
+}
+
+#[cfg(test)]
+mod banner_tests {
+    use super::{banner_copy_text, Banner, Tone};
+    use serde_json::json;
+
+    #[test]
+    fn banner_copy_preserves_the_entire_long_pi_error() {
+        let error = format!("{}\nfinal do erro", "falha çã 🔥 ".repeat(10_000));
+        let banner = Banner::from_pi_error(&json!({"errorMessage": error})).unwrap();
+        let copied = banner_copy_text(&banner, None, None, None);
+        assert_eq!(banner.text, error);
+        assert_eq!(copied.split_once("Erro do Pi: ").unwrap().1, error);
+        assert!(copied.contains("\nPi desconhecido\nErro do Pi: "));
+        assert!(banner.detail.is_none());
+        assert!(!copied.contains("\n\n"));
+        assert!(!copied.contains("Sessão:"));
+        assert!(!copied.contains("stderr"));
+    }
+
+    #[test]
+    fn banner_copy_formats_available_metadata_and_separates_detail() {
+        let banner = Banner::from_pi_error(&json!({
+            "errorMessage": "falhou",
+            "stopReason": "error",
+            "provider": "example",
+            "model": "model-id",
+            "api": "example-api",
+            "content": [{"text": "private conversation"}],
+            "stderr": "transport secret",
+            "unrelated": "not an error field"
+        })).unwrap();
+        assert!(matches!(banner.tone, Tone::Error));
+        let detail: serde_json::Value = serde_json::from_str(banner.detail.as_deref().unwrap()).unwrap();
+        assert_eq!(detail, json!({
+            "stopReason": "error", "provider": "example",
+            "model": "model-id", "api": "example-api"
+        }));
+        let copied = banner_copy_text(&banner, Some("1.2.3"), Some("/opt/pi"), Some("Minha sessão"));
+        assert_eq!(copied, format!(
+            "Dish {} — {}/{}\nPi 1.2.3 — /opt/pi\nSessão: Minha sessão\nErro do Pi: falhou\n\n{}",
+            crate::version::release_version(), std::env::consts::OS, std::env::consts::ARCH,
+            banner.detail.as_deref().unwrap(),
+        ));
+        for excluded in ["stderr", "transport secret", "private conversation", "unrelated"] {
+            assert!(!copied.contains(excluded));
+        }
+    }
+
+    #[test]
+    fn banner_detail_requires_an_explicit_pi_error_and_ignores_absent_metadata() {
+        assert!(Banner::from_pi_error(&json!({"stopReason": "error"})).is_none());
+        let banner = Banner::from_pi_error(&json!({
+            "errorMessage": "cancelado", "stopReason": "aborted"
+        })).unwrap();
+        assert!(matches!(banner.tone, Tone::Warning));
+        let mut banner = Banner::from_pi_error(&json!({
+            "errorMessage": "falhou", "model": null, "stderr": "transport secret"
+        })).unwrap();
+        assert!(banner.detail.is_none());
+        // Empty optional values must not create empty lines or a detail block.
+        banner.detail = Some("  ".into());
+        let copied = banner_copy_text(&banner, Some(""), Some(" "), Some(""));
+        assert!(copied.ends_with("\nPi desconhecido\nErro do Pi: falhou"));
+        assert!(!copied.contains("\n\n"));
+        assert!(!copied.contains("stderr"));
+    }
 }
 
 #[cfg(test)]

@@ -642,6 +642,18 @@ fn banner_element(
         .text_color(theme::dim())
         .child(div().text_color(color).child("●"))
         .child(div().flex_1().min_w(px(0.)).child(SharedString::from(banner.text.clone())));
+    let session = state.session.name.as_deref()
+        .filter(|name| !name.trim().is_empty())
+        .or(state.session.file.as_deref())
+        .or(state.initial_title.as_deref());
+    // Workspace owns the installed version; this render context has neither
+    // that value nor the executable used by the running client.
+    row = row.child(div().flex_none().child(crate::ui::copy_button::CopyButton {
+        id: "banner-copy".into(),
+        text: crate::state::banner_copy_text(banner, None, None, session),
+        label: "Copiar erro do Pi",
+        group: None,
+    }));
     if matches!(banner.action, Some(crate::state::BannerAction::ReopenConversation)) {
         let reason = if state.reopening {
             Some("Reabrindo a conversa…")

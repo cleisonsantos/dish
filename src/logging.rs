@@ -10,7 +10,7 @@
 //! antes de tocar o disco; ver `docs/diagnostics.md`.
 
 use std::fs::{self, OpenOptions};
-use std::io::Write as _;
+use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -99,6 +99,75 @@ pub fn log_file_path() -> Option<PathBuf> {
         .get()
         .and_then(Option::as_ref)
         .map(|dir| dir.join(LOG_FILE_NAME))
+}
+
+/// Últimas linhas de `dish.log`, em ordem, lendo no máximo o teto do log.
+/// A UI chama ao abrir Sobre, nunca a cada quadro. Falhas deixam o bloco vazio.
+pub fn recent_lines(limit: usize) -> Vec<String> {
+    log_file_path()
+        .map(|path| recent_lines_from(&path, limit))
+        .unwrap_or_default()
+}
+
+fn recent_lines_from(path: &Path, limit: usize) -> Vec<String> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    let read = || -> std::io::Result<Vec<u8>> {
+        let mut file = fs::File::open(path)?;
+        let len = file.metadata()?.len();
+        let start = len.saturating_sub(LOG_FILE_MAX_BYTES);
+        file.seek(SeekFrom::Start(start))?;
+        let mut bytes = Vec::new();
+        file.take(LOG_FILE_MAX_BYTES).read_to_end(&mut bytes)?;
+        // O corte pode cair no meio de uma linha ou de um caractere UTF-8.
+        // Não apresente esse fragmento como uma linha completa do arquivo.
+        if start > 0 {
+            match bytes.iter().position(|byte| *byte == b'\n') {
+                Some(end) => {
+                    bytes.drain(..=end);
+                }
+                None => bytes.clear(),
+            }
+        }
+        Ok(bytes)
+    };
+    let Ok(bytes) = read() else {
+        return Vec::new();
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    let mut lines: Vec<_> = text.lines().rev().take(limit).map(str::to_owned).collect();
+    lines.reverse();
+    lines
+}
+
+/// Montagem pura do bloco de Sobre: apenas as origens explicitamente recebidas.
+/// Toasts são preservados como apresentados; as linhas do log já foram redigidas.
+pub fn diagnostic_text(
+    version: &str,
+    platform: &str,
+    pi: Option<&str>,
+    log_path: Option<&Path>,
+    toasts: &[String],
+    lines: &[String],
+) -> String {
+    let path = log_path
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "indisponível".to_owned());
+    let toasts = if toasts.is_empty() {
+        "nenhum".to_owned()
+    } else {
+        toasts.join("\n")
+    };
+    let log = if lines.is_empty() {
+        "Log indisponível".to_owned()
+    } else {
+        lines.join("\n")
+    };
+    format!(
+        "Dish {version} — {platform}\nPi: {}\nLog: {path}\nToasts: {toasts}\n--- log (últimas 50 linhas) ---\n{log}",
+        pi.unwrap_or("desconhecido"),
+    )
 }
 
 /// Escreve um aviso de diagnóstico, ignorando erros de escrita.
@@ -395,6 +464,108 @@ fn truncate_bytes(text: &str, max: usize, suffix: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::fs;
+
+    // Cada teste tem arquivo próprio; nenhum altera ambiente ou LOG_DIR global.
+    struct TempLog(std::path::PathBuf);
+
+    impl TempLog {
+        fn new() -> Self {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "dish-recent-lines-{}-{sequence}",
+                std::process::id(),
+            ));
+            fs::create_dir(&path).expect("temporary directory");
+            Self(path)
+        }
+
+        fn path(&self) -> std::path::PathBuf {
+            self.0.join("dish.log")
+        }
+    }
+
+    impl Drop for TempLog {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn recent_lines_returns_last_lines_in_file_order() {
+        let log = TempLog::new();
+        fs::write(log.path(), "um\ndois\ntrês\nquatro\n").expect("write log");
+        assert_eq!(super::recent_lines_from(&log.path(), 2), ["três", "quatro"]);
+        assert!(super::recent_lines_from(&log.path(), 0).is_empty());
+    }
+
+    #[test]
+    fn recent_lines_returns_fewer_lines_and_unterminated_last_line() {
+        let log = TempLog::new();
+        fs::write(log.path(), "um\r\n\r\ntrês").expect("write log");
+        assert_eq!(
+            super::recent_lines_from(&log.path(), 50),
+            ["um", "", "três"]
+        );
+    }
+
+    #[test]
+    fn recent_lines_handles_empty_missing_and_unreadable_files() {
+        let log = TempLog::new();
+        assert!(super::recent_lines_from(&log.path(), 50).is_empty());
+        fs::write(log.path(), "").expect("write empty log");
+        assert!(super::recent_lines_from(&log.path(), 50).is_empty());
+        assert!(super::recent_lines_from(&log.0, 50).is_empty());
+    }
+
+    #[test]
+    fn recent_lines_bounds_bytes_and_discards_partial_first_line() {
+        let log = TempLog::new();
+        let oversized = format!(
+            "{}\núltima\n",
+            "á".repeat(super::LOG_FILE_MAX_BYTES as usize)
+        );
+        fs::write(log.path(), oversized).expect("write oversized log");
+        assert_eq!(super::recent_lines_from(&log.path(), 50), ["última"]);
+        fs::write(
+            log.path(),
+            "x".repeat(super::LOG_FILE_MAX_BYTES as usize + 1),
+        )
+        .expect("write oversized line");
+        assert!(super::recent_lines_from(&log.path(), 50).is_empty());
+    }
+
+    #[test]
+    fn diagnostic_text_marks_origins_and_preserves_full_toasts() {
+        let toast = format!("Erro: {}\nsegunda linha", "á".repeat(1000));
+        let text = super::diagnostic_text(
+            "1.2.3",
+            "linux/x86_64",
+            Some("0.50.0"),
+            Some(std::path::Path::new("/tmp/dish.log")),
+            &[toast.clone(), "Aviso".into()],
+            &["linha 1".into(), "linha 2".into()],
+        );
+        assert_eq!(text, format!(
+            "Dish 1.2.3 — linux/x86_64\nPi: 0.50.0\nLog: /tmp/dish.log\nToasts: {toast}\nAviso\n--- log (últimas 50 linhas) ---\nlinha 1\nlinha 2"
+        ));
+    }
+
+    #[test]
+    fn diagnostic_text_handles_missing_data_and_empty_log() {
+        assert_eq!(super::diagnostic_text("1", "os/arch", None, None, &[], &[]),
+            "Dish 1 — os/arch\nPi: desconhecido\nLog: indisponível\nToasts: nenhum\n--- log (últimas 50 linhas) ---\nLog indisponível");
+        let text = super::diagnostic_text(
+            "1",
+            "os/arch",
+            None,
+            Some(std::path::Path::new("dish.log")),
+            &[],
+            &[],
+        );
+        assert!(text.contains("Log: dish.log\n"));
+        assert!(text.ends_with("Log indisponível"));
+    }
 
     #[test]
     fn warning_never_panics() {

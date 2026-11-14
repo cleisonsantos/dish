@@ -1529,6 +1529,7 @@ impl Workspace {
                 .map(|model| (model.provider.clone(), model.id.clone()))
                 .collect(),
             hidden: self.preferences.hidden_models.clone(),
+            diagnostic_state: self.conversations[self.active].state.downgrade(),
             pi,
             sessions: Default::default(),
         };

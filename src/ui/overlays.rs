@@ -27,6 +27,7 @@ pub fn toasts(state: &AppState, _cx: &Context<AppState>) -> Vec<AnyElement> {
             let color = tone_color(toast.tone);
             let element = div()
                 .id(SharedString::from(format!("toast-{}", toast.id)))
+                .group("toast")
                 .max_w(px(420.))
                 .flex()
                 .flex_row()
@@ -41,6 +42,8 @@ pub fn toasts(state: &AppState, _cx: &Context<AppState>) -> Vec<AnyElement> {
                 )
                 .child(
                     div()
+                        .flex_1()
+                        .min_w(px(0.))
                         .flex()
                         .flex_row()
                         .items_center()
@@ -60,7 +63,13 @@ pub fn toasts(state: &AppState, _cx: &Context<AppState>) -> Vec<AnyElement> {
                                 .flex_1()
                                 .min_w(px(0.))
                                 .child(SharedString::from(toast.text.clone())),
-                        ),
+                        )
+                        .child(div().flex_none().child(crate::ui::copy_button::CopyButton {
+                            id: ElementId::NamedInteger("copy-toast".into(), toast.id),
+                            text: toast.text.clone(),
+                            label: "Copiar mensagem",
+                            group: Some("toast"),
+                        })),
                 );
             super::motion::reveal(element,
                 ElementId::NamedInteger("toast-enter".into(), toast.id))
