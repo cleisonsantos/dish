@@ -32,12 +32,13 @@ pub fn transcript(state: &AppState, cx: &Context<AppState>) -> Div {
             .flex()
             .flex_col()
             .child(
-                list(list_state, move |index, _window, cx| {
+                list(list_state, move |index, window, cx| {
                     let Some(entity) = weak.upgrade() else {
                         return div().into_any_element();
                     };
-                    let state = entity.read(cx);
-                    message_element(state, index, &weak)
+                    entity.update(cx, |state, cx| {
+                        message_element(state, index, &weak, window, cx)
+                    })
                 })
                 .flex_1()
                 .min_h(px(0.))
@@ -258,13 +259,19 @@ fn prompt_row(index: usize, prompt: &'static str, weak: &WeakEntity<AppState>) -
 
 // ---------------------------------------------------------------- messages
 
-fn message_element(state: &AppState, index: usize, weak: &WeakEntity<AppState>) -> AnyElement {
+fn message_element(
+    state: &AppState,
+    index: usize,
+    weak: &WeakEntity<AppState>,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
     let Some(message) = state.messages.get(index) else {
         return div().into_any_element();
     };
     let element = match message.role {
-        Role::User => request(state, message, index, weak),
-        Role::Assistant => assistant_turn(state, message, index, weak),
+        Role::User => request(state, message, index, weak, window, cx),
+        Role::Assistant => assistant_turn(state, message, index, weak, window, cx),
         Role::Bash => match message.blocks.first() {
             Some(Block::Bash(card)) => command_card(index, 0, card, weak),
             _ => div().into_any_element(),
@@ -306,7 +313,14 @@ fn message_element(state: &AppState, index: usize, weak: &WeakEntity<AppState>) 
 }
 
 /// Pedido compacto à direita; a resposta ocupa a área de trabalho à esquerda.
-fn request(state: &AppState, message: &Message, index: usize, _weak: &WeakEntity<AppState>) -> AnyElement {
+fn request(
+    state: &AppState,
+    message: &Message,
+    index: usize,
+    _weak: &WeakEntity<AppState>,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
     let text = message.text();
     let style = crate::markdown::MarkdownStyle { font: font(theme::FONT_UI), ..markdown_style() };
     let copied = text.clone();
@@ -339,7 +353,7 @@ fn request(state: &AppState, message: &Message, index: usize, _weak: &WeakEntity
                 .py(px(theme::S3))
                 .text_size(px(theme::PROSE))
                 .line_height(px(theme::PROSE_LINE))
-                .children(markdown::blocks(&text, &style, &state.cwd, SharedString::from(format!("request-text-{index}")).into(), state.search_query.as_deref())),
+                .children(markdown::blocks(&text, &style, &state.cwd, SharedString::from(format!("request-text-{index}")).into(), state.search_query.as_deref(), window, cx)),
         )
         .child(
             div()
@@ -377,6 +391,8 @@ fn assistant_turn(
     message: &Message,
     index: usize,
     weak: &WeakEntity<AppState>,
+    window: &mut Window,
+    cx: &mut App,
 ) -> AnyElement {
     let style = markdown_style();
     let streaming = message.streaming;
@@ -494,7 +510,7 @@ fn assistant_turn(
                         // entrelinha de leitura, não os da interface.
                         .text_size(px(theme::PROSE))
                         .line_height(px(theme::PROSE_LINE))
-                        .children(markdown::blocks(text, &style, &state.cwd, SharedString::from(format!("reply-text-{index}-{block_index}")).into(), state.search_query.as_deref()))
+                        .children(markdown::blocks(text, &style, &state.cwd, SharedString::from(format!("reply-text-{index}-{block_index}")).into(), state.search_query.as_deref(), window, cx))
                         .into_any_element(),
                 );
             }

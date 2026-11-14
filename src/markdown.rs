@@ -5,8 +5,8 @@
 //! quotes, tables and inline emphasis — without pulling in a full parser.
 
 use gpui::{
-    AnyElement, Font, FontWeight, Hsla, IntoElement, ObjectFit, ScrollHandle, SharedString,
-    TextRun, div, img, prelude::*, px,
+    AnyElement, App, Font, FontWeight, Hsla, IntoElement, ObjectFit, ScrollHandle, SharedString,
+    TextRun, Window, div, img, prelude::*, px,
 };
 
 use crate::theme;
@@ -236,7 +236,14 @@ fn inline_element(source: &str, style: &MarkdownStyle, selection: &mut crate::ui
     selection.text(text, Some(runs))
 }
 
-fn code_block(language: Option<&str>, code: &str, style: &MarkdownStyle, selection: &mut crate::ui::selectable::SelectionBuilder, index: usize) -> AnyElement {
+fn code_block(
+    language: Option<&str>,
+    code: &str,
+    style: &MarkdownStyle,
+    selection: &mut crate::ui::selectable::SelectionBuilder,
+    index: usize,
+    scroll: &ScrollHandle,
+) -> AnyElement {
     let mut body = String::with_capacity(code.len());
     for (index, line) in code.lines().enumerate() {
         if index > 0 {
@@ -249,8 +256,13 @@ fn code_block(language: Option<&str>, code: &str, style: &MarkdownStyle, selecti
     }
 
     let copy_code = code.to_string();
+    let wheel_scroll = scroll.clone();
+    let indicator_scroll = scroll.clone();
     div()
         .w_full()
+        .max_w(px(theme::CODE_BLOCK_MAX_WIDTH))
+        .self_start()
+        .flex_none()
         .rounded(theme::r_technical())
         .border_1()
         .border_color(theme::line())
@@ -283,19 +295,94 @@ fn code_block(language: Option<&str>, code: &str, style: &MarkdownStyle, selecti
         )
         .child(
             div()
-                .id(("md-code", index))
-                .max_h(px(420.))
-                .overflow_y_scroll()
-                .overflow_x_scroll()
-                .restrict_scroll_to_axis()
-                .px(px(12.))
-                .py(px(10.))
-                .text_size(px(13.))
-                .line_height(px(20.))
-                .font_family(SharedString::from(theme::FONT_MONO))
-                .text_color(style.code_color)
-                .whitespace_nowrap()
-                .child(selection.text(body, None)),
+                .relative()
+                .child(
+                    div()
+                        .id(("md-code", index))
+                        .max_h(px(theme::CODE_BLOCK_MAX_HEIGHT))
+                        // Own the wheel update: GPUI's automatic scroll listener runs before
+                        // on_scroll_wheel and does not consume or clamp the event itself.
+                        .overflow_hidden()
+                        // Keep the no-wrap text's intrinsic width in the scroll bounds.
+                        .flex()
+                        .flex_col()
+                        .items_start()
+                        .track_scroll(scroll)
+                        .on_scroll_wheel(move |event, window, cx| {
+                            let mut delta = event.delta.pixel_delta(window.line_height());
+                            // Platforms normally translate Shift+wheel to X already.
+                            if event.modifiers.shift && delta.x == px(0.) {
+                                delta.x = delta.y;
+                                delta.y = px(0.);
+                            }
+                            // Match GPUI's single-axis wheel behavior.
+                            if delta.x.abs() > delta.y.abs() {
+                                delta.y = px(0.);
+                            } else {
+                                delta.x = px(0.);
+                            }
+                            let offset = wheel_scroll.offset();
+                            let max = wheel_scroll.max_offset();
+                            let next = gpui::point(
+                                (offset.x + delta.x).clamp(-max.x, px(0.)),
+                                (offset.y + delta.y).clamp(-max.y, px(0.)),
+                            );
+                            // on_scroll_wheel is gated by this element's hitbox. Consume
+                            // only when it can move; at either limit the transcript takes over.
+                            if next != offset {
+                                wheel_scroll.set_offset(next);
+                                window.refresh();
+                                cx.stop_propagation();
+                            }
+                        })
+                        .px(px(12.))
+                        .py(px(10.))
+                        .text_size(px(13.))
+                        .line_height(px(20.))
+                        .font_family(SharedString::from(theme::FONT_MONO))
+                        .text_color(style.code_color)
+                        .whitespace_nowrap()
+                        .child(selection.text(body, None)),
+                )
+                .child(
+                    gpui::canvas(
+                        |_, _, _| (),
+                        move |bounds, _, window, _| {
+                            let max = indicator_scroll.max_offset();
+                            let offset = indicator_scroll.offset();
+                            // Thin position indicators only appear on axes with overflow.
+                            if max.y > px(0.) {
+                                let height = bounds.size.height;
+                                let thumb = (height * (height / (height + max.y)))
+                                    .max(px(18.))
+                                    .min(height);
+                                let top = (height - thumb) * (-offset.y / max.y);
+                                window.paint_quad(gpui::fill(
+                                    gpui::Bounds::new(
+                                        gpui::point(bounds.right() - px(4.), bounds.top() + top),
+                                        gpui::size(px(2.), thumb),
+                                    ),
+                                    theme::line_strong(),
+                                ));
+                            }
+                            if max.x > px(0.) {
+                                let width = bounds.size.width;
+                                let thumb =
+                                    (width * (width / (width + max.x))).max(px(18.)).min(width);
+                                let left = (width - thumb) * (-offset.x / max.x);
+                                window.paint_quad(gpui::fill(
+                                    gpui::Bounds::new(
+                                        gpui::point(bounds.left() + left, bounds.bottom() - px(4.)),
+                                        gpui::size(thumb, px(2.)),
+                                    ),
+                                    theme::line_strong(),
+                                ));
+                            }
+                        },
+                    )
+                    .absolute()
+                    .inset_0(),
+                ),
         )
         .into_any_element()
 }
@@ -539,7 +626,15 @@ fn image_block(
 
 
 /// Render Markdown into a list of block elements.
-pub fn blocks(text: &str, style: &MarkdownStyle, cwd: &std::path::Path, id: gpui::ElementId, search: Option<&str>) -> Vec<AnyElement> {
+pub fn blocks(
+    text: &str,
+    style: &MarkdownStyle,
+    cwd: &std::path::Path,
+    id: gpui::ElementId,
+    search: Option<&str>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Vec<AnyElement> {
     let mut selection = crate::ui::selectable::SelectionBuilder::with_search(search);
     let lines: Vec<&str> = text.split('\n').collect();
     let mut elements: Vec<AnyElement> = Vec::new();
@@ -575,7 +670,11 @@ pub fn blocks(text: &str, style: &MarkdownStyle, cwd: &std::path::Path, id: gpui
                 code.push_str(candidate);
                 index += 1;
             }
-            elements.push(code_block(language, &code, style, &mut selection, code_index));
+            let scroll = window.with_element_namespace(id.clone(), |window| {
+                window.use_keyed_state(("md-code-scroll", code_index), cx, |_, _| ScrollHandle::new())
+            });
+            let scroll = scroll.read(cx).clone();
+            elements.push(code_block(language, &code, style, &mut selection, code_index, &scroll));
             if !code.is_empty() {
                 // Breathing room after a code block.
                 elements.push(div().h(px(2.)).into_any_element());
@@ -926,6 +1025,219 @@ mod tests {
         assert!(table_header(&["A | B", "---"], 0).is_none());
         assert!(table_header(&["A | B", "a | b"], 0).is_none());
         assert!(table_header(&["A | B"], 0).is_none());
+    }
+
+    #[test]
+    fn code_blocks_chain_wheel_at_limits_and_keep_keyed_scroll_during_streaming() {
+        struct CodeScrollHarness {
+            transcript: ScrollHandle,
+            handles: std::rc::Rc<std::cell::RefCell<Vec<ScrollHandle>>>,
+            width: f32,
+            lines: usize,
+        }
+
+        impl Render for CodeScrollHarness {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let style = crate::ui::markdown_style();
+                let code = format!(
+                    "```text\n{}{}",
+                    (0..self.lines)
+                        .map(|i| format!("line {i}: {}", "wide code ".repeat(30)))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    if self.lines >= 120 { "\n```" } else { "" }
+                );
+                let mut children = Vec::new();
+                self.handles.borrow_mut().clear();
+                for (id, text) in [
+                    ("code-long", code.as_str()),
+                    ("code-short", "```\nshort\n```"),
+                ] {
+                    let id: gpui::ElementId = SharedString::from(id).into();
+                    children.extend(blocks(
+                        text,
+                        &style,
+                        std::path::Path::new("."),
+                        id.clone(),
+                        Some("line 99"),
+                        window,
+                        cx,
+                    ));
+                    let handle = window.with_element_namespace(id, |window| {
+                        window.use_keyed_state(("md-code-scroll", 0usize), cx, |_, _| {
+                            ScrollHandle::new()
+                        })
+                    });
+                    self.handles.borrow_mut().push(handle.read(cx).clone());
+                }
+                div()
+                    .id("code-transcript")
+                    .w(px(self.width))
+                    .h(px(520.))
+                    .overflow_y_scroll()
+                    .restrict_scroll_to_axis()
+                    .track_scroll(&self.transcript)
+                    .flex()
+                    .flex_col()
+                    .children(children)
+                    .child(div().w_full().h(px(800.)).flex_none())
+            }
+        }
+
+        fn wheel(
+            window: &mut Window,
+            cx: &mut App,
+            handle: &ScrollHandle,
+            delta: gpui::Point<gpui::Pixels>,
+            shift: bool,
+        ) {
+            window.dispatch_event(
+                PlatformInput::ScrollWheel(ScrollWheelEvent {
+                    position: point(
+                        handle.bounds().left().max(px(0.)) + px(12.),
+                        handle.bounds().top().max(px(0.)) + px(12.),
+                    ),
+                    delta: ScrollDelta::Pixels(delta),
+                    modifiers: Modifiers {
+                        shift,
+                        ..Modifiers::none()
+                    },
+                    touch_phase: TouchPhase::Moved,
+                }),
+                cx,
+            );
+            // Clamp during dispatch, before a redraw could hide an overshoot.
+            let offset = handle.offset();
+            let max = handle.max_offset();
+            assert!(offset.x >= -max.x && offset.x <= px(0.));
+            assert!(offset.y >= -max.y && offset.y <= px(0.));
+            let _ = window.draw(cx);
+        }
+
+        let verified = std::rc::Rc::new(std::cell::Cell::new(false));
+        let verified_flag = verified.clone();
+        gpui_platform::headless().run(move |cx| {
+            let transcript = ScrollHandle::new();
+            let transcript_handle = transcript.clone();
+            let handles = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let rendered_handles = handles.clone();
+            let window = cx
+                .open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                            point(px(0.), px(0.)),
+                            size(px(900.), px(520.)),
+                        ))),
+                        ..Default::default()
+                    },
+                    move |_, cx| {
+                        cx.new(|_| CodeScrollHarness {
+                            transcript,
+                            handles: rendered_handles,
+                            width: 900.,
+                            lines: 100,
+                        })
+                    },
+                )
+                .unwrap();
+            gpui::AnyWindowHandle::from(window)
+                .update(cx, |root, window, cx| {
+                    let view = root.downcast::<CodeScrollHarness>().unwrap();
+                    let _ = window.draw(cx);
+                    let long = handles.borrow()[0].clone();
+                    let short = handles.borrow()[1].clone();
+                    assert!(long.max_offset().y > px(0.));
+                    assert!(long.max_offset().x > px(0.));
+                    assert_eq!(short.max_offset().y, px(0.));
+                    assert_eq!(long.bounds().size.height, px(theme::CODE_BLOCK_MAX_HEIGHT));
+                    assert_eq!(
+                        long.bounds().size.width,
+                        px(theme::CODE_BLOCK_MAX_WIDTH - 2.)
+                    );
+                    assert_eq!(long.bounds().left(), px(1.));
+
+                    wheel(window, cx, &long, point(px(0.), px(-48.)), false);
+                    assert_eq!(long.offset().y, px(-48.));
+                    assert_eq!(transcript_handle.offset().y, px(0.));
+                    assert_eq!(short.offset().y, px(0.));
+
+                    // Re-render a growing streamed fence, preserving its keyed handle.
+                    view.update(cx, |view, cx| {
+                        view.lines += 20;
+                        cx.notify();
+                    });
+                    let _ = window.draw(cx);
+                    assert_eq!(handles.borrow()[0].offset().y, px(-48.));
+                    assert!(handles.borrow()[0].max_offset().y > px(1800.));
+
+                    // Both platform-translated and raw Shift+wheel stay horizontal.
+                    wheel(window, cx, &long, point(px(-48.), px(0.)), true);
+                    assert_eq!(long.offset().x, px(-48.));
+                    wheel(window, cx, &long, point(px(0.), px(-48.)), true);
+                    assert_eq!(long.offset().x, px(-96.));
+                    assert_eq!(long.offset().y, px(-48.));
+                    assert_eq!(transcript_handle.offset().y, px(0.));
+
+                    // A delta crossing the end clamps the code without moving the transcript.
+                    long.set_offset(point(px(0.), -long.max_offset().y + px(5.)));
+                    wheel(window, cx, &long, point(px(0.), px(-48.)), false);
+                    assert_eq!(long.offset().y, -long.max_offset().y);
+                    assert_eq!(transcript_handle.offset().y, px(0.));
+                    wheel(window, cx, &long, point(px(0.), px(-48.)), false);
+                    assert_eq!(long.offset().y, -long.max_offset().y);
+                    assert_eq!(transcript_handle.offset().y, px(-48.));
+
+                    // At the top, upward wheel returns control too.
+                    long.set_offset(point(px(0.), px(0.)));
+                    let _ = window.draw(cx);
+                    wheel(window, cx, &long, point(px(0.), px(24.)), false);
+                    assert_eq!(long.offset().y, px(0.));
+                    assert_eq!(transcript_handle.offset().y, px(-24.));
+
+                    transcript_handle.set_offset(point(px(0.), px(0.)));
+                    let _ = window.draw(cx);
+                    wheel(window, cx, &short, point(px(0.), px(-48.)), false);
+                    assert_eq!(short.offset().y, px(0.));
+                    assert_eq!(transcript_handle.offset().y, px(-48.));
+
+                    // Header and the space to the right are outside the body's hitbox.
+                    transcript_handle.set_offset(point(px(0.), px(0.)));
+                    let _ = window.draw(cx);
+                    for position in [point(px(800.), px(60.)), point(px(60.), px(10.))] {
+                        transcript_handle.set_offset(point(px(0.), px(0.)));
+                        let _ = window.draw(cx);
+                        window.dispatch_event(
+                            PlatformInput::ScrollWheel(ScrollWheelEvent {
+                                position,
+                                delta: ScrollDelta::Pixels(point(px(0.), px(-24.))),
+                                modifiers: Modifiers::none(),
+                                touch_phase: TouchPhase::Moved,
+                            }),
+                            cx,
+                        );
+                        let _ = window.draw(cx);
+                        assert_eq!(long.offset().y, px(0.));
+                        assert_eq!(transcript_handle.offset().y, px(-24.));
+                    }
+
+                    // A narrow writing area uses its full available width.
+                    view.update(cx, |view, cx| {
+                        view.width = 300.;
+                        cx.notify();
+                    });
+                    transcript_handle.set_offset(point(px(0.), px(0.)));
+                    let _ = window.draw(cx);
+                    assert_eq!(long.bounds().size.width, px(298.));
+                    assert_eq!(long.bounds().left(), px(1.));
+                    verified_flag.set(true);
+                })
+                .unwrap();
+            cx.spawn(async move |cx| {
+                cx.update(|cx| cx.quit());
+            })
+            .detach();
+        });
+        assert!(verified.get());
     }
 
     #[test]
