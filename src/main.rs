@@ -268,6 +268,11 @@ fn main() {
         .with_assets(Assets)
         .run(move |cx: &mut App| {
         cx.set_app_identity("dish", "Dish");
+        // Fontes da identidade (OFL-1.1, ver assets/fonts/README.md). Sem elas
+        // a resolução abaixo cai nas famílias instaladas no sistema.
+        if let Err(error) = cx.text_system().add_fonts(theme::bundled_fonts()) {
+            eprintln!("dish: fontes embutidas indisponíveis: {error:#}");
+        }
         theme::resolve_fonts(&cx.text_system().all_font_names());
         let cwd = cwd.clone();
         let initial_prompt = initial_prompt.clone();

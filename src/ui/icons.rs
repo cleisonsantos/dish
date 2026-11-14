@@ -34,9 +34,10 @@ pub enum Icon {
     Close,
     Trash,
     Pin,
-    CurrentSession,
-    OpenSession,
-    SavedSession,
+    /// Lista de sessões (trilho).
+    List,
+    /// A marca do Dish: um prato visto de cima.
+    Mark,
 }
 
 /// Um ícone desenhado num quadrado de `size` px.
@@ -173,6 +174,16 @@ fn build(icon: Icon, stroke: f32, scale: f32, origin: Point<Pixels>) -> Option<P
             b.move_to(to(3.5, 8.));
             b.line_to(to(12.5, 8.));
         }
+        Icon::List => {
+            for (y, end) in [(4.5, 13.5), (8., 13.5), (11.5, 10.)] {
+                b.move_to(to(2.5, y));
+                b.line_to(to(end, y));
+            }
+        }
+        Icon::Mark => {
+            circle(&mut b, 8., 8., 6.8, false);
+            circle(&mut b, 8., 8., 4., false);
+        }
         Icon::Search => {
             circle(&mut b, 7., 7., 4.2, false);
             b.move_to(to(10.2, 10.2));
@@ -262,32 +273,6 @@ fn build(icon: Icon, stroke: f32, scale: f32, origin: Point<Pixels>) -> Option<P
             b.line_to(to(5., 11.));
             b.move_to(to(8.8, 11.));
             b.line_to(to(11.6, 11.));
-        }
-        Icon::CurrentSession => {
-            circle(&mut b, 8., 8., 5.6, false);
-            b.move_to(to(4.8, 8.));
-            b.line_to(to(7., 10.2));
-            b.line_to(to(11.2, 5.8));
-        }
-        Icon::OpenSession => {
-            rounded_rect(&mut b, 2., 3., 12., 10., 1.2);
-            b.move_to(to(2., 6.));
-            b.line_to(to(14., 6.));
-        }
-        Icon::SavedSession => {
-            b.move_to(to(3.5, 2.));
-            b.line_to(to(9., 2.));
-            b.line_to(to(12.5, 5.5));
-            b.line_to(to(12.5, 14.));
-            b.line_to(to(3.5, 14.));
-            b.close();
-            b.move_to(to(9., 2.));
-            b.line_to(to(9., 5.5));
-            b.line_to(to(12.5, 5.5));
-            b.move_to(to(6., 8.));
-            b.line_to(to(10., 8.));
-            b.move_to(to(6., 10.5));
-            b.line_to(to(10., 10.5));
         }
         Icon::Dots => {
             circle(&mut b, 4., 8., 1.1, true);

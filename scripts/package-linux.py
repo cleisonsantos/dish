@@ -122,6 +122,7 @@ def main():
             shutil.copyfile(ROOT / file, legal / file)
         count = collect_licenses(metadata, legal)
         toolchain_licenses(legal)
+        license_bundle.font_licenses(legal, ROOT)
         for source, target in [("install-release.sh", "install.sh"), ("uninstall-release.sh", "uninstall.sh")]:
             shutil.copyfile(ROOT / "scripts" / source, package / target)
             (package / target).chmod(0o755)

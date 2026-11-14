@@ -49,7 +49,8 @@ impl Render for AppState {
         let viewport = f32::from(window.bounds().size.width);
         if !self.inspector_initialized {
             self.inspector_initialized = true;
-            self.sidebar = !inspector::uses_overlay(viewport);
+            // Editorial: a conversa começa sozinha; Detalhes abre sob demanda.
+            self.sidebar = false;
         }
         let narrow = inspector::uses_overlay(viewport);
 

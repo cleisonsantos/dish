@@ -278,9 +278,35 @@ def toolchain_licenses(destination: Path) -> None:
     (folder / "provenance.json").write_text(json.dumps({"rustc": info["release"], "files": sources}, indent=2) + "\n", encoding="utf-8")
 
 
+FONT_LICENSE_NAMES = ("LICENSE.md", "LICENSE.txt", "OFL.txt")
+
+
+def font_licenses(destination: Path, root: Path) -> int:
+    """Licenças das fontes embutidas no binário (`assets/fonts/<família>`).
+
+    Falha fechada: uma família com arquivo de fonte e sem texto de licença
+    interrompe o pacote, como uma dependência sem licença.
+    """
+    families = 0
+    for family in sorted(p for p in (root / "assets/fonts").iterdir() if p.is_dir()):
+        fonts = [f for f in family.iterdir() if f.suffix.lower() in {".ttf", ".otf"}]
+        if not fonts:
+            continue
+        texts = [family / name for name in FONT_LICENSE_NAMES if (family / name).is_file()]
+        if not texts:
+            raise RuntimeError(f"Missing license text for bundled font: {family.name}")
+        target = destination / "fonts" / family.name
+        target.mkdir(parents=True, exist_ok=True)
+        for text in texts:
+            shutil.copyfile(text, target / text.name)
+        families += 1
+    return families
+
+
 def build(metadata, destination: Path, root: Path) -> int:
     """Collect everything a release archive must ship under `destination`."""
     destination.mkdir(parents=True, exist_ok=True)
     count = collect_licenses(metadata, destination, root)
     toolchain_licenses(destination)
+    font_licenses(destination, root)
     return count
