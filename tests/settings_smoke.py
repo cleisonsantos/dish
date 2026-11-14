@@ -34,12 +34,14 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
     wrapper = temp / "fake-pi"
     wrapper.write_text(f'#!/bin/sh\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@"\n')
     wrapper.chmod(0o700)
+    trace = UiTrace(temp / "ui.jsonl")
     log_path = temp / "events.jsonl"
     session = temp / "session.jsonl"
     session.write_text(json.dumps({"type": "session", "cwd": str(temp), "id": "settings-test"}) + "\n")
     env = dict(os.environ, DISH_PI_BIN=str(wrapper), PI_CODING_AGENT_DIR=str(temp / "agent"),
                XDG_CONFIG_HOME=str(temp / "config"), XDG_DATA_HOME=str(temp / "data"),
                DISH_FAKE_PI_LOG=str(log_path), XDG_SESSION_TYPE="x11",
+               DISH_TEST_UI_LOG=str(trace.path),
                DISH_PI_REGISTRY_URL=f"http://127.0.0.1:{registry.server_port}/latest")
     env.pop("WAYLAND_DISPLAY", None)
     env.pop("PI_CODING_AGENT_SESSION_DIR", None)
@@ -58,6 +60,9 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
 
     def commands(kind):
         return [entry for entry in events() if entry.get("command", {}).get("type") == kind]
+
+    def probe(identity):
+        return trace.node(identity)
 
     def capture():
         subprocess.run(["import", "-window", str(window), screenshot], check=True)
@@ -158,13 +163,11 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
         click_label("Mostrar")
         wait_for(lambda: json.loads(state_path.read_text()).get("hidden_models") == [],
                  "Mostrar todos did not clear the hidden models")
-        # A troca de seção tem uma entrada animada; capturar logo após o
-        # clique lia só a navegação, com o conteúdo ainda transparente.
+        # O probe confirma a seção montada; o OCR abaixo confirma sua pintura.
         def open_about():
             click_label("Sobre / Pi")
-            about = capture()
-            compact = "".join(about.lower().split())
-            return "piselecionado" in compact and "sdkdopi" not in compact
+            node = probe("settings-page")
+            return node is not None and node["data"]["section"] == "about" and node["data"]["about_ready"]
 
         wait_for(open_about, "About page did not render")
         preferences = temp / "config/dish/state.json"
@@ -174,6 +177,12 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
                 character for character in unicodedata.normalize("NFKD", capture().lower())
                 if not unicodedata.combining(character)
             )
+
+        def about_painted():
+            compact = "".join(folded_ocr().split())
+            return "0.1.0" in compact and "dish" in compact
+
+        wait_for(about_painted, "About page did not paint the version and the app name")
 
         def pi_update_row_ready():
             compact = "".join(folded_ocr().split())

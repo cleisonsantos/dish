@@ -24,6 +24,19 @@ pub enum Section {
     About,
 }
 
+fn section_id(section: Section) -> &'static str {
+    match section {
+        Section::App => "app",
+        Section::Appearance => "appearance",
+        Section::Navigation => "navigation",
+        Section::Providers => "providers",
+        Section::Models => "models",
+        Section::Sessions => "sessions",
+        Section::Keys => "keys",
+        Section::About => "about",
+    }
+}
+
 pub enum SettingsEvent {
     Closed,
     Preference(&'static str, bool),
@@ -216,6 +229,8 @@ pub struct Settings {
     pi: PiStatus,
     /// Consulta de versão em andamento (não é a checagem de rede).
     pi_version_loading: bool,
+    diagnostic_state: Option<WeakEntity<crate::state::AppState>>,
+    diagnostic_log_lines: Vec<String>,
     /// Pastas com sessões, recebidas do Workspace.
     sessions: SessionsView,
     /// Confirmação de exclusão em lote aberta, se houver.
@@ -237,6 +252,7 @@ pub struct SettingsView {
     pub models: Vec<(String, String)>,
     pub hidden: BTreeSet<String>,
     pub pi: PiStatus,
+    pub diagnostic_state: WeakEntity<crate::state::AppState>,
     pub sessions: SessionsView,
 }
 
@@ -313,6 +329,8 @@ impl Settings {
             endpoint_models,
             pi: PiStatus::default(),
             pi_version_loading: false,
+            diagnostic_state: None,
+            diagnostic_log_lines: Vec::new(),
             sessions: SessionsView::default(),
             confirm_folder: None,
             confirm_focus: cx.focus_handle(),
@@ -346,6 +364,7 @@ impl Settings {
         self.models = view.models;
         self.hidden = view.hidden;
         self.pi = view.pi;
+        self.diagnostic_state = Some(view.diagnostic_state);
         self.sessions = view.sessions;
         self.confirm_folder = None;
         self.focus.focus(window, cx);
@@ -360,6 +379,7 @@ impl Settings {
             self.start_local_detection(cx);
         }
         if section == Section::About {
+            self.diagnostic_log_lines = crate::logging::recent_lines(50);
             self.refresh_pi_version(cx);
         }
         cx.notify();
@@ -2397,6 +2417,7 @@ impl Render for Settings {
                             this.start_local_detection(cx);
                         }
                         if section == Section::About {
+                            this.diagnostic_log_lines = crate::logging::recent_lines(50);
                             this.refresh_pi_version(cx);
                         }
                         cx.notify();
@@ -2862,6 +2883,11 @@ impl Render for Settings {
                 page.into_any_element()
             }
             Section::About => {
+                let diagnostic_toasts = self.diagnostic_state.as_ref()
+                    .and_then(|state| state.upgrade())
+                    .map(|state| state.read(cx).toasts.iter()
+                        .map(|toast| toast.text.clone()).collect::<Vec<_>>())
+                    .unwrap_or_default();
                 let installed = if self.pi_version_loading && self.pi.installed.is_none() {
                     "consultando…".to_string()
                 } else {
@@ -2898,6 +2924,21 @@ impl Render for Settings {
                 let mut page = column()
                     .child(page_title("Dish"))
                     .child(note(&format!("Versão do Dish: {}", crate::version::display_version())))
+                    .child(div().flex().items_center().gap(px(theme::S2))
+                        .child(note("Copiar diagnóstico"))
+                        .child(crate::ui::copy_button::CopyButton {
+                            id: "settings-copy-diagnostic".into(),
+                            text: crate::logging::diagnostic_text(
+                                &crate::version::display_version(),
+                                &format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH),
+                                self.pi.installed.as_deref(),
+                                crate::logging::log_file_path().as_deref(),
+                                &diagnostic_toasts,
+                                &self.diagnostic_log_lines,
+                            ),
+                            label: "Copiar diagnóstico",
+                            group: None,
+                        }))
                     // Os pares de valor分离tens: rótulo em uma linha, path na
                     // seguinte — caminhos longos não roubam a leitura do rótulo.
                     .child(about_pair("Pi selecionado", &crate::installation::program()))
@@ -3041,6 +3082,8 @@ impl Render for Settings {
                     ),
             );
         let confirmation = self.folder_confirmation_element(window, cx);
+        // The selected section's content has been built above.
+        let section = self.section;
 
         div()
             .id("settings-scrim")
@@ -3054,6 +3097,10 @@ impl Render for Settings {
             .justify_center()
             .track_focus(&self.focus)
             .key_context("DishSettings")
+            .test_probe(|| "settings-page".into(), move || serde_json::json!({
+                "section": section_id(section),
+                "about_ready": section == Section::About,
+            }))
             .bg(theme::scrim())
             .backdrop_blur(px(theme::SCRIM_BLUR))
             .on_mouse_down(
@@ -3284,6 +3331,27 @@ impl Settings {
             .child(row("Agrupamento", layout))
             .child(row("Ordem das pastas", projects))
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod section_tests {
+    use super::{Section, section_id};
+
+    #[test]
+    fn section_ids_cover_all_settings_pages() {
+        for (section, expected) in [
+            (Section::App, "app"),
+            (Section::Appearance, "appearance"),
+            (Section::Navigation, "navigation"),
+            (Section::Providers, "providers"),
+            (Section::Models, "models"),
+            (Section::Sessions, "sessions"),
+            (Section::Keys, "keys"),
+            (Section::About, "about"),
+        ] {
+            assert_eq!(section_id(section), expected);
+        }
     }
 }
 
