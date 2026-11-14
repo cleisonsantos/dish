@@ -24,7 +24,7 @@ pub fn footer(context: &GitContext) -> Stateful<Div> {
         .min_w(px(0.))
         .px(px(theme::CHAT_INSET))
         .pb(px(theme::S2))
-        .font_family(theme::FONT_MONO)
+        .font_family(theme::font_mono())
         .text_size(px(theme::TEXT_XS))
         .text_color(theme::dim());
     let GitContext::Repository(repo) = context else {

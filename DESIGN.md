@@ -230,7 +230,9 @@ The theme tests enforce normal-text contrast of at least 4.5:1 across core surfa
 **Interface and body font:** Noto Sans.
 **Technical font:** JetBrains Mono.
 
-Proportional text supports reading and interface scanning; monospace identifies code, commands, model identifiers, paths, and technical values. Assistant prose and user requests are proportional (15px with 23px leading); only code, commands, model identifiers, paths and technical values use monospace. Font names are requested by GPUI; this record does not claim bundled fonts or a verified fallback stack.
+Proportional text supports reading and interface scanning; monospace identifies code, commands, model identifiers, paths, and technical values. Assistant prose and user requests are proportional (15px with 23px leading); only code, commands, model identifiers, paths and technical values use monospace.
+
+Fonts are not bundled. At startup `theme::resolve_fonts` picks the first installed family from `UI_FONT_CANDIDATES` and `MONO_FONT_CANDIDATES` (Noto Sans and JetBrains Mono first). GPUI has no generic `monospace` fallback — a missing family lands on a proportional face — so components call `theme::font_ui()` / `theme::font_mono()`, never a literal family name.
 
 ### Hierarchy
 
@@ -253,6 +255,8 @@ The only display-sized type is the empty-state heading. Markdown headings are co
 The desktop shell combines a project/session navigation pane, a flexible conversation column, and an optional details inspector. The transcript consumes remaining height; the composer and Git context footer remain below it. Navigation and inspector have independent scrolling.
 
 Shared spacing is the six-step `s1`–`s6` scale. Header, conversation and composer share one fixed 16px inset (`CHAT_INSET`); composer writing content uses its own internal padding. Component-specific offsets are observed exceptions, not a new universal scale.
+
+**The Reading-Column Rule.** Transcript turns, the welcome state, banners, the composer and the Git footer share one centred measure, `READING_WIDTH` (840px including the inset on both sides), via `ui::reading_column`. Prose stays near 90 characters per line on wide windows; below the measure the column simply takes the full width. The header spans the full width and closes with a `line-soft` hairline so scrolled content never appears sliced under it. Code blocks fill the column (`CODE_BLOCK_MAX_WIDTH` derives from the measure), aligned with tables and prose.
 
 The inspector is fixed-width (316px). On first initialization it opens for viewport widths at or above (1120px), unless a saved preference already supplies the choice. Below that threshold it overlays the conversation instead of squeezing it. Later toggles remain user-controlled.
 
@@ -277,7 +281,7 @@ All scrims now share `theme::scrim()` and `theme::SCRIM_BLUR`.
 
 ## Shapes
 
-Shared control and surface radii are distinct. Compact controls use `control`; the composer and user requests use `surface`; menu rows, option rows and inner wells use `small`. Preserve local exceptions: recessed technical fields/code (4px), send/stop actions (10px), keycaps (4px).
+Shared control and surface radii are distinct. Compact controls use `control`; the composer, user requests and welcome suggestions use `surface`; menu rows, option rows, inner wells, code blocks and Markdown tables use `small`. Preserve local exceptions: recessed technical fields (4px), send/stop actions (10px), keycaps (4px).
 
 Most separators and control strokes are hairlines (1px); active-navigation and semantic banner edges use (2px). Inner cards, menu rows and technical blocks use `small` (6px); recessed fields keep `technical` (4px); keycaps are 4px. Small indicators are softened squares rather than universal circular bullets. Circular geometry exists where functional: switch thumbs and the jump-to-end control.
 
@@ -301,7 +305,9 @@ Keycaps use an inset background, fine border, dim monospace label, and a small r
 
 User requests occupy quiet raised containers rather than speech bubbles, with no "Você" label; time and copy appear beneath them on hover. Assistant responses remain open on the conversation background, introduced by a minimal header (model and live status). Time, source and copy are revealed when the turn is hovered or when they receive keyboard focus. Consecutive tool calls group into expandable activity; technical details recess beneath their rows.
 
-The roomy composer is the principal writing surface. Floating picker panels use `surface`, a strong hairline, the surface radius, and overlay shadows. Do not apply floating-panel styling to every content section.
+Inline code sits on `code_wash()` — a veil of the text colour (10% dark, 7% light) — never on the near-black `inset`, so a sentence is not broken into hard blocks. Code blocks keep the recessed `inset` well with a lighter header strip; table headers are semibold on a softened raised tone.
+
+The roomy composer is the principal writing surface. Its character/line counter is an editing instrument: it appears only while there is text or the composer is expanded, never on an empty field. Floating picker panels use `surface`, a strong hairline, the surface radius, and overlay shadows. Do not apply floating-panel styling to every content section.
 
 ### Inputs / Fields
 
@@ -315,6 +321,10 @@ Project groups contain session rows with truncated titles and supporting status 
 
 The session filter is a segmented control whose four segments share the row equally; it uses full names ("Todas", "Pendentes", "Novas", "Rodando") from 250px of navigation width and compact names below that.
 
+The per-row actions control (`…`) is revealed on row hover, on the active row, on the keyboard-highlighted row, while it has focus and while its menu is open — not repeated on every row at rest.
+
+Settings uses the same vocabulary: its section menu is a column of text rows (hover raises the background; the active section gets `surface-2` and medium weight, deliberately neutral rather than the effort accent), and the whole panel inherits the interface text scale instead of GPUI's 16px default.
+
 Collapsed navigation retains compact markers and contextual tooltips. Keep unread, running, pending, active, and saved states distinguishable by more than color alone.
 
 ### Signature Components
@@ -324,7 +334,7 @@ Collapsed navigation retains compact markers and contextual tooltips. Keep unrea
 - **Context meter:** a 6px recessed rail with a gradient fill, headed by a large percentage; effort accent up to 60%, amber above 60%, and failure-colored above 85%.
 - **Live marker:** a repeating opacity pulse (1400ms) that exists only while Pi reports work. All animation goes through `src/ui/motion.rs` (cubic ease-out, at most 220ms for one-shot transitions) and honours Appearance › Reduce motion.
 - **Switch:** 34×18 track whose knob slides on the same easing; it is only animated when its state changes.
-- **Welcome:** a vertical effort-colored wash (`accent_wash()`) fades from the top of the empty state, over suggestion cards that light their border with `accent_edge()` on hover.
+- **Welcome:** a vertical effort-colored wash (`accent_wash()`) fades from the top of the empty state. Heading and suggestions sit at the optical centre of the free area, in the reading column. Suggestions are side-by-side `surface-2` cards with a `line` border and an icon on a faint accent wash; they wrap below ~200px each and light their border with `accent_edge()` on hover.
 
 ## Do's and Don'ts
 

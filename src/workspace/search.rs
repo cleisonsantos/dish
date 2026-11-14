@@ -618,7 +618,7 @@ impl Workspace {
                     )
                     .child(
                         div()
-                            .font_family(theme::FONT_MONO)
+                            .font_family(theme::font_mono())
                             .text_size(px(theme::TEXT_SM))
                             .text_color(theme::dim())
                             .child(

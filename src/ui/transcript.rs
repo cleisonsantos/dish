@@ -179,36 +179,46 @@ fn empty_state(weak: &WeakEntity<AppState>) -> AnyElement {
         .overflow_y_scroll()
         .flex()
         .flex_col()
+        // O conteúdo fica no centro óptico da área livre, na mesma coluna de
+        // leitura das respostas que vão aparecer ali.
+        .child(div().flex_1())
         .child(
             div()
                 .w_full()
-                .px(px(theme::CHAT_INSET))
-                .pt(px(theme::S6))
-                .pb(px(theme::S5))
-                .flex_none()
                 .flex()
-                .flex_col()
-                .gap(px(theme::S5))
-                .child(
-                    div().flex().flex_col().gap(px(theme::S3))
-                        .child(div().text_size(px(theme::DISPLAY)).line_height(px(38.))
-                            .font_weight(FontWeight::MEDIUM).child("Por onde começamos?"))
-                        .child(div().text_size(px(theme::PROSE)).line_height(px(25.))
-                            .text_color(theme::dim())
-                            .child("Use o contexto deste projeto para investigar, revisar ou implementar.")),
-                )
+                .flex_row()
+                .justify_center()
+                .flex_none()
                 .child(
                     div()
                         .w_full()
+                        .max_w(px(theme::READING_WIDTH))
+                        .px(px(theme::CHAT_INSET))
+                        .py(px(theme::S5))
                         .flex()
                         .flex_col()
-                        .gap(px(theme::S2))
-                        .max_w(px(560.))
-                        .children(prompts.into_iter().enumerate()
-                            .map(|(index, prompt)| prompt_row(index, prompt, &weak))),
+                        .gap(px(theme::S6))
+                        .child(
+                            div().flex().flex_col().gap(px(theme::S3))
+                                .child(div().text_size(px(theme::DISPLAY)).line_height(px(40.))
+                                    .font_weight(FontWeight::MEDIUM).child("Por onde começamos?"))
+                                .child(div().text_size(px(theme::PROSE)).line_height(px(theme::PROSE_LINE))
+                                    .text_color(theme::dim())
+                                    .child("Use o contexto deste projeto para investigar, revisar ou implementar.")),
+                        )
+                        .child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .flex_row()
+                                .flex_wrap()
+                                .gap(px(theme::S3))
+                                .children(prompts.into_iter().enumerate()
+                                    .map(|(index, prompt)| prompt_row(index, prompt, &weak))),
+                        ),
                 ),
         )
-        .child(div().flex_1())
+        .child(div().flex_1().min_h(px(theme::S5)))
         .into_any_element()
 }
 
@@ -218,20 +228,22 @@ fn prompt_row(index: usize, prompt: &'static str, weak: &WeakEntity<AppState>) -
     let text = prompt.to_string();
     div()
         .id(SharedString::from(format!("suggestion-{index}")))
+        // Cartões lado a lado; abaixo de ~200px cada um quebra para a linha seguinte.
+        .flex_1()
+        .min_w(px(200.))
         .flex()
-        .flex_row()
-        .items_center()
+        .flex_col()
+        .items_start()
         .gap(px(theme::S3))
-        .px(px(theme::S3))
-        .py(px(theme::S3))
-        .rounded(theme::r_control())
+        .p(px(theme::S4))
+        .rounded(theme::r_surface())
         .border_1()
-        .border_color(theme::line_soft())
-        .bg(theme::wash(theme::surface_2(), 0.55))
+        .border_color(theme::line())
+        .bg(theme::surface_2())
         .cursor_pointer()
         .focusable()
         .tab_index(0)
-        .hover(|style| style.bg(theme::surface_2()).border_color(theme::accent_edge()))
+        .hover(|style| style.bg(theme::hover()).border_color(theme::accent_edge()))
         .active(|style| style.opacity(0.85))
         .focus(|style| style.bg(theme::hover()).shadow(theme::focus_ring()))
         .on_key_down(move |event: &KeyDownEvent, window, cx| {
@@ -247,11 +259,21 @@ fn prompt_row(index: usize, prompt: &'static str, weak: &WeakEntity<AppState>) -
             weak.update(cx, |state, cx| state.set_composer_text(text.clone(), cx))
                 .ok();
         })
-        .child(icon(match index { 0 => Icon::Search, 1 => Icon::Terminal, _ => Icon::File }, 15., theme::faint()))
         .child(
             div()
-                .text_size(px(theme::PROSE))
-                .text_color(theme::dim())
+                .size(px(30.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(theme::r_control())
+                .bg(theme::wash(theme::accent(), 0.14))
+                .child(icon(match index { 0 => Icon::Search, 1 => Icon::Terminal, _ => Icon::File }, 15., theme::accent())),
+        )
+        .child(
+            div()
+                .text_size(px(theme::TEXT))
+                .line_height(px(theme::PROSE_LINE - 3.))
+                .text_color(theme::text())
                 .child(prompt),
         )
         .into_any_element()
@@ -296,7 +318,7 @@ fn message_element(
         .w_full()
         .flex()
         .justify_center()
-        .child(div().w_full()
+        .child(div().w_full().max_w(px(theme::READING_WIDTH))
             .when(state.search_message == Some(index), |el| {
                 el.border_l_2().border_color(theme::accent())
                     .bg(theme::wash(theme::accent(), 0.08))
@@ -322,7 +344,7 @@ fn request(
     cx: &mut App,
 ) -> AnyElement {
     let text = message.text();
-    let style = crate::markdown::MarkdownStyle { font: font(theme::FONT_UI), ..markdown_style() };
+    let style = crate::markdown::MarkdownStyle { font: font(theme::font_ui()), ..markdown_style() };
     let copied = text.clone();
 
     div()
@@ -396,6 +418,8 @@ fn assistant_turn(
 ) -> AnyElement {
     let style = markdown_style();
     let streaming = message.streaming;
+    // O id do modelo é valor de máquina (mono); o rótulo genérico, não.
+    let known_model = message.model.is_some();
     let model = message
         .model
         .clone()
@@ -429,7 +453,7 @@ fn assistant_turn(
                 .min_h(px(24.))
                 .child(
                     div()
-                        .font_family(theme::FONT_MONO)
+                        .when(known_model, |el| el.font_family(theme::font_mono()))
                         .text_size(px(theme::TEXT_XS))
                         .text_color(theme::faint())
                         .child(SharedString::from(model)),
@@ -460,7 +484,7 @@ fn assistant_turn(
                 .when_some(duration, |el, duration| {
                     el.child(
                         div()
-                            .font_family(theme::FONT_MONO)
+                            .font_family(theme::font_mono())
                             .text_size(px(theme::TEXT_XS))
                             .text_color(theme::faint())
                             .child(SharedString::from(duration)),
@@ -807,7 +831,7 @@ fn activity_group(
                 .when(elapsed > 0, |el| {
                     el.child(
                         div()
-                            .font_family(theme::FONT_MONO)
+                            .font_family(theme::font_mono())
                             .text_size(px(theme::TEXT_XS))
                             .text_color(theme::faint())
                             .child(SharedString::from(format!("{:.1}s", elapsed as f64 / 1000.))),
@@ -938,7 +962,7 @@ fn tool_row(
         .child(
             div()
                 .flex_none()
-                .font_family(theme::FONT_MONO)
+                .font_family(theme::font_mono())
                 .text_size(px(theme::MONO))
                 .text_color(theme::dim())
                 .child(SharedString::from(card.name.clone())),
@@ -948,7 +972,7 @@ fn tool_row(
                 .flex_1()
                 .min_w(px(0.))
                 .truncate()
-                .font_family(theme::FONT_MONO)
+                .font_family(theme::font_mono())
                 .text_size(px(theme::MONO))
                 .text_color(theme::faint())
                 .child(SharedString::from(summary)),
@@ -1046,7 +1070,7 @@ fn command_row(
                         .flex_1()
                         .min_w(px(0.))
                         .truncate()
-                        .font_family(theme::FONT_MONO)
+                        .font_family(theme::font_mono())
                         .text_size(px(theme::MONO))
                         .text_color(theme::text())
                         .child(super::selectable::plain(SharedString::from(format!("bash-command-text-{message_index}-{block_index}")).into(), &card.command)),
@@ -1257,7 +1281,7 @@ fn section(prefix: &str, label: &str, body: &str) -> AnyElement {
                 .bg(theme::inset())
                 .border_1()
                 .border_color(theme::line_soft())
-                .font_family(theme::FONT_MONO)
+                .font_family(theme::font_mono())
                 .text_size(px(theme::MONO))
                 .line_height(px(19.))
                 .text_color(theme::dim())

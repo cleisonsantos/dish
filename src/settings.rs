@@ -753,7 +753,7 @@ impl Settings {
                     .text_color(theme::text()).child("Excluir todas as sessões desta pasta?"))
                 .child(div().text_size(px(theme::TEXT_SM)).text_color(theme::text())
                     .child(SharedString::from(format!("Excluir {} de", session_count_label(folder.count)))))
-                .child(div().font_family(theme::FONT_MONO).text_size(px(theme::TEXT_XS))
+                .child(div().font_family(theme::font_mono()).text_size(px(theme::TEXT_XS))
                     .text_color(theme::dim()).overflow_hidden()
                     .child(SharedString::from(format!("{} — {}", folder.cwd.display(), format_size(folder.bytes)))))
                 .child(div().text_size(px(theme::TEXT_SM)).line_height(px(19.)).text_color(theme::dim())
@@ -883,7 +883,7 @@ impl Settings {
                                     .flex_1()
                                     .min_w(px(0.))
                                     .truncate()
-                                    .font_family(theme::FONT_MONO)
+                                    .font_family(theme::font_mono())
                                     .text_size(px(theme::TEXT_SM))
                                     .text_color(theme::text())
                                     .child(SharedString::from(folder.cwd.display().to_string())),
@@ -1066,7 +1066,7 @@ impl Settings {
                                 .flex_1()
                                 .min_w(px(0.))
                                 .truncate()
-                                .font_family(theme::FONT_MONO)
+                                .font_family(theme::font_mono())
                                 .text_size(px(theme::TEXT_SM))
                                 .text_color(if provider.configured {
                                     theme::text()
@@ -1089,7 +1089,7 @@ impl Settings {
                         .child(
                             div()
                                 .flex_none()
-                                .font_family(theme::FONT_MONO)
+                                .font_family(theme::font_mono())
                                 .text_size(px(theme::TEXT_XS))
                                 .text_color(theme::faint())
                                 .child(SharedString::from(model_count(provider.models))),
@@ -1230,7 +1230,7 @@ impl Settings {
                         .flex_1()
                         .min_w(px(0.))
                         .truncate()
-                        .font_family(theme::FONT_MONO)
+                        .font_family(theme::font_mono())
                         .text_size(px(theme::TEXT_SM))
                         .text_color(theme::text())
                         .child(SharedString::from(service.provider_id())),
@@ -1451,7 +1451,7 @@ impl Settings {
                             row = row.child(
                                 div()
                                     .flex_none()
-                                    .font_family(theme::FONT_MONO)
+                                    .font_family(theme::font_mono())
                                     .text_size(px(theme::TEXT_XS))
                                     .text_color(theme::faint())
                                     .child(SharedString::from(description.clone())),
@@ -1927,7 +1927,7 @@ impl Settings {
                         .flex()
                         .flex_col()
                         .gap(px(2.))
-                        .font_family(theme::FONT_MONO)
+                        .font_family(theme::font_mono())
                         .text_size(px(theme::TEXT_XS))
                         .text_color(theme::dim());
                     for id in models.iter().take(12) {
@@ -2203,6 +2203,27 @@ fn control(
         .on_click(click)
         .child(label.into())
 }
+/// Linha do menu lateral: o mesmo vocabulário da navegação principal — texto
+/// sobre o painel, sem caixa; o fundo só aparece no hover e na seção ativa.
+fn menu_item(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .px(px(theme::S3))
+        .py(px(6.))
+        .rounded(theme::r_control())
+        .border_1()
+        .border_color(gpui::transparent_black())
+        .text_color(theme::dim())
+        .cursor_pointer()
+        .hover(|s| s.bg(theme::hover()).text_color(theme::text()))
+        .on_click(click)
+        .child(label.into())
+}
+
 /// Mesma caixa de `control`, sem clique: a ação existe mas está bloqueada.
 fn disabled_control(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
     div()
@@ -2388,7 +2409,7 @@ impl Render for Settings {
         let height = (f32::from(window.bounds().size.height) - 48.).max(300.);
         let width = (f32::from(window.bounds().size.width) - 48.).min(840.);
         let compact = width < 680.;
-        let mut menu = column().w(px(184.)).flex_none().when(compact, |el| {
+        let mut menu = div().flex().flex_col().gap(px(2.)).w(px(184.)).flex_none().when(compact, |el| {
             el.w_full().flex_row().flex_wrap().gap(px(theme::S1))
         });
         for (section, label, id) in [
@@ -2402,7 +2423,7 @@ impl Render for Settings {
             (Section::About, "Sobre / Pi", "settings-about"),
         ] {
             menu = menu.child(
-                control(
+                menu_item(
                     id,
                     label,
                     cx.listener(move |this, _, window, cx| {
@@ -2428,8 +2449,9 @@ impl Render for Settings {
                         // A escolha na esquerda é neutra: o accent é do raciocínio,
                         // e não muda de cor porque uma tela de configurações abriu.
                         .bg(theme::surface_2())
-                        .border_color(theme::line())
+                        .border_color(theme::line_soft())
                         .text_color(theme::text())
+                        .font_weight(FontWeight::MEDIUM)
                 }),
             );
         }
@@ -2759,7 +2781,7 @@ impl Render for Settings {
                                     .flex_1()
                                     .min_w(px(0.))
                                     .truncate()
-                                    .font_family(theme::FONT_MONO)
+                                    .font_family(theme::font_mono())
                                     .text_size(px(theme::TEXT_MICRO))
                                     .text_color(theme::faint())
                                     .child(SharedString::from(provider.to_string())),
@@ -2802,7 +2824,7 @@ impl Render for Settings {
                                         .flex_1()
                                         .min_w(px(0.))
                                         .truncate()
-                                        .font_family(theme::FONT_MONO)
+                                        .font_family(theme::font_mono())
                                         .text_size(px(theme::TEXT_SM))
                                         .text_color(if visible {
                                             theme::text()
@@ -3032,6 +3054,10 @@ impl Render for Settings {
             .w(px(width))
             .h(px(height.min(700.)))
             .p(px(theme::S5))
+            // Sem tamanho explícito o GPUI cai nos 16px padrão, maiores que o
+            // resto do app; o painel herda a escala da interface.
+            .text_size(px(theme::TEXT))
+            .line_height(theme::body_line_height())
             .rounded(theme::r_surface())
             .border_1()
             .border_color(theme::line_strong())
@@ -3182,7 +3208,7 @@ fn about_pair(label: &str, value: &str) -> Div {
             div()
                 .min_w(px(0.))
                 .truncate()
-                .font_family(theme::FONT_MONO)
+                .font_family(theme::font_mono())
                 .text_size(px(theme::TEXT_XS))
                 .text_color(theme::dim())
                 .child(SharedString::from(value.to_owned())),

@@ -945,12 +945,25 @@ impl Workspace {
                                 let action_target = live.map(|index| SessionTarget::Live(self.conversations[index].state.entity_id()))
                                     .or_else(|| info.as_ref().map(|info| SessionTarget::Saved(info.path.clone())));
                                 let action_id = action_target.as_ref().map(|target| format!("session-actions-{}", target.key()));
+                                // O "…" é ruído repetido em todas as linhas: aparece
+                                // na linha ativa, na selecionada pelo teclado, com o
+                                // menu dela aberto ou sob o mouse.
+                                let menu_open = action_target.as_ref().is_some_and(|target| {
+                                    self.session_menu.as_ref().is_some_and(|menu| menu.target.key() == target.key())
+                                });
+                                let action_focused = action_target.as_ref().is_some_and(|target| {
+                                    self.session_action_focus.get(&target.key()).is_some_and(|focus| focus.is_focused(window))
+                                });
+                                let reveal_actions = active || highlighted_here || menu_open || action_focused;
+                                let row_group = SharedString::from(format!("nav-row-{key}"));
+                                let action_group = row_group.clone();
                                 let action_button = action_target.map(|target| self.session_actions_button(target, cx));
                                 div()
                                     .test_probe(|| format!("nav-{key}"), || serde_json::json!({
                                         "title": title, "active": active, "actions": action_id,
                                     }))
                                     .id(SharedString::from(key))
+                                    .group(row_group)
                                     .anchor_scroll(anchor)
                                     .flex()
                                     .flex_row()
@@ -1145,7 +1158,15 @@ impl Workspace {
                                             .items_center()
                                             .gap(px(2.))
                                             .when_some(pin_button, |el, button| el.child(button))
-                                            .when_some(action_button, |el, button| el.child(button)),
+                                            .when_some(action_button, |el, button| {
+                                                el.child(
+                                                    div()
+                                                        .when(!reveal_actions, |el| {
+                                                            el.opacity(0.0).group_hover(action_group, |s| s.opacity(1.0))
+                                                        })
+                                                        .child(button),
+                                                )
+                                            }),
                                     )
                             },
                         ))

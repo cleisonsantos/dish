@@ -248,15 +248,20 @@ pub fn composer(
                             ),
                     ),
             )
-            .child(
-                div()
-                    .flex_none()
-                    .px(px(theme::S4))
-                    .text_size(px(theme::TEXT_XS))
-                    .text_color(theme::faint())
-                    .text_align(TextAlign::Right)
-                    .child(counter),
-            )
+            // O contador é instrumento de edição: só aparece com texto ou no
+            // modo expandido, nunca como ruído no campo vazio.
+            .when(stats.chars > 0 || expanded, |el| {
+                el.child(
+                    div()
+                        .flex_none()
+                        .px(px(theme::S4))
+                        .font_family(theme::font_mono())
+                        .text_size(px(theme::TEXT_MICRO))
+                        .text_color(theme::faint())
+                        .text_align(TextAlign::Right)
+                        .child(counter),
+                )
+            })
             .child(
                 div()
                     .flex()
@@ -623,7 +628,7 @@ fn model_control(state: &AppState, cx: &Context<AppState>) -> AnyElement {
                 .min_w(px(0.))
                 .max_w(px(220.))
                 .truncate()
-                .font_family(theme::FONT_MONO)
+                .font_family(theme::font_mono())
                 .text_size(px(theme::TEXT_SM))
                 .text_color(theme::dim())
                 .child(SharedString::from(label)),
@@ -859,7 +864,7 @@ fn file_note(file: &FileAttachment, cx: &Context<AppState>) -> Div {
         .rounded(theme::r_control()).bg(theme::surface()).border_1().border_color(theme::line_soft())
         .child(icon(if file.missing { Icon::Alert } else { Icon::File }, 12., if file.missing { theme::failure() } else { theme::faint() }))
         .child(div().flex_1().min_w(px(0.)).truncate().text_size(px(theme::TEXT_SM)).text_color(theme::dim()).child(SharedString::from(file.name.clone())))
-        .child(div().flex_none().font_family(theme::FONT_MONO).text_size(px(theme::TEXT_XS))
+        .child(div().flex_none().font_family(theme::font_mono()).text_size(px(theme::TEXT_XS))
             .text_color(if file.missing { theme::failure() } else { theme::faint() })
             .child(SharedString::from(if file.missing { "sumiu do disco".into() } else { crate::settings::format_size(file.bytes) })))
         .child(div().id(("remove-attached-file", id as usize))
@@ -1125,7 +1130,7 @@ fn slash_menu(matches: &[(String, String)], selected: usize, cx: &Context<AppSta
                     div()
                         .w(px(160.))
                         .flex_none()
-                        .font_family(theme::FONT_MONO)
+                        .font_family(theme::font_mono())
                         .text_size(px(theme::TEXT_SM))
                         .text_color(theme::accent())
                         .child(SharedString::from(name.clone())),
@@ -1175,7 +1180,7 @@ fn slash_menu(matches: &[(String, String)], selected: usize, cx: &Context<AppSta
                 .mt(px(theme::S1))
                 .border_t_1()
                 .border_color(theme::line_soft())
-                .font_family(theme::FONT_MONO)
+                .font_family(theme::font_mono())
                 .text_size(px(theme::TEXT_XS))
                 .text_color(theme::faint())
                 .child("↑↓ escolher")
@@ -1211,7 +1216,7 @@ fn inset_block(state: &AppState) -> Div {
                 .bg(theme::surface())
                 .border_1()
                 .border_color(theme::line_soft())
-                .font_family(theme::FONT_MONO)
+                .font_family(theme::font_mono())
                 .text_size(px(theme::TEXT_XS))
                 .text_color(theme::dim())
                 .children(

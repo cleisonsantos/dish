@@ -70,21 +70,30 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
 
     def click_label(label):
         capture()
-        rows = subprocess.check_output(["tesseract", screenshot, "stdout", "--psm", "6", "tsv"], stderr=subprocess.DEVNULL).decode().splitlines()[1:]
-        lines = {}
-        for row in rows:
-            fields = row.split("\t")
-            if len(fields) < 12 or not fields[11].strip():
-                continue
-            lines.setdefault(tuple(fields[1:5]), []).append(fields)
-        for words in lines.values():
-            if label.lower() in " ".join(word[11] for word in words).lower():
-                # PSM 6 can put the heading and close button on the same
-                # OCR line. Click the label's first word, not the line's.
-                first_word = label.lower().split()[0]
-                first = next((word for word in words if first_word in word[11].lower()), words[0])
-                click(window, int(first[6]) + 5, int(first[7]) + int(first[9]) // 2)
-                return
+        # Rótulos de 13px sobre o painel escuro escapam do OCR em 1x, e o modo
+        # de bloco uniforme (psm 6) descarta linhas do menu que não alinham com
+        # as do conteúdo. Tenta a captura ampliada e o modo esparso (psm 11)
+        # antes de concluir que o rótulo não existe.
+        for scale, psm in ((1, "6"), (2, "6"), (2, "11")):
+            image = screenshot
+            if scale != 1:
+                image = screenshot.replace(".png", f"-x{scale}.png")
+                subprocess.run(["convert", screenshot, "-resize", f"{scale * 100}%", image], check=True)
+            rows = subprocess.check_output(["tesseract", image, "stdout", "--psm", psm, "tsv"], stderr=subprocess.DEVNULL).decode().splitlines()[1:]
+            lines = {}
+            for row in rows:
+                fields = row.split("\t")
+                if len(fields) < 12 or not fields[11].strip():
+                    continue
+                lines.setdefault(tuple(fields[1:5]), []).append(fields)
+            for words in lines.values():
+                if label.lower() in " ".join(word[11] for word in words).lower():
+                    # PSM 6 can put the heading and close button on the same
+                    # OCR line. Click the label's first word, not the line's.
+                    first_word = label.lower().split()[0]
+                    first = next((word for word in words if first_word in word[11].lower()), words[0])
+                    click(window, int(first[6]) // scale + 5, (int(first[7]) + int(first[9]) // 2) // scale)
+                    return
         raise AssertionError(f"Missing UI label: {label}")
 
     def find_model_rows():

@@ -2741,7 +2741,7 @@ impl Workspace {
                         )
                         .child(
                             div()
-                                .font_family(theme::FONT_MONO)
+                                .font_family(theme::font_mono())
                                 .text_size(px(theme::TEXT_XS))
                                 .text_color(theme::dim())
                                 .overflow_hidden()
@@ -3511,7 +3511,7 @@ impl Render for Workspace {
             .flex_col()
             .bg(theme::surface())
             .text_color(theme::text())
-            .font_family(theme::FONT_UI)
+            .font_family(theme::font_ui())
             .on_scroll_wheel(cx.listener(|workspace, _, window, cx| {
                 workspace.dismiss_session_menu(window, cx);
             }))

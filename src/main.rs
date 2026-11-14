@@ -268,6 +268,7 @@ fn main() {
         .with_assets(Assets)
         .run(move |cx: &mut App| {
         cx.set_app_identity("dish", "Dish");
+        theme::resolve_fonts(&cx.text_system().all_font_names());
         let cwd = cwd.clone();
         let initial_prompt = initial_prompt.clone();
         let pi_flags = pi_flags.clone();

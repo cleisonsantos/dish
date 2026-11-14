@@ -73,11 +73,14 @@ impl Render for AppState {
         }
 
         if let Some(banner) = self.banner.clone() {
-            main_column = main_column.child(banner_element(self, &banner, cx));
+            main_column = main_column.child(reading_column(banner_element(self, &banner, cx)));
         }
         main_column = main_column
-            .child(composer::composer(self, &slash, slash_index, window, cx))
-            .child(git_context_view::footer(&self.git_context));
+            .child(
+                reading_column(composer::composer(self, &slash, slash_index, window, cx))
+                    .when(expanded, |el| el.flex_1().min_h(px(0.))),
+            )
+            .child(reading_column(git_context_view::footer(&self.git_context)));
 
         let mut root = div()
             .id("dish-root")
@@ -89,7 +92,7 @@ impl Render for AppState {
             .rounded(theme::r_surface_inner())
             .bg(theme::bg())
             .text_color(theme::text())
-            .font_family(theme::FONT_UI)
+            .font_family(theme::font_ui())
             .text_size(px(theme::TEXT))
             .line_height(theme::body_line_height());
         root = root
@@ -285,6 +288,9 @@ fn conversation_header(state: &AppState, cx: &Context<AppState>) -> Div {
         .gap(px(theme::S3))
         .px(px(theme::CHAT_INSET))
         .py(px(theme::S3))
+        // Hairline: o transcript rola por baixo e não aparece "fatiado".
+        .border_b_1()
+        .border_color(theme::line_soft())
         .child(
             div()
                 .flex()
@@ -311,7 +317,7 @@ fn conversation_header(state: &AppState, cx: &Context<AppState>) -> Div {
                             div()
                                 .min_w(px(0.))
                                 .truncate()
-                                .font_family(theme::FONT_MONO)
+                                .font_family(theme::font_mono())
                                 .text_size(px(theme::TEXT_XS))
                                 .text_color(theme::faint())
                                 .child(SharedString::from(folder)),
@@ -442,7 +448,7 @@ pub fn opening_session_view(cwd: &std::path::Path, title: Option<&str>) -> State
         .rounded(theme::r_surface_inner())
         .bg(theme::bg())
         .text_color(theme::text())
-        .font_family(theme::FONT_UI)
+        .font_family(theme::font_ui())
         .text_size(px(theme::TEXT))
         .line_height(theme::body_line_height())
         .child(
@@ -478,7 +484,7 @@ pub fn opening_session_view(cwd: &std::path::Path, title: Option<&str>) -> State
                             div()
                                 .min_w(px(0.))
                                 .truncate()
-                                .font_family(theme::FONT_MONO)
+                                .font_family(theme::font_mono())
                                 .text_size(px(theme::TEXT_XS))
                                 .text_color(theme::faint())
                                 .child(SharedString::from(folder)),
@@ -761,6 +767,20 @@ pub fn tone_color(tone: crate::state::Tone) -> Hsla {
 
 
 
+/// Centres `content` in the shared reading measure (`theme::READING_WIDTH`).
+/// The column keeps full width below the measure, so narrow windows lose nothing.
+pub fn reading_column(content: impl IntoElement) -> Div {
+    div().w_full().min_w(px(0.)).flex().flex_row().justify_center().child(
+        div()
+            .w_full()
+            .min_w(px(0.))
+            .max_w(px(theme::READING_WIDTH))
+            .flex()
+            .flex_col()
+            .child(content),
+    )
+}
+
 /// A square marker. Reads as a valve light rather than a bullet.
 pub fn dot(color: Hsla, size: f32) -> Div {
     div()
@@ -871,7 +891,7 @@ pub fn keycap_all(label: &str) -> Div {
         .bg(theme::inset())
         .border_1()
         .border_color(theme::line())
-        .font_family(theme::FONT_MONO)
+        .font_family(theme::font_mono())
         .text_size(px(theme::TEXT_XS))
         .text_color(theme::dim())
         .child(SharedString::from(label.to_string()))
@@ -889,12 +909,12 @@ pub fn content_id(prefix: &str, body: &str) -> ElementId {
 /// The Markdown style used for assistant output.
 pub fn markdown_style() -> MarkdownStyle {
     MarkdownStyle {
-        font: font(theme::FONT_UI),
+        font: font(theme::font_ui()),
         color: theme::text(),
         accent: theme::accent(),
         dim: theme::dim(),
         code_color: theme::text(),
-        code_bg: theme::inset(),
+        code_bg: theme::code_wash(),
     }
 }
 

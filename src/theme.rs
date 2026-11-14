@@ -26,10 +26,46 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU8, AtomicU32, AtomicUsize, Ordering};
 
+/// Interface fonts, in order of preference. The first installed one wins.
+pub const UI_FONT_CANDIDATES: &[&str] = &[
+    "Noto Sans", "Inter", "Segoe UI", "Cantarell", "Ubuntu", "DejaVu Sans",
+    "Helvetica Neue", "Liberation Sans", "Arial",
+];
+/// Monospace fonts, in order of preference. Anything a machine wrote must stay
+/// monospaced even when JetBrains Mono is missing: GPUI has no generic
+/// `monospace` fallback, so an absent family lands on a proportional face.
+pub const MONO_FONT_CANDIDATES: &[&str] = &[
+    "JetBrains Mono", "Cascadia Mono", "Cascadia Code", "Fira Code", "Source Code Pro",
+    "DejaVu Sans Mono", "Ubuntu Mono", "Liberation Mono", "Noto Sans Mono", "Consolas",
+    "Menlo", "Courier New",
+];
+
+static FONT_UI_FAMILY: OnceLock<&'static str> = OnceLock::new();
+static FONT_MONO_FAMILY: OnceLock<&'static str> = OnceLock::new();
+
+/// First candidate present in `installed` (case-insensitive), else the first candidate.
+fn pick_font(candidates: &[&'static str], installed: &[String]) -> &'static str {
+    candidates
+        .iter()
+        .copied()
+        .find(|candidate| installed.iter().any(|name| name.eq_ignore_ascii_case(candidate)))
+        .unwrap_or(candidates[0])
+}
+
+/// Resolve both families once, from the fonts the platform reports.
+pub fn resolve_fonts(installed: &[String]) {
+    let _ = FONT_UI_FAMILY.set(pick_font(UI_FONT_CANDIDATES, installed));
+    let _ = FONT_MONO_FAMILY.set(pick_font(MONO_FONT_CANDIDATES, installed));
+}
+
 /// Interface font.
-pub const FONT_UI: &str = "Noto Sans";
+pub fn font_ui() -> &'static str {
+    FONT_UI_FAMILY.get().copied().unwrap_or(UI_FONT_CANDIDATES[0])
+}
 /// Monospace font, used for anything a machine wrote.
-pub const FONT_MONO: &str = "JetBrains Mono";
+pub fn font_mono() -> &'static str {
+    FONT_MONO_FAMILY.get().copied().unwrap_or(MONO_FONT_CANDIDATES[0])
+}
 
 // ----------------------------------------------------------------- tipografia
 
@@ -45,11 +81,16 @@ pub const TEXT: f32 = 13.0;
 pub const DISPLAY: f32 = 32.0;
 /// Fixed inset, shared by header, transcript and composer at any window width.
 pub const CHAT_INSET: f32 = 16.0;
+/// Reading measure: transcript, composer and the rows around them share one
+/// centred column, so prose stays near 90 characters per line on wide windows.
+/// Includes the `CHAT_INSET` on both sides.
+pub const READING_WIDTH: f32 = 840.0;
 /// Popup controls keep their own measure when the writing area grows.
 pub const EFFORT_MENU_WIDTH: f32 = 360.0;
 pub const COMPOSER_PICKER_WIDTH: f32 = 640.0;
 /// Code stays readable on wide windows and reveals overflow in long snippets.
-pub const CODE_BLOCK_MAX_WIDTH: f32 = 720.0;
+/// Code fills the reading column, aligned with tables and prose.
+pub const CODE_BLOCK_MAX_WIDTH: f32 = READING_WIDTH - 2.0 * CHAT_INSET;
 pub const CODE_BLOCK_MAX_HEIGHT: f32 = 340.0;
 /// User bubbles stay compact but long requests can use a wide workspace.
 pub const REQUEST_MAX_FRACTION: f32 = 0.9;
@@ -907,6 +948,12 @@ pub fn accent_wash() -> gpui::Background {
     )
 }
 
+/// Fundo do código inline: um véu do próprio texto, não o `inset`. O poço
+/// recuado (quase preto no escuro) partia a frase em blocos duros.
+pub fn code_wash() -> Hsla {
+    wash(text(), if is_dark() { 0.10 } else { 0.07 })
+}
+
 /// Cobertura translúcida atrás de diálogos; combinada com `backdrop_blur`.
 pub fn scrim() -> Hsla {
     wash(bg(), if is_dark() { 0.62 } else { 0.55 })
@@ -951,6 +998,16 @@ pub fn shadow_overlay() -> Vec<BoxShadow> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn font_pick_falls_back_to_an_installed_monospace() {
+        let installed = vec!["DejaVu Sans".to_string(), "dejavu sans mono".to_string()];
+        assert_eq!(pick_font(MONO_FONT_CANDIDATES, &installed), "DejaVu Sans Mono");
+        assert_eq!(pick_font(UI_FONT_CANDIDATES, &installed), "DejaVu Sans");
+        let preferred = vec!["JetBrains Mono".to_string(), "DejaVu Sans Mono".to_string()];
+        assert_eq!(pick_font(MONO_FONT_CANDIDATES, &preferred), "JetBrains Mono");
+        assert_eq!(pick_font(MONO_FONT_CANDIDATES, &[]), "JetBrains Mono");
+    }
 
     fn built_ins() -> Vec<Theme> {
         built_in_themes()
