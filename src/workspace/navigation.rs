@@ -1339,10 +1339,25 @@ impl Workspace {
             .iter()
             .filter(|conversation| conversation.state.read(cx).modal.is_some())
             .count();
+        // Respostas novas continuam visíveis com a gaveta fechada: abertas
+        // com conclusão não lida e salvas marcadas como não lidas.
+        let unread = self
+            .conversations
+            .iter()
+            .filter(|conversation| conversation.unread_completion)
+            .count()
+            + self
+                .catalog
+                .iter()
+                .filter(|info| {
+                    !self.conversations.iter().any(|c| c.path.as_ref() == Some(&info.path))
+                        && self.preferences.unread_sessions.contains_key(&info.path)
+                })
+                .count();
         let drawer_open = self.visible;
         div()
             .id("rail")
-            .test_probe(|| "rail".into(), move || serde_json::json!({"drawer": drawer_open}))
+            .test_probe(|| "rail".into(), move || serde_json::json!({"drawer": drawer_open, "unread": unread, "pending": pending}))
             .w(px(theme::RAIL_WIDTH))
             .h_full()
             .flex_none()
@@ -1376,6 +1391,28 @@ impl Workspace {
                     cx.notify();
                 },
             ))
+            .when(unread > 0 && !drawer_open, |el| {
+                el.child(
+                    div()
+                        .id("rail-unread")
+                        .mt(px(-2.))
+                        .text_size(px(theme::TEXT_MICRO))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme::attention())
+                        .tooltip(move |_, cx| {
+                            cx.new(|_| crate::ui::copy_button::TextTooltip(format!(
+                                "{unread} {} não {}",
+                                if unread == 1 { "resposta" } else { "respostas" },
+                                if unread == 1 { "lida" } else { "lidas" }
+                            )))
+                            .into()
+                        })
+                        .child(SharedString::from(format!(
+                            "{unread} {}",
+                            if unread == 1 { "nova" } else { "novas" }
+                        ))),
+                )
+            })
             .child(rail_button(
                 "rail-new",
                 crate::ui::icons::Icon::Plus,

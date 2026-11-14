@@ -56,11 +56,13 @@ with tempfile.TemporaryDirectory(prefix="dish-pin-") as temporary:
         assert found is not None, f"linha {label} não encontrada"
         return found
 
-    # O alfinete fica antes do botão de apagar, à direita do cartão. O clique
-    # acerta o botão mesmo com opacidade 0 (o hover só o revela).
+    # O alfinete fica antes do botão de ações, à direita da linha. O clique
+    # acerta o botão mesmo com opacidade 0 (o hover só o revela). Com o
+    # trilho (56px) e a gaveta padrão (320px), a borda direita da linha fica
+    # em 360px: ações em 336–360, alfinete em 310–334.
     def click_pin(label):
         current = row(label)
-        click(window, 207, current[1] + current[3] // 2)
+        click(window, 322, current[1] + current[3] // 2)
         time.sleep(0.4)
 
     def leave_rail(window):

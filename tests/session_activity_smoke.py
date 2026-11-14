@@ -95,10 +95,15 @@ with tempfile.TemporaryDirectory(prefix="dish-activity-") as temporary:
             return False
         band_top = max(0, label[1] - 4)
         band_height = max(22, label[3] + 8)
-        mean = float(subprocess.check_output([
-            "convert", str(capture), "-crop", f"520x{band_height}+320+{band_top}",
-            "-format", "%[fx:mean.r-mean.b]", "info:"]).decode())
-        return mean > -0.015
+        def warmth(crop):
+            return float(subprocess.check_output([
+                "convert", str(capture), "-crop", crop,
+                "-format", "%[fx:mean.r-mean.b]", "info:"]).decode())
+
+        # Relativo ao fundo da própria janela: o tom do papel muda com o tema
+        # (o grafite antigo era azulado, a Noite é neutra), o banner não.
+        page = warmth(f"520x{band_height}+320+60")
+        return warmth(f"520x{band_height}+320+{band_top}") - page > 0.02
 
     def nav_text():
         collapsed = preferences().get("navigation_open") is False
@@ -122,7 +127,9 @@ with tempfile.TemporaryDirectory(prefix="dish-activity-") as temporary:
         return normalized("\n".join(pieces))
 
     def rail_text():
-        subprocess.run(["import", "-window", str(window), "-crop", "44x860+0+0", str(screenshot)], check=True)
+        # O trilho tem 56px; o contador de respostas novas fica sob o botão
+        # de sessões ("1 nova").
+        subprocess.run(["import", "-window", str(window), "-crop", "56x860+0+0", str(screenshot)], check=True)
         subprocess.run(["convert", str(screenshot), "-resize", "300%", str(screenshot)], check=True)
         return normalized(subprocess.check_output(["tesseract", str(screenshot), "stdout", "--psm", "6"],
                                                   stderr=subprocess.DEVNULL).decode())
