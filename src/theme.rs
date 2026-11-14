@@ -48,6 +48,9 @@ pub const CHAT_INSET: f32 = 16.0;
 /// Popup controls keep their own measure when the writing area grows.
 pub const EFFORT_MENU_WIDTH: f32 = 360.0;
 pub const COMPOSER_PICKER_WIDTH: f32 = 640.0;
+/// Code stays readable on wide windows and reveals overflow in long snippets.
+pub const CODE_BLOCK_MAX_WIDTH: f32 = 720.0;
+pub const CODE_BLOCK_MAX_HEIGHT: f32 = 340.0;
 /// User bubbles stay compact but long requests can use a wide workspace.
 pub const REQUEST_MAX_FRACTION: f32 = 0.9;
 /// The writing surface reserves space without growing on every short draft.
