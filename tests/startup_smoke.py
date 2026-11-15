@@ -60,7 +60,7 @@ printf '#!/bin/sh\\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@
     FAST_SCALE = 200
     RETRY_SCALE = 400
 
-    def click_text_once(label, scale=FAST_SCALE, adaptive=False):
+    def click_text_once(label, scale=FAST_SCALE, adaptive=False, psm="6"):
         # One OCR pass: True when the button was found and clicked.
         # Fonts and line wrapping vary between local desktops and clean CI:
         # find the button's text instead of assuming its vertical position.
@@ -75,7 +75,7 @@ printf '#!/bin/sh\\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@
         subprocess.run(
             ["import", "-window", str(window), "-resize", f"{scale}%", screenshot],
             check=True)
-        command = ["tesseract", screenshot, "stdout", "--psm", "6"]
+        command = ["tesseract", screenshot, "stdout", "--psm", psm]
         if adaptive:
             # Sauvola binarizes each region locally; the outlined primary
             # button's thin glyphs fall below the global Otsu threshold.
@@ -121,7 +121,10 @@ printf '#!/bin/sh\\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@
         # common path costs one capture.
         wait_for(
             lambda: click_text_once(label)
-            or click_text_once(label, RETRY_SCALE, adaptive=True),
+            or click_text_once(label, RETRY_SCALE, adaptive=True)
+            # Itens de menu em coluna própria: o modo esparso os separa das
+            # linhas do conteúdo ao lado, que o psm 6 funde ou descarta.
+            or click_text_once(label, psm="11"),
             f"Button not found: {label}")
 
     # O assistente também segue a aparência; o visual verificado é o escuro.
@@ -145,9 +148,11 @@ printf '#!/bin/sh\\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@
             subprocess.run(
                 ["import", "-window", str(window), "-resize", "200%", screenshot],
                 check=True)
-            return subprocess.check_output(
-                ["tesseract", screenshot, "stdout", "--psm", "6"],
-                stderr=subprocess.DEVNULL).decode()
+            return "\n".join(
+                subprocess.check_output(
+                    ["tesseract", screenshot, "stdout", "--psm", psm],
+                    stderr=subprocess.DEVNULL).decode()
+                for psm in ("6", "11"))
 
         def screen_has(label):
             # OCR may drop spaces or read a lone "o" as zero, as in click_text.
@@ -302,7 +307,9 @@ printf '#!/bin/sh\\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@
         # O assistente pode ser reaberto em Configurações → Sobre / Pi; Esc
         # volta ao workspace já aberto em vez de encerrar o Dish.
         press("F1")
-        wait_for(lambda: screen_has("Configura"), "Settings did not open")
+        # O título "Configurações" é serifado e o OCR erra o "ç"; o item do
+        # menu que o próximo passo usa prova que a página abriu.
+        wait_for(lambda: screen_has("Sobre"), "Settings did not open")
         click_text("Sobre")
         wait_for(lambda: screen_has("Reabrir o assistente"), "About page did not render")
         click_text("Reabrir o assistente")

@@ -135,14 +135,14 @@ pub fn model_picker(state: &AppState, window: &Window, cx: &Context<AppState>) -
                     .child(
                         div()
                             .truncate()
-                            .font_family(theme::FONT_MONO)
+                            .font_family(theme::font_mono())
                             .text_size(px(theme::TEXT_SM))
                             .text_color(theme::text())
                             .child(SharedString::from(model.id.clone())),
                     )
                     .child(
                         div()
-                            .font_family(theme::FONT_MONO)
+                            .font_family(theme::font_mono())
                             .text_size(px(theme::TEXT_MICRO))
                             .text_color(theme::faint())
                             .child(SharedString::from(model.provider.clone())),
@@ -152,7 +152,7 @@ pub fn model_picker(state: &AppState, window: &Window, cx: &Context<AppState>) -
                 el.child(
                     div()
                         .flex_none()
-                        .font_family(theme::FONT_MONO)
+                        .font_family(theme::font_mono())
                         .text_size(px(theme::TEXT_MICRO))
                         .text_color(theme::faint())
                         .child(SharedString::from(format!(
@@ -287,7 +287,7 @@ pub fn model_picker(state: &AppState, window: &Window, cx: &Context<AppState>) -
                 .py(px(8.))
                 .border_t_1()
                 .border_color(theme::line_soft())
-                .font_family(theme::FONT_MONO)
+                .font_family(theme::font_mono())
                 .text_size(px(theme::TEXT_XS))
                 .text_color(theme::faint())
                 .child("↑↓ escolher")
@@ -589,7 +589,7 @@ fn input_body(state: &AppState, kind: ModalKind, cx: &Context<AppState>) -> AnyE
                 .justify_between()
                 .child(
                     div()
-                        .font_family(theme::FONT_MONO)
+                        .font_family(theme::font_mono())
                         .text_size(px(theme::TEXT_MICRO))
                         .text_color(theme::faint())
                         .child("⏎ enviar   ⇧⏎ nova linha   esc cancelar"),

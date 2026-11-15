@@ -1,6 +1,7 @@
 """Xvfb UI test: only synthetic Pi and isolated configuration."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import re
 import threading
 import unicodedata
 helper_path = Path(__file__).with_name("desktop_smoke.py")
@@ -65,43 +66,55 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
         return trace.node(identity)
 
     def capture():
+        # Texto de 12px (Geist) escapa do OCR em 1x: lê a captura ampliada em
+        # dois modos e devolve os dois textos juntos.
         subprocess.run(["import", "-window", str(window), screenshot], check=True)
-        return subprocess.check_output(["tesseract", screenshot, "stdout", "--psm", "6"], stderr=subprocess.DEVNULL).decode()
+        enlarged = screenshot.replace(".png", "-ocr.png")
+        subprocess.run(["convert", screenshot, "-resize", "200%", enlarged], check=True,
+                       stderr=subprocess.DEVNULL)
+        return "\n".join(
+            subprocess.check_output(["tesseract", enlarged, "stdout", "--psm", psm],
+                                    stderr=subprocess.DEVNULL).decode()
+            for psm in ("6", "11"))
+
+    def settings_open():
+        # A sonda da página vale mais que o OCR do título serifado.
+        return probe("settings-page") is not None
+
+    def click_probe(identity):
+        """Clica no centro visível de um elemento pela sonda, sem coordenada fixa."""
+        wait_for(lambda: probe(identity) and visible_point(probe(identity)),
+                 f"Probe not painted: {identity}")
+        x, y = visible_point(probe(identity))
+        click(window, x, y)
 
     def click_label(label):
         capture()
-        rows = subprocess.check_output(["tesseract", screenshot, "stdout", "--psm", "6", "tsv"], stderr=subprocess.DEVNULL).decode().splitlines()[1:]
-        lines = {}
-        for row in rows:
-            fields = row.split("\t")
-            if len(fields) < 12 or not fields[11].strip():
-                continue
-            lines.setdefault(tuple(fields[1:5]), []).append(fields)
-        for words in lines.values():
-            if label.lower() in " ".join(word[11] for word in words).lower():
-                # PSM 6 can put the heading and close button on the same
-                # OCR line. Click the label's first word, not the line's.
-                first_word = label.lower().split()[0]
-                first = next((word for word in words if first_word in word[11].lower()), words[0])
-                click(window, int(first[6]) + 5, int(first[7]) + int(first[9]) // 2)
-                return
-        raise AssertionError(f"Missing UI label: {label}")
-
-    def find_model_rows():
-        # Devolve as posições verticais dos switches do provedor e do primeiro
-        # modelo. O OCR lê o id do modelo ou o nome do provedor conforme a fonte
-        # do sistema, então qualquer um serve de âncora.
-        capture()
-        rows = subprocess.check_output(["tesseract", screenshot, "stdout", "tsv"],
-                                       stderr=subprocess.DEVNULL).decode().splitlines()[1:]
-        for anchor, is_model_row in [("fake-model", True), ("test", False)]:
+        # Rótulos de 13px sobre o painel escuro escapam do OCR em 1x, e o modo
+        # de bloco uniforme (psm 6) descarta linhas do menu que não alinham com
+        # as do conteúdo. Tenta a captura ampliada e o modo esparso (psm 11)
+        # antes de concluir que o rótulo não existe.
+        for scale, psm in ((1, "6"), (2, "6"), (2, "11")):
+            image = screenshot
+            if scale != 1:
+                image = screenshot.replace(".png", f"-x{scale}.png")
+                subprocess.run(["convert", screenshot, "-resize", f"{scale * 100}%", image], check=True)
+            rows = subprocess.check_output(["tesseract", image, "stdout", "--psm", psm, "tsv"], stderr=subprocess.DEVNULL).decode().splitlines()[1:]
+            lines = {}
             for row in rows:
                 fields = row.split("\t")
-                if len(fields) == 12 and anchor in fields[11].strip().lower():
-                    center = int(fields[7]) + int(fields[9]) // 2
-                    # Cartão de 840px centrado numa janela de 1240: switch em x≈1020.
-                    return (center - 20, center) if is_model_row else (center, center + 20)
-        raise AssertionError("Model list row not found")
+                if len(fields) < 12 or not fields[11].strip():
+                    continue
+                lines.setdefault(tuple(fields[1:5]), []).append(fields)
+            for words in lines.values():
+                if label.lower() in " ".join(word[11] for word in words).lower():
+                    # PSM 6 can put the heading and close button on the same
+                    # OCR line. Click the label's first word, not the line's.
+                    first_word = label.lower().split()[0]
+                    first = next((word for word in words if first_word in word[11].lower()), words[0])
+                    click(window, int(first[6]) // scale + 5, (int(first[7]) + int(first[9]) // 2) // scale)
+                    return
+        raise AssertionError(f"Missing UI label: {label}")
 
     try:
         wait_for(lambda: find_window(), "Window not created")
@@ -115,7 +128,7 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
         time.sleep(1)
         press("F1")
         time.sleep(1)
-        assert "Configura" in capture(), capture()
+        wait_for(settings_open, "Settings did not open")
         initial_processes = len(commands("get_messages"))
         chord("Control_L", "n")
         chord("Control_L", "Tab")
@@ -129,8 +142,9 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
         press("Escape")
         # O fechamento é animado: no runner sem GPU o modal ainda aparece por
         # alguns frames, então espera-se sumir em vez de dormir um valor fixo.
-        wait_for(lambda: "Configura" not in capture(), "Escape did not close settings", timeout=20)
-        click(window, 239, 25)
+        wait_for(lambda: not settings_open(), "Escape did not close settings", timeout=20)
+        # As configurações abrem pelo trilho (o botão saiu do cabeçalho da gaveta).
+        click_probe("rail-settings")
         time.sleep(1)
         page = capture()
         assert "Aplicativo" in page and "Contas e provedores" not in page, page
@@ -147,17 +161,14 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
         wait_for(open_models, "Models page did not render the Pi model", timeout=20)
         models_page = capture()
         # Switch do provedor: desliga o grupo inteiro e volta a ligar.
-        provider_y, _ = find_model_rows()
-        click(window, 1003, provider_y)
+        click_probe("provider-switch-test")
         wait_for(lambda: json.loads(state_path.read_text()).get("hidden_models") == ["test/fake-model"],
                  "Provider switch did not hide its models")
-        provider_y, _ = find_model_rows()
-        click(window, 1003, provider_y)
+        click_probe("provider-switch-test")
         wait_for(lambda: json.loads(state_path.read_text()).get("hidden_models") == [],
                  "Provider switch did not restore its models")
         # Switch do modelo: continua funcionando isoladamente.
-        _, model_y = find_model_rows()
-        click(window, 1003, model_y)
+        click_probe("model-switch-test/fake-model")
         wait_for(lambda: json.loads(state_path.read_text()).get("hidden_models") == ["test/fake-model"],
                  "Hidden model was not persisted")
         click_label("Mostrar")
@@ -180,7 +191,9 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
 
         def about_painted():
             compact = "".join(folded_ocr().split())
-            return "0.1.0" in compact and "dish" in compact
+            # O OCR às vezes funde os pontos da versão ("01.0"); a sonda já
+            # confirmou a seção, aqui basta a versão pintada.
+            return re.search(r"0\.?1\.?0", compact) is not None and "dish" in compact
 
         wait_for(about_painted, "About page did not paint the version and the app name")
 
@@ -220,15 +233,17 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
         wait_for(hide_thinking, "Thinking setting not persisted")
         # Closing button restores input focus and leaves no second help modal.
         click_label("Fechar")
-        wait_for(lambda: "Configura" not in capture(), "Close button did not close")
+        wait_for(lambda: not settings_open(), "Close button did not close")
         type_text("draft")
         press("F1")
         time.sleep(0.4)
         assert "Atalhos de teclado" in capture()
-        click(window, 30, 400)
+        # A página cobre a conversa; o trilho (x < 56) continua à vista e
+        # clicar num ponto vazio dele volta para a conversa.
+        click(window, 28, 400)
         # Mesmo close() animado do Esc: sem GPU o modal ainda aparece por alguns
         # frames, então espera-se sumir em vez de comparar uma captura única.
-        wait_for(lambda: "Configura" not in capture(), "Outside click did not close", timeout=20)
+        wait_for(lambda: not settings_open(), "Outside click did not close", timeout=20)
         press("Return")
         wait_for(lambda: commands("prompt"), "Composer focus was not restored")
         assert commands("prompt")[-1]["command"]["message"] == "draft"
@@ -240,6 +255,10 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
         prefs["window_size"] = [720, 520]
         preferences.write_text(json.dumps(prefs))
         log = open(temp / "dish.log", "w")
+        # Novo processo, novo rastro de pintura: o app cria o arquivo com
+        # create_new, então o rastro anterior sai antes do restart.
+        (temp / "ui.jsonl").unlink(missing_ok=True)
+        trace = UiTrace(temp / "ui.jsonl")
         process = subprocess.Popen([os.environ.get("DISH_TEST_BIN", str(ROOT / "target/release/dish")), "--session", str(session), str(temp)],
                                    env=env, stdout=log, stderr=log)
         time.sleep(2)
@@ -249,11 +268,11 @@ with tempfile.TemporaryDirectory(prefix="dish-settings-") as temporary:
         time.sleep(0.5)
         press("F1")
         time.sleep(0.5)
-        assert "Configura" in capture()
+        wait_for(settings_open, "Settings did not open at minimum size")
         click_label("Aplicativo")
         assert "expandido" in capture().lower(), "Preferences unavailable in small window"
         click_label("Fechar")
-        wait_for(lambda: "Configura" not in capture(), "Close button did not close at minimum size")
+        wait_for(lambda: not settings_open(), "Close button did not close at minimum size")
         print("Settings basic modal smoke passed", flush=True)
     except Exception:
         print(f"Settings failure screenshot: {screenshot}")

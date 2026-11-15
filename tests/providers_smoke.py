@@ -26,9 +26,10 @@ FIXTURE = str(ROOT / "tests/fixtures/fake-pi-sdk")
 def normalized(text):
     """Compara ignorando acentos, espaços, pontuação e caixa.
 
-    O OCR quebra linha onde quer e às vezes lê "ação" como "acao"."""
+    O OCR quebra linha onde quer, às vezes lê "ação" como "acao" e troca
+    o zero pela letra o ("O conectados"), como os outros smokes já admitem."""
     folded = unicodedata.normalize("NFKD", text.lower())
-    return re.sub(r"[^0-9a-z]+", "", folded)
+    return re.sub(r"[^0-9a-z]+", "", folded).replace("0", "o")
 
 
 class Harness:
@@ -199,13 +200,21 @@ class Harness:
             subprocess.run(["import", "-window", str(self.window), self.screenshot], check=True)
             rows = subprocess.check_output(["tesseract", self.screenshot, "stdout", "--psm", "6", "tsv"],
                                            stderr=subprocess.DEVNULL).decode().splitlines()[1:]
+            # Entre os candidatos, o mais longo: um título serifado lido pela
+            # metade ("Confi" de "Configurações") também é prefixo de
+            # "Confirmar", mas perde para o botão lido inteiro.
+            best = None
             for row in rows:
                 fields = row.split("\t")
                 if len(fields) != 12:
                     continue
                 word = normalized(fields[11])
                 if len(word) >= 4 and (wanted.startswith(word) or word.startswith(wanted)):
-                    return (int(fields[6]) + int(fields[8]) // 2, int(fields[7]) + int(fields[9]) // 2)
+                    if best is None or len(word) > best[0]:
+                        best = (len(word), int(fields[6]) + int(fields[8]) // 2,
+                                int(fields[7]) + int(fields[9]) // 2)
+            if best:
+                return best[1], best[2]
             time.sleep(0.4)
         return None
 

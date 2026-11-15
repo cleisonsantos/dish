@@ -25,7 +25,6 @@ use crate::session_activity::{
 use crate::ui::test_probe::TestProbe;
 
 mod navigation;
-use self::navigation::nav_icon_button;
 mod search;
 
 actions!(
@@ -273,13 +272,6 @@ fn lifecycle_label(live: bool, active: bool) -> &'static str {
     }
 }
 
-/// O que está sob o mouse na faixa recolhida.
-enum NavHover {
-    Project(PathBuf),
-    Conversation(usize),
-    /// Índice no catálogo de sessões salvas.
-    Saved(usize),
-}
 
 /// Uma linha navegável da lista de sessões.
 #[derive(Clone, PartialEq)]
@@ -532,7 +524,6 @@ pub struct Workspace {
     /// Se o usuário já decidiu mostrar/ocultar a navegação nesta janela.
     nav_user_choice: bool,
     /// O que está sob o mouse na faixa recolhida, para o chip de título.
-    hovered: Option<NavHover>,
     preferences: crate::preferences::Preferences,
     notifications: NotificationQueue,
     notification_focus: BTreeMap<String, (FocusHandle, FocusHandle)>,
@@ -1197,7 +1188,6 @@ impl Workspace {
             project_order: Vec::new(),
             nav_anchors: BTreeMap::new(),
             nav_user_choice: preferences.navigation_open.is_some(),
-            hovered: None,
             preferences,
             notifications: NotificationQueue::default(),
             notification_focus: BTreeMap::new(),
@@ -2741,7 +2731,7 @@ impl Workspace {
                         )
                         .child(
                             div()
-                                .font_family(theme::FONT_MONO)
+                                .font_family(theme::font_mono())
                                 .text_size(px(theme::TEXT_XS))
                                 .text_color(theme::dim())
                                 .overflow_hidden()
@@ -3511,7 +3501,7 @@ impl Render for Workspace {
             .flex_col()
             .bg(theme::surface())
             .text_color(theme::text())
-            .font_family(theme::FONT_UI)
+            .font_family(theme::font_ui())
             .on_scroll_wheel(cx.listener(|workspace, _, window, cx| {
                 workspace.dismiss_session_menu(window, cx);
             }))
@@ -3713,322 +3703,23 @@ impl Render for Workspace {
                 .child(crate::ui::client_titlebar(window));
         }
         let mut body = div().relative().flex_1().min_h(px(0.)).flex().flex_row();
+        body = body.child(self.rail(cx));
+        // Janela larga: a gaveta encaixa ao lado da conversa. Estreita: flutua
+        // por cima e fecha com um clique fora, sem espremer a leitura.
+        let drawer_floats = f32::from(window.bounds().size.width) < theme::DRAWER_DOCK_WIDTH;
+        let left_chrome = theme::RAIL_WIDTH
+            + if self.visible && !drawer_floats { self.nav_width } else { 0. };
+        self.conversations[self.active]
+            .state
+            .update(cx, |state, _| state.left_chrome = left_chrome);
+        let mut floating_drawer = None;
         if self.visible {
-            body = body.child(crate::ui::motion::panel(
-                self.navigation(window, cx),
-                "navigation-enter",
-                false,
-            ));
-        } else {
-            // Recolhida: o pratinho reabre e cada conversa vira um ponto de
-            // status — dá para trocar de sessão sem reabrir o painel.
-            let rail = div()
-                .id("nav-collapsed")
-                .w(px(44.))
-                .h_full()
-                .flex_none()
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap(px(theme::S2))
-                .py(px(theme::S3))
-                .bg(theme::surface())
-                .border_r_1()
-                .border_color(theme::line_soft())
-                .child(
-                    div()
-                        .id("nav-expand")
-                        .size(px(28.))
-                        .rounded(theme::r_control())
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .cursor_pointer()
-                        .hover(|style| style.bg(theme::hover()))
-                        .on_click(cx.listener(|workspace, _: &ClickEvent, _, cx| {
-                            workspace.visible = true;
-                            workspace.nav_user_choice = true;
-                            cx.notify();
-                        }))
-                        .child(img("dish-icon.png").flex_none().w(px(22.)).h(px(22.))),
-                )
-                .child(div().w(px(20.)).h(px(1.)).bg(theme::line_soft()))
-                .child(nav_icon_button(
-                    "nav-settings-collapsed",
-                    crate::ui::icons::Icon::Settings,
-                    cx,
-                    |workspace, window, cx| {
-                        workspace.open_settings(crate::settings::Section::App, window, cx)
-                    },
-                ));
-
-            let mut groups: BTreeMap<PathBuf, Vec<usize>> = BTreeMap::new();
-            for (index, conversation) in self.conversations.iter().enumerate() {
-                groups
-                    .entry(conversation.state.read(cx).cwd.clone())
-                    .or_default()
-                    .push(index);
+            let drawer = crate::ui::motion::panel(self.navigation(window, cx), "navigation-enter", false);
+            if drawer_floats {
+                floating_drawer = Some(drawer.into_any_element());
+            } else {
+                body = body.child(drawer);
             }
-            // Sessões salvas que não estão abertas, para reabrir sem o painel.
-            let mut saved: BTreeMap<PathBuf, Vec<usize>> = BTreeMap::new();
-            for (index, info) in self.catalog.iter().enumerate() {
-                if self
-                    .conversations
-                    .iter()
-                    .any(|conversation| conversation.path.as_ref() == Some(&info.path))
-                {
-                    continue;
-                }
-                saved.entry(info.cwd.clone()).or_default().push(index);
-            }
-            let mut project_dirs: Vec<PathBuf> = groups.keys().cloned().collect();
-            for cwd in saved.keys() {
-                if !groups.contains_key(cwd) {
-                    project_dirs.push(cwd.clone());
-                }
-            }
-            project_dirs.sort();
-            let mut dots = div()
-                .id("nav-collapsed-dots")
-                .flex_1()
-                .min_h(px(0.))
-                .overflow_y_scroll()
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap(px(theme::S2));
-            for cwd in project_dirs {
-                let open_indices = groups.get(&cwd).cloned().unwrap_or_default();
-                let saved_indices = saved.get(&cwd).cloned().unwrap_or_default();
-                let folder_cwd = cwd.clone();
-                let pending_count = open_indices
-                    .iter()
-                    .filter(|i| self.conversations[**i].state.read(cx).modal.is_some())
-                    .count();
-                let new_count = open_indices
-                    .iter()
-                    .filter(|i| self.conversations[**i].unread_completion)
-                    .count()
-                    + saved_indices
-                        .iter()
-                        .filter(|i| {
-                            self.preferences
-                                .unread_sessions
-                                .contains_key(&self.catalog[**i].path)
-                        })
-                        .count();
-                let mut group = div()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap(px(theme::S1))
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("nav-folder-{cwd:?}")))
-                            .size(px(28.))
-                            .rounded(theme::r_control())
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .hover(|style| style.bg(theme::hover()))
-                            .on_hover(cx.listener(move |workspace, hovered: &bool, _, cx| {
-                                workspace.hovered =
-                                    hovered.then(|| NavHover::Project(folder_cwd.clone()));
-                                cx.notify();
-                            }))
-                            .on_click(cx.listener(|workspace, _: &ClickEvent, _, cx| {
-                                workspace.visible = true;
-                                workspace.nav_user_choice = true;
-                                cx.notify();
-                            }))
-                            .child(crate::ui::icons::icon(
-                                crate::ui::icons::Icon::Folder,
-                                14.,
-                                theme::faint(),
-                            )),
-                    );
-                if pending_count > 0 || new_count > 0 {
-                    group = group.child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(2.))
-                            .when(pending_count > 0, |el| {
-                                el.child(
-                                    div()
-                                        .flex()
-                                        .flex_row()
-                                        .items_center()
-                                        .gap(px(3.))
-                                        .text_size(px(theme::TEXT))
-                                        .text_color(theme::warn())
-                                        .child(SharedString::from(pending_count.to_string()))
-                                        .child("P"),
-                                )
-                            })
-                            .when(new_count > 0, |el| {
-                                el.child(
-                                    div()
-                                        .flex()
-                                        .flex_row()
-                                        .items_center()
-                                        .gap(px(3.))
-                                        .text_size(px(theme::TEXT))
-                                        .text_color(theme::attention())
-                                        .child(SharedString::from(new_count.to_string()))
-                                        .child("N"),
-                                )
-                            }),
-                    );
-                }
-                // Recolher a navegação muda só sua apresentação: projetos
-                // fechados continuam sem sessões visíveis também nesta faixa.
-                // Seus indicadores agregados permanecem no ícone da pasta.
-                if self.collapsed.contains(&cwd) {
-                    dots = dots.child(group);
-                    continue;
-                }
-                let any_opening_saved = self
-                    .opening
-                    .as_ref()
-                    .is_some_and(|opening| opening.path.is_some());
-                for index in open_indices {
-                    let conv_state = self.conversations[index].state.read(cx);
-                    let signals = SessionSignals::from_state(
-                        conv_state,
-                        self.conversations[index].unread_completion,
-                    );
-                    let loading_session = conv_state.is_loading_session();
-                    let active = !any_opening_saved && index == self.active;
-                    let pulse_id = format!("nav-pulse-{index}");
-                    let spinner_id = format!("nav-dot-spinner-{index}");
-                    group = group.child(
-                        div()
-                            .id(SharedString::from(format!("nav-dot-{index}")))
-                            .size(px(28.))
-                            .rounded(theme::r_control())
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .hover(|style| style.bg(theme::hover()))
-                            .when(active, |el| {
-                                el.bg(theme::surface_2())
-                                    .border_1()
-                                    .border_color(theme::accent_edge())
-                            })
-                            .on_hover(cx.listener(move |workspace, hovered: &bool, _, cx| {
-                                workspace.hovered =
-                                    hovered.then_some(NavHover::Conversation(index));
-                                cx.notify();
-                            }))
-                            .on_click(cx.listener(move |workspace, _: &ClickEvent, window, cx| {
-                                workspace.select(index, window, cx);
-                            }))
-                            .child(if loading_session {
-                                crate::ui::icons::spinner(spinner_id, 14., theme::accent())
-                                    .into_any_element()
-                            } else if signals.needs_input {
-                                crate::ui::icons::icon(
-                                    crate::ui::icons::Icon::Alert,
-                                    12.,
-                                    theme::warn(),
-                                )
-                                .into_any_element()
-                            } else if signals.error {
-                                crate::ui::icons::icon(
-                                    crate::ui::icons::Icon::Alert,
-                                    12.,
-                                    theme::failure(),
-                                )
-                                .into_any_element()
-                            } else if signals.running {
-                                crate::ui::pulse(pulse_id, 8., theme::running()).into_any_element()
-                            } else if signals.unread {
-                                crate::ui::icons::icon(
-                                    crate::ui::icons::Icon::File,
-                                    12.,
-                                    theme::attention(),
-                                )
-                                .into_any_element()
-                            } else {
-                                crate::ui::icons::icon(
-                                    if active {
-                                        crate::ui::icons::Icon::CurrentSession
-                                    } else {
-                                        crate::ui::icons::Icon::OpenSession
-                                    },
-                                    16.,
-                                    if active {
-                                        theme::accent()
-                                    } else {
-                                        theme::dim()
-                                    },
-                                )
-                                .into_any_element()
-                            }),
-                    );
-                }
-                for info_index in saved_indices {
-                    let info_ref = self.catalog.get(info_index);
-                    let opening_here = info_ref.is_some_and(|info| {
-                        self.opening
-                            .as_ref()
-                            .is_some_and(|opening| opening.path.as_ref() == Some(&info.path))
-                    });
-                    let unread = info_ref.is_some_and(|info| {
-                        self.preferences.unread_sessions.contains_key(&info.path)
-                    });
-                    let spinner_id = format!("nav-saved-spinner-{info_index}");
-                    group = group.child(
-                        div()
-                            .id(SharedString::from(format!("nav-saved-{info_index}")))
-                            .size(px(28.))
-                            .rounded(theme::r_control())
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .hover(|style| style.bg(theme::hover()))
-                            .when(opening_here, |el| {
-                                el.bg(theme::surface_2())
-                                    .border_1()
-                                    .border_color(theme::accent_edge())
-                            })
-                            .on_hover(cx.listener(move |workspace, hovered: &bool, _, cx| {
-                                workspace.hovered = hovered.then_some(NavHover::Saved(info_index));
-                                cx.notify();
-                            }))
-                            .on_click(cx.listener(move |workspace, _: &ClickEvent, window, cx| {
-                                if let Some(info) = workspace.catalog.get(info_index).cloned() {
-                                    workspace.open(info, window, cx);
-                                }
-                            }))
-                            .child(if opening_here {
-                                crate::ui::icons::spinner(spinner_id, 14., theme::accent())
-                                    .into_any_element()
-                            } else if unread {
-                                crate::ui::icons::icon(
-                                    crate::ui::icons::Icon::File,
-                                    12.,
-                                    theme::attention(),
-                                )
-                                .into_any_element()
-                            } else {
-                                crate::ui::icons::icon(
-                                    crate::ui::icons::Icon::SavedSession,
-                                    16.,
-                                    theme::faint(),
-                                )
-                                .into_any_element()
-                            }),
-                    );
-                }
-                dots = dots.child(group);
-            }
-            body = body.child(rail.child(dots));
         }
         let active = self.conversations[self.active].state.read(cx);
         let mut preferences = self.preferences.clone();
@@ -4081,31 +3772,50 @@ impl Render for Workspace {
                     .flex_1()
                     .min_w(px(0.))
                     .h_full()
-                    .p(px(theme::S2))
                     .child(crate::ui::motion::reveal(
-                        div()
-                            .size_full()
-                            .rounded(theme::r_surface())
-                            .overflow_hidden()
-                            .border_1()
-                            .border_color(theme::line_soft())
-                            .child(main_view),
+                        div().size_full().overflow_hidden().child(main_view),
                         ElementId::NamedInteger("conversation-enter".into(), self.active as u64),
                     )),
-            ),
+            )
+            .when_some(floating_drawer, |body, drawer| {
+                body.child(
+                    div()
+                        .id("drawer-dismiss")
+                        .absolute()
+                        .top(px(0.))
+                        .bottom(px(0.))
+                        .left(px(theme::RAIL_WIDTH))
+                        .right(px(0.))
+                        .bg(theme::wash(theme::bg(), 0.35))
+                        .on_click(cx.listener(|workspace, _: &ClickEvent, _, cx| {
+                            workspace.visible = false;
+                            workspace.nav_user_choice = true;
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(0.))
+                        .bottom(px(0.))
+                        .left(px(theme::RAIL_WIDTH))
+                        .shadow(theme::shadow_overlay())
+                        .child(drawer),
+                )
+            }),
         );
         self.refresh_content_search_scope(cx);
         self.resolve_search_jump(cx);
         if let Some(panel) = self.content_search_panel(cx) {
             root = root.child(panel);
         }
-        // Divisória do painel de sessões: arrastar redimensiona.
-        if self.visible {
+        // Divisória do painel de sessões: arrastar redimensiona (só encaixada).
+        if self.visible && !drawer_floats {
             root = root.child(
                 div()
                     .id("nav-resize-handle")
                     .absolute()
-                    .left(px(self.nav_width))
+                    .left(px(theme::RAIL_WIDTH + self.nav_width))
                     .top(px(0.))
                     .bottom(px(0.))
                     .w(px(6.))
@@ -4119,86 +3829,6 @@ impl Render for Workspace {
                         }),
                     ),
             );
-        }
-        // Chip de identificação do que está sob o mouse na faixa recolhida.
-        if !self.visible {
-            if let Some(hovered) = &self.hovered {
-                let (title, status) = match hovered {
-                    NavHover::Project(cwd) => {
-                        let open = self
-                            .conversations
-                            .iter()
-                            .filter(|conversation| conversation.state.read(cx).cwd == *cwd)
-                            .count();
-                        let saved = self.catalog.iter().filter(|info| info.cwd == *cwd).count();
-                        let status = match (open, saved) {
-                            (0, saved) => format!("{saved} salvas"),
-                            (open, 0) => format!("{open} abertas"),
-                            (open, saved) => format!("{open} abertas · {saved} salvas"),
-                        };
-                        (folder_of(cwd), status)
-                    }
-                    NavHover::Conversation(index) => {
-                        let index = *index;
-                        let signals = self
-                            .conversations
-                            .get(index)
-                            .map(|conversation| {
-                                SessionSignals::from_state(
-                                    conversation.state.read(cx),
-                                    conversation.unread_completion,
-                                )
-                            })
-                            .unwrap_or_default();
-                        (
-                            self.conversation_title(index, cx),
-                            format!(
-                                "{} · {}",
-                                lifecycle_label(true, index == self.active),
-                                signals.labels()
-                            ),
-                        )
-                    }
-                    NavHover::Saved(index) => {
-                        let info = self.catalog.get(*index);
-                        (
-                            info.map(|info| info.title.clone())
-                                .unwrap_or_else(|| "sessão salva".into()),
-                            "Salva".to_string(),
-                        )
-                    }
-                };
-                root = root.child(
-                    div()
-                        .absolute()
-                        .left(px(52.))
-                        .top(px(12.))
-                        .max_w(px(280.))
-                        .px(px(theme::S2 + theme::S1))
-                        .py(px(theme::S1 + 2.))
-                        .rounded(theme::r_control())
-                        .border_1()
-                        .border_color(theme::line())
-                        .bg(theme::surface_2())
-                        .shadow(theme::shadow_overlay())
-                        .flex()
-                        .flex_col()
-                        .gap(px(1.))
-                        .child(
-                            div()
-                                .truncate()
-                                .text_size(px(theme::TEXT_SM))
-                                .text_color(theme::text())
-                                .child(SharedString::from(title)),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(theme::TEXT_XS))
-                                .text_color(theme::faint())
-                                .child(SharedString::from(status)),
-                        ),
-                );
-            }
         }
         if let Some(cards) = self.notification_cards(cx) {
             root = root.child(cards);

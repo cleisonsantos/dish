@@ -342,129 +342,118 @@ impl Workspace {
             .bg(theme::surface())
             .border_r_1()
             .border_color(theme::line_soft())
-            // cabeçalho integrado
+            // Cabeçalho da gaveta: título editorial, abrir pasta e nova sessão
+            // lado a lado. O trilho já carrega a marca e as configurações.
             .child(
                 div()
                     .flex_none()
-                    .h(px(52.))
-                    .pl(px(theme::S4))
-                    .pr(px(theme::S2))
                     .flex()
                     .flex_row()
                     .items_center()
                     .justify_between()
+                    .pl(px(theme::S4 + 4.))
+                    .pr(px(theme::S4))
+                    .pt(px(theme::S4 + 2.))
+                    .pb(px(theme::S3))
                     .child(
                         div()
-                            .id("nav-collapse")
+                            .font_family(theme::FONT_PROSE)
+                            .text_size(px(22.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Sessões"),
+                    )
+                    .child(
+                        div()
                             .flex()
                             .flex_row()
                             .items_center()
-                            .gap(px(theme::S2))
-                            .px(px(theme::S2))
-                            .py(px(theme::S1))
-                            .rounded(theme::r_control())
-                            .cursor_pointer()
-                            .hover(|style| style.bg(theme::hover()))
-                            .on_click(cx.listener(|workspace, _: &ClickEvent, _, cx| {
-                                workspace.visible = false;
-                                workspace.nav_user_choice = true;
-                                cx.notify();
-                            }))
-                            .child(img("dish-icon.png").flex_none().w(px(26.)).h(px(26.)))
+                            .gap(px(6.))
                             .child(
                                 div()
-                                    .text_size(px(theme::TITLE))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("Dish"),
+                                    .id("nav-open-project")
+                                    .size(px(30.))
+                                    .rounded(px(15.))
+                                    .border_1()
+                                    .border_color(theme::line_strong())
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .hover(|style| style.bg(theme::hover()))
+                                    .tooltip(|_, cx| {
+                                        cx.new(|_| crate::ui::copy_button::TextTooltip("Abrir pasta…".into())).into()
+                                    })
+                                    .on_click(cx.listener(|workspace, _: &ClickEvent, _, cx| {
+                                        workspace.choose_project(cx)
+                                    }))
+                                    .child(crate::ui::icons::icon(
+                                        crate::ui::icons::Icon::Folder,
+                                        14.,
+                                        theme::text(),
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .id("nav-new-session")
+                                    .test_probe(|| "nav-new-session".into(), || serde_json::json!({}))
+                                    .h(px(30.))
+                                    .px(px(theme::S3))
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(px(6.))
+                                    .rounded(px(15.))
+                                    .border_1()
+                                    .border_color(theme::line_strong())
+                                    .text_color(theme::text())
+                                    .cursor_pointer()
+                                    .focusable()
+                                    .tab_index(0)
+                                    .hover(|style| style.bg(theme::hover()))
+                                    .focus(|style| style.shadow(theme::focus_ring()))
+                                    .on_key_down(cx.listener(|workspace, event: &KeyDownEvent, window, cx| {
+                                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                            let cwd = workspace.conversations[workspace.active]
+                                                .state
+                                                .read(cx)
+                                                .cwd
+                                                .clone();
+                                            workspace.spawn_conversation(cwd, None, None, cx);
+                                            cx.stop_propagation();
+                                        } else if event.keystroke.key == "tab" {
+                                            if event.keystroke.modifiers.shift {
+                                                window.focus_prev(cx);
+                                            } else {
+                                                window.focus_next(cx);
+                                            }
+                                            cx.stop_propagation();
+                                        }
+                                    }))
+                                    .on_click(cx.listener(|workspace, _: &ClickEvent, _, cx| {
+                                        let cwd = workspace.conversations[workspace.active]
+                                            .state
+                                            .read(cx)
+                                            .cwd
+                                            .clone();
+                                        workspace.spawn_conversation(cwd, None, None, cx);
+                                    }))
+                                    .child(crate::ui::icons::icon(
+                                        crate::ui::icons::Icon::Plus,
+                                        12.,
+                                        theme::text(),
+                                    ))
+                                    .child(div().text_size(px(theme::TEXT)).child("Nova"))
+                                    .when(self.nav_width >= 250., |el| {
+                                        el.child(
+                                            div()
+                                                .font_family(theme::font_mono())
+                                                .text_size(px(theme::TEXT_MICRO))
+                                                .text_color(theme::faint())
+                                                .child("Ctrl N"),
+                                        )
+                                    }),
                             ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(theme::S1))
-                            .child(nav_icon_button(
-                                "nav-open-project",
-                                crate::ui::icons::Icon::Folder,
-                                cx,
-                                |workspace, _window, cx| workspace.choose_project(cx),
-                            ))
-                            .child(nav_icon_button(
-                                "nav-top-help",
-                                crate::ui::icons::Icon::Dots,
-                                cx,
-                                |workspace, window, cx| {
-                                    workspace.open_settings(
-                                        crate::settings::Section::App,
-                                        window,
-                                        cx,
-                                    );
-                                },
-                            )),
                     ),
-            )
-            .child(
-                div()
-                    .id("nav-new-session")
-                    .test_probe(|| "nav-new-session".into(), || serde_json::json!({}))
-                    .mx(px(theme::S3))
-                    .mb(px(theme::S3))
-                    .px(px(theme::S3))
-                    .py(px(theme::S2))
-                    .flex()
-                    .items_center()
-                    .gap(px(theme::S2))
-                    .rounded(theme::r_control())
-                    .border_1()
-                    .border_color(theme::line_strong())
-                    .bg(theme::surface_2())
-                    .text_color(theme::text())
-                    .cursor_pointer()
-                    .focusable()
-                    .tab_index(0)
-                    .hover(|style| style.bg(theme::hover()))
-                    .focus(|style| style.shadow(theme::focus_ring()))
-                    .on_key_down(cx.listener(|workspace, event: &KeyDownEvent, window, cx| {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            let cwd = workspace.conversations[workspace.active]
-                                .state
-                                .read(cx)
-                                .cwd
-                                .clone();
-                            workspace.spawn_conversation(cwd, None, None, cx);
-                            cx.stop_propagation();
-                        } else if event.keystroke.key == "tab" {
-                            if event.keystroke.modifiers.shift {
-                                window.focus_prev(cx);
-                            } else {
-                                window.focus_next(cx);
-                            }
-                            cx.stop_propagation();
-                        }
-                    }))
-                    .on_click(cx.listener(|workspace, _: &ClickEvent, _, cx| {
-                        let cwd = workspace.conversations[workspace.active]
-                            .state
-                            .read(cx)
-                            .cwd
-                            .clone();
-                        workspace.spawn_conversation(cwd, None, None, cx);
-                    }))
-                    .child(crate::ui::icons::icon(
-                        crate::ui::icons::Icon::Plus,
-                        14.,
-                        theme::dim(),
-                    ))
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(px(theme::TEXT))
-                            .child("Nova sessão"),
-                    )
-                    .when(self.nav_width >= 250., |el| {
-                        el.child(crate::ui::micro("Ctrl+N"))
-                    }),
             )
             // busca + filtros
             .child(
@@ -518,11 +507,8 @@ impl Workspace {
                             .flex()
                             .flex_row()
                             .items_stretch()
-                            .p(px(2.))
-                            .gap(px(1.))
-                            .rounded(theme::r_control())
-                            .bg(theme::inset())
-                            .border_1()
+                            .gap(px(theme::S2))
+                            .border_b_1()
                             .border_color(theme::line_soft())
                             .child(nav_segment(
                                 "nav-filter-all",
@@ -537,7 +523,7 @@ impl Workspace {
                             ))
                             .child(nav_segment(
                                 "nav-filter-input",
-                                "Pend.",
+                                if self.nav_width >= 300. { "Pendentes" } else { "Pend." },
                                 "sessões que precisam de você",
                                 self.filter == SessionFilter::NeedsInput,
                                 cx,
@@ -559,7 +545,7 @@ impl Workspace {
                             ))
                             .child(nav_segment(
                                 "nav-filter-running",
-                                "Exec.",
+                                if self.nav_width >= 300. { "Rodando" } else { "Exec." },
                                 "tarefas em execução agora",
                                 self.filter == SessionFilter::Running,
                                 cx,
@@ -945,12 +931,25 @@ impl Workspace {
                                 let action_target = live.map(|index| SessionTarget::Live(self.conversations[index].state.entity_id()))
                                     .or_else(|| info.as_ref().map(|info| SessionTarget::Saved(info.path.clone())));
                                 let action_id = action_target.as_ref().map(|target| format!("session-actions-{}", target.key()));
+                                // O "…" é ruído repetido em todas as linhas: aparece
+                                // na linha ativa, na selecionada pelo teclado, com o
+                                // menu dela aberto ou sob o mouse.
+                                let menu_open = action_target.as_ref().is_some_and(|target| {
+                                    self.session_menu.as_ref().is_some_and(|menu| menu.target.key() == target.key())
+                                });
+                                let action_focused = action_target.as_ref().is_some_and(|target| {
+                                    self.session_action_focus.get(&target.key()).is_some_and(|focus| focus.is_focused(window))
+                                });
+                                let reveal_actions = active || highlighted_here || menu_open || action_focused;
+                                let row_group = SharedString::from(format!("nav-row-{key}"));
+                                let action_group = row_group.clone();
                                 let action_button = action_target.map(|target| self.session_actions_button(target, cx));
                                 div()
                                     .test_probe(|| format!("nav-{key}"), || serde_json::json!({
                                         "title": title, "active": active, "actions": action_id,
                                     }))
                                     .id(SharedString::from(key))
+                                    .group(row_group)
                                     .anchor_scroll(anchor)
                                     .flex()
                                     .flex_row()
@@ -958,30 +957,18 @@ impl Workspace {
                                     .gap(px(theme::S2))
                                     .pl(px(theme::S3))
                                     .pr(px(theme::S2))
-                                    .py(px(theme::S2 + 1.))
-                                    .rounded(theme::r_control())
+                                    .py(px(theme::S2 + 2.))
+                                    .rounded(px(10.))
                                     // Foco de teclado é um anel por fora, para não
                                     // competir com as cores de estado da linha. O
                                     // fundo opaco evita que a sombra vire um bloco.
                                     .when(keyboard_selected, |el| {
                                         el.bg(theme::hover()).shadow(theme::focus_ring())
                                     })
-                                    .when(active, |el| {
-                                        el.bg(theme::surface_2())
-                                            .border_l_2()
-                                            .border_color(theme::accent())
-                                    })
-                                    .when(!active && unread, |el| {
-                                        el.border_l_2()
-                                            .border_color(theme::attention())
-                                    })
-                                    // Bloqueada esperando você é mais urgente que
-                                    // conteúdo novo: o âmbar vence o verde. Sem
-                                    // wash: sob o modal, o título precisa ficar
-                                    // legível.
-                                    .when(!active && needs_input, |el| {
-                                        el.border_l_2().border_color(theme::warn())
-                                    })
+                                    // Sem faixa lateral: a linha ativa ganha o tom
+                                    // elevado; os estados vivem no marcador e no
+                                    // texto abaixo do título.
+                                    .when(active, |el| el.bg(theme::hover()))
                                     .when(!active && !keyboard_selected, |el| el.hover(|s| s.bg(theme::hover())))
                                     .cursor_pointer()
                                     .tooltip(move |_, cx| {
@@ -1014,13 +1001,13 @@ impl Workspace {
                                     } else if running {
                                         crate::ui::pulse(pulse_id, 7., theme::running()).into_any_element()
                                     } else if unread {
-                                        crate::ui::icons::icon(crate::ui::icons::Icon::File, 12., theme::attention()).into_any_element()
+                                        session_marker(theme::attention(), true).into_any_element()
                                     } else if active {
-                                        crate::ui::icons::icon(crate::ui::icons::Icon::CurrentSession, 16., theme::accent()).into_any_element()
+                                        session_marker(theme::accent(), true).into_any_element()
                                     } else if live.is_some() {
-                                        crate::ui::icons::icon(crate::ui::icons::Icon::OpenSession, 16., theme::dim()).into_any_element()
+                                        session_marker(theme::dim(), true).into_any_element()
                                     } else {
-                                        crate::ui::icons::icon(crate::ui::icons::Icon::SavedSession, 16., theme::faint()).into_any_element()
+                                        session_marker(theme::faint(), false).into_any_element()
                                     })
                                     .child(
                                         div()
@@ -1074,9 +1061,7 @@ impl Workspace {
                                                         )
                                                     })
                                                     .when(unread, |el| {
-                                                        el.child(crate::ui::icons::icon(
-                                                            crate::ui::icons::Icon::File, 11., theme::attention(),
-                                                        )).child(
+                                                        el.child(
                                                             div()
                                                                 .flex()
                                                                 .flex_row()
@@ -1145,7 +1130,15 @@ impl Workspace {
                                             .items_center()
                                             .gap(px(2.))
                                             .when_some(pin_button, |el, button| el.child(button))
-                                            .when_some(action_button, |el, button| el.child(button)),
+                                            .when_some(action_button, |el, button| {
+                                                el.child(
+                                                    div()
+                                                        .when(!reveal_actions, |el| {
+                                                            el.opacity(0.0).group_hover(action_group, |s| s.opacity(1.0))
+                                                        })
+                                                        .child(button),
+                                                )
+                                            }),
                                     )
                             },
                         ))
@@ -1333,27 +1326,199 @@ impl Workspace {
     }
 }
 
-/// Botão de ícone do cabeçalho da navegação.
-pub(super) fn nav_icon_button(
+impl Workspace {
+    /// Trilho fixo da borda esquerda: abre a gaveta de sessões, cria e busca
+    /// sessões, e leva às configurações. Nada nele muda de lugar com a gaveta.
+    pub(super) fn rail(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
+        let running = self
+            .conversations
+            .iter()
+            .any(|conversation| conversation.state.read(cx).is_executing());
+        let pending = self
+            .conversations
+            .iter()
+            .filter(|conversation| conversation.state.read(cx).modal.is_some())
+            .count();
+        // Respostas novas continuam visíveis com a gaveta fechada: abertas
+        // com conclusão não lida e salvas marcadas como não lidas.
+        let unread = self
+            .conversations
+            .iter()
+            .filter(|conversation| conversation.unread_completion)
+            .count()
+            + self
+                .catalog
+                .iter()
+                .filter(|info| {
+                    !self.conversations.iter().any(|c| c.path.as_ref() == Some(&info.path))
+                        && self.preferences.unread_sessions.contains_key(&info.path)
+                })
+                .count();
+        let drawer_open = self.visible;
+        div()
+            .id("rail")
+            .test_probe(|| "rail".into(), move || serde_json::json!({"drawer": drawer_open, "unread": unread, "pending": pending}))
+            .w(px(theme::RAIL_WIDTH))
+            .h_full()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(6.))
+            .py(px(theme::S3 + 2.))
+            .bg(theme::surface())
+            .border_r_1()
+            .border_color(theme::line_soft())
+            .child(
+                div()
+                    .size(px(32.))
+                    .mb(px(theme::S3))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(crate::ui::icons::icon(crate::ui::icons::Icon::Mark, 26., theme::accent())),
+            )
+            .child(rail_button(
+                "rail-sessions",
+                crate::ui::icons::Icon::List,
+                "Sessões (Ctrl+Shift+B)",
+                drawer_open,
+                cx,
+                |workspace, _window, cx| {
+                    workspace.session_menu = None;
+                    workspace.visible = !workspace.visible;
+                    workspace.nav_user_choice = true;
+                    cx.notify();
+                },
+            ))
+            .when(unread > 0 && !drawer_open, |el| {
+                el.child(
+                    div()
+                        .id("rail-unread")
+                        .mt(px(-2.))
+                        .text_size(px(theme::TEXT_MICRO))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme::attention())
+                        .tooltip(move |_, cx| {
+                            cx.new(|_| crate::ui::copy_button::TextTooltip(format!(
+                                "{unread} {} não {}",
+                                if unread == 1 { "resposta" } else { "respostas" },
+                                if unread == 1 { "lida" } else { "lidas" }
+                            )))
+                            .into()
+                        })
+                        .child(SharedString::from(format!(
+                            "{unread} {}",
+                            if unread == 1 { "nova" } else { "novas" }
+                        ))),
+                )
+            })
+            .child(rail_button(
+                "rail-new",
+                crate::ui::icons::Icon::Plus,
+                "Nova sessão (Ctrl+N)",
+                false,
+                cx,
+                |workspace, _window, cx| {
+                    let cwd = workspace.conversations[workspace.active].state.read(cx).cwd.clone();
+                    workspace.spawn_conversation(cwd, None, None, cx);
+                },
+            ))
+            .child(rail_button(
+                "rail-search",
+                crate::ui::icons::Icon::Search,
+                "Buscar sessões (Ctrl+K)",
+                false,
+                cx,
+                |workspace, window, cx| {
+                    workspace.session_menu = None;
+                    workspace.visible = true;
+                    workspace.nav_user_choice = true;
+                    workspace.query.read(cx).focus_handle.clone().focus(window, cx);
+                    cx.notify();
+                },
+            ))
+            .child(div().flex_1())
+            .when(pending > 0, |el| {
+                el.child(
+                    div()
+                        .id("rail-pending")
+                        .tooltip(move |_, cx| {
+                            cx.new(|_| crate::ui::copy_button::TextTooltip(format!(
+                                "{pending} {} de você",
+                                if pending == 1 { "sessão precisa" } else { "sessões precisam" }
+                            )))
+                            .into()
+                        })
+                        .child(crate::ui::icons::icon(crate::ui::icons::Icon::Alert, 13., theme::warn())),
+                )
+            })
+            .when(running, |el| {
+                el.child(
+                    div()
+                        .id("rail-running")
+                        .mb(px(theme::S1))
+                        .tooltip(|_, cx| {
+                            cx.new(|_| crate::ui::copy_button::TextTooltip("O agente está trabalhando".into())).into()
+                        })
+                        .child(crate::ui::pulse("rail-running-pulse", 8., theme::running())),
+                )
+            })
+            .child(rail_button(
+                "rail-settings",
+                crate::ui::icons::Icon::Settings,
+                "Configurações (F1)",
+                false,
+                cx,
+                |workspace, window, cx| {
+                    workspace.open_settings(crate::settings::Section::App, window, cx);
+                },
+            ))
+    }
+}
+
+/// Botão quadrado do trilho: ícone de 18px numa área de toque de 40px.
+fn rail_button(
     id: &'static str,
     glyph: crate::ui::icons::Icon,
+    label: &'static str,
+    active: bool,
     cx: &mut Context<Workspace>,
     run: impl Fn(&mut Workspace, &mut Window, &mut Context<Workspace>) + 'static,
 ) -> AnyElement {
     div()
         .id(id)
-        .size(px(28.))
-        .rounded(theme::r_control())
+        .test_probe(move || id.into(), move || serde_json::json!({"active": active}))
+        .size(px(40.))
+        .rounded(px(10.))
         .flex()
         .items_center()
         .justify_center()
         .cursor_pointer()
+        .when(active, |el| el.bg(theme::hover()))
         .hover(|style| style.bg(theme::hover()))
+        .tooltip(move |_, cx| cx.new(|_| crate::ui::copy_button::TextTooltip(label.into())).into())
         .on_click(cx.listener(move |workspace, _: &ClickEvent, window, cx| {
             run(workspace, window, cx);
         }))
-        .child(crate::ui::icons::icon(glyph, 15., theme::faint()))
+        .child(crate::ui::icons::icon(
+            glyph,
+            18.,
+            if active { theme::text() } else { theme::dim() },
+        ))
         .into_any_element()
+}
+
+/// Marcador de estado da linha: ponto cheio (aberta, ativa, nova) ou anel
+/// (salva). Ocupa a mesma caixa dos ícones de alerta para alinhar os títulos.
+fn session_marker(color: Hsla, filled: bool) -> Div {
+    div().size(px(14.)).flex_none().flex().items_center().justify_center().child(
+        div()
+            .size(px(7.))
+            .rounded(px(4.))
+            .when(filled, |el| el.bg(color))
+            .when(!filled, |el| el.border_1().border_color(color)),
+    )
 }
 
 /// Um segmento do filtro de sessões: modo de leitura, ocupando a faixa toda.
@@ -1372,26 +1537,18 @@ fn nav_segment(
         .flex_1()
         .flex()
         .justify_center()
-        .px(px(theme::S2))
-        .py(px(3.))
-        .rounded(theme::r_small())
-        .when(active, |el| {
-            el.bg(theme::surface_2())
-                .border_1()
-                .border_color(theme::line())
-        })
-        .when(!active, |el| {
-            el.cursor_pointer()
-                .border_1()
-                .border_color(gpui::transparent_black())
-                .hover(|s| s.bg(theme::hover()))
-        })
+        .pt(px(theme::S2))
+        .pb(px(theme::S2 - 2.))
+        // Aba de texto: a escolha é a tinta e o sublinhado, não uma caixa.
+        .border_b_2()
+        .border_color(if active { theme::text() } else { gpui::transparent_black() })
+        .when(!active, |el| el.cursor_pointer().hover(|s| s.text_color(theme::text())))
         .tooltip(move |_, cx| {
             cx.new(|_| crate::ui::copy_button::TextTooltip(hint.into()))
                 .into()
         })
-        .text_size(px(theme::TEXT_XS))
-        .text_color(if active { theme::text() } else { theme::dim() })
+        .text_size(px(theme::TEXT))
+        .text_color(if active { theme::text() } else { theme::faint() })
         .when(active, |el| el.font_weight(FontWeight::MEDIUM))
         .truncate()
         .on_click(cx.listener(move |workspace, _: &ClickEvent, _window, cx| {

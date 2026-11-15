@@ -12,15 +12,12 @@ helper_path = Path(__file__).with_name("desktop_smoke.py")
 helpers = helper_path.read_text().split('with tempfile.TemporaryDirectory(prefix="dish-desktop-") as temp:')[0]
 exec(compile(helpers, str(helper_path), "exec"))
 
+# A cor dominante é o fundo da página de configurações (`bg` do tema).
 THEMES = [
-    ("Grafite", "dish-dark", True, (23, 27, 33)),
-    ("Grafite baixo", "dish-dim", True, (28, 31, 37)),
-    ("Noite azul", "dish-midnight", True, (17, 27, 41)),
-    ("Ameixa", "dish-plum", True, (28, 24, 32)),
-    ("Papel frio", "dish-light", False, (233, 237, 243)),
-    ("Papel quente", "dish-paper", False, (250, 247, 240)),
-    ("Lavanda", "dish-lavender", False, (235, 231, 242)),
-    ("Sálvia", "dish-sage", False, (230, 238, 232)),
+    ("Noite", "dish-dark", True, (19, 22, 20)),
+    ("Ardósia", "dish-slate", True, (26, 29, 36)),
+    ("Papel", "dish-light", False, (246, 246, 242)),
+    ("Névoa", "dish-mist", False, (243, 241, 236)),
 ]
 
 
@@ -238,20 +235,20 @@ with tempfile.TemporaryDirectory(prefix="dish-appearance-") as temporary:
         select_mode("Escuro", "dark")
         for item in THEMES:
             select_theme(*item)
-        assert saved().get("theme") == "dish-sage"
+        assert saved().get("theme") == "dish-mist"
         process.terminate()
         process.wait(timeout=5)
         process = launch()
         open_appearance()
-        wait_for(lambda: surface_visible((230, 238, 232)), "Sage did not survive restart")
-        select_theme("Meu tema", "user:meu-tema", False, (250, 247, 240))
+        wait_for(lambda: surface_visible((243, 241, 236)), "Mist did not survive restart")
+        select_theme("Meu tema", "user:meu-tema", False, (245, 241, 231))
         process.terminate()
         process.wait(timeout=5)
         process = launch()
         open_appearance()
         assert saved().get("theme") == "user:meu-tema"
-        wait_for(lambda: surface_visible((250, 247, 240)), "User theme did not survive restart")
-        print(f"Appearance smoke passed: 8 built-ins + user theme; screenshot: {screenshot}")
+        wait_for(lambda: surface_visible((245, 241, 231)), "User theme did not survive restart")
+        print(f"Appearance smoke passed: 4 built-ins + user theme; screenshot: {screenshot}")
     except Exception:
         if window:
             capture()

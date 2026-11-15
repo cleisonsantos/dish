@@ -15,6 +15,17 @@ Dish is licensed under Apache-2.0; see `LICENSE`.
 - Dish modifications include wrapping, cursor movement, selection, clipboard
   handling and undo/redo. See the source file for implementation details.
 
+## Bundled fonts
+
+The executable embeds two font families, unmodified, under the SIL Open Font
+License 1.1. Their license texts ship in `share/licenses/fonts/` (or
+`licenses/fonts/` on Windows); sources and versions are listed in
+`assets/fonts/README.md`.
+
+- Source Serif 4 (Regular, Italic, Semibold), Copyright 2014 - 2023 Adobe,
+  with Reserved Font Name "Source".
+- Geist (Regular, Medium, SemiBold), Copyright 2026 The Geist Project Authors.
+
 ## Dependencies
 
 Cargo dependencies retain their respective licenses. `Cargo.lock` records the

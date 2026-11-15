@@ -111,7 +111,7 @@ pub struct Preferences {
     pub appearance: crate::theme::AppearanceMode,
     /// `None` preserves GPUI's platform preference; `Some` is an explicit override.
     pub reduce_motion: Option<bool>,
-    /// Tema fixado pelo usuário, por id (`dish-paper`, `user:meu-tema`…).
+    /// Tema fixado pelo usuário, por id (`dish-mist`, `user:meu-tema`…).
     /// `None` usa o tema padrão da aparência resolvida.
     pub theme: Option<String>,
     /// Stable notification ids the user has dismissed.

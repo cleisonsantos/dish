@@ -161,54 +161,68 @@ pub fn loading_state(title: Option<&str>) -> AnyElement {
 }
 
 fn empty_state(weak: &WeakEntity<AppState>) -> AnyElement {
-    let weak = weak.clone();
+    // Usado só quando a página inicial não assume o layout (composer expandido).
+    div()
+        .id("welcome-scroll")
+        .flex_1()
+        .min_h(px(0.))
+        .w_full()
+        .flex()
+        .flex_col()
+        .justify_end()
+        .child(welcome_suggestions(weak))
+        .into_any_element()
+}
+
+/// O começo de uma sessão: a pasta em uso e a pergunta, acima do composer.
+pub fn welcome_heading(state: &AppState) -> AnyElement {
+    let folder = state
+        .title_override
+        .clone()
+        .unwrap_or_else(|| crate::rpc::folder_label(&state.cwd));
+    div()
+        .id("welcome-heading")
+        .w_full()
+        .px(px(theme::CHAT_INSET + 6.))
+        .pb(px(theme::S5 + 4.))
+        .flex()
+        .flex_col()
+        .gap(px(theme::S3))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(theme::S2))
+                .text_size(px(theme::TEXT_SM))
+                .text_color(theme::faint())
+                .child(icon(Icon::Folder, 14., theme::faint()))
+                .child(SharedString::from(folder)),
+        )
+        .child(
+            div()
+                .font_family(theme::FONT_PROSE)
+                .text_size(px(theme::DISPLAY))
+                .line_height(px(theme::DISPLAY + 8.))
+                .text_color(theme::text())
+                .child("Por onde começamos?"),
+        )
+        .into_any_element()
+}
+
+/// Sugestões como um índice: linhas de texto em serifa separadas por fios.
+pub fn welcome_suggestions(weak: &WeakEntity<AppState>) -> AnyElement {
     let prompts: [&'static str; 3] = [
         "Explique a arquitetura deste projeto",
         "Investigue os testes que falham",
         "Revise as alterações recentes",
     ];
-
     div()
-        .id("welcome-scroll")
-        // Um halo do acento do esforço esmaece do topo: é a única decoração, e
-        // significa "este é o nível de raciocínio que você vai usar".
-        .bg(theme::accent_wash())
-        .flex_1()
-        .min_h(px(0.))
         .w_full()
-        .overflow_y_scroll()
+        .px(px(theme::CHAT_INSET + 6.))
         .flex()
         .flex_col()
-        .child(
-            div()
-                .w_full()
-                .px(px(theme::CHAT_INSET))
-                .pt(px(theme::S6))
-                .pb(px(theme::S5))
-                .flex_none()
-                .flex()
-                .flex_col()
-                .gap(px(theme::S5))
-                .child(
-                    div().flex().flex_col().gap(px(theme::S3))
-                        .child(div().text_size(px(theme::DISPLAY)).line_height(px(38.))
-                            .font_weight(FontWeight::MEDIUM).child("Por onde começamos?"))
-                        .child(div().text_size(px(theme::PROSE)).line_height(px(25.))
-                            .text_color(theme::dim())
-                            .child("Use o contexto deste projeto para investigar, revisar ou implementar.")),
-                )
-                .child(
-                    div()
-                        .w_full()
-                        .flex()
-                        .flex_col()
-                        .gap(px(theme::S2))
-                        .max_w(px(560.))
-                        .children(prompts.into_iter().enumerate()
-                            .map(|(index, prompt)| prompt_row(index, prompt, &weak))),
-                ),
-        )
-        .child(div().flex_1())
+        .children(prompts.into_iter().enumerate().map(|(index, prompt)| prompt_row(index, prompt, weak)))
         .into_any_element()
 }
 
@@ -218,22 +232,20 @@ fn prompt_row(index: usize, prompt: &'static str, weak: &WeakEntity<AppState>) -
     let text = prompt.to_string();
     div()
         .id(SharedString::from(format!("suggestion-{index}")))
+        .w_full()
         .flex()
         .flex_row()
         .items_center()
         .gap(px(theme::S3))
-        .px(px(theme::S3))
-        .py(px(theme::S3))
-        .rounded(theme::r_control())
-        .border_1()
+        .py(px(theme::S3 + 1.))
+        .border_b_1()
         .border_color(theme::line_soft())
-        .bg(theme::wash(theme::surface_2(), 0.55))
         .cursor_pointer()
         .focusable()
         .tab_index(0)
-        .hover(|style| style.bg(theme::surface_2()).border_color(theme::accent_edge()))
+        .hover(|style| style.border_color(theme::accent_edge()))
         .active(|style| style.opacity(0.85))
-        .focus(|style| style.bg(theme::hover()).shadow(theme::focus_ring()))
+        .focus(|style| style.shadow(theme::focus_ring()))
         .on_key_down(move |event: &KeyDownEvent, window, cx| {
             if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                 key_weak.update(cx, |state, cx| state.set_composer_text(prompt.to_string(), cx)).ok();
@@ -247,13 +259,15 @@ fn prompt_row(index: usize, prompt: &'static str, weak: &WeakEntity<AppState>) -
             weak.update(cx, |state, cx| state.set_composer_text(text.clone(), cx))
                 .ok();
         })
-        .child(icon(match index { 0 => Icon::Search, 1 => Icon::Terminal, _ => Icon::File }, 15., theme::faint()))
         .child(
             div()
-                .text_size(px(theme::PROSE))
-                .text_color(theme::dim())
+                .flex_1()
+                .font_family(theme::FONT_PROSE)
+                .text_size(px(17.))
+                .text_color(theme::text())
                 .child(prompt),
         )
+        .child(div().text_color(theme::faint()).child("→"))
         .into_any_element()
 }
 
@@ -269,9 +283,15 @@ fn message_element(
     let Some(message) = state.messages.get(index) else {
         return div().into_any_element();
     };
+    let margin_mode = crate::ui::marginalia(state, window);
+    let mut margin: Vec<AnyElement> = Vec::new();
     let element = match message.role {
         Role::User => request(state, message, index, weak, window, cx),
-        Role::Assistant => assistant_turn(state, message, index, weak, window, cx),
+        Role::Assistant => {
+            let (body, side) = assistant_turn(state, message, index, weak, margin_mode, window, cx);
+            margin = side;
+            body
+        }
         Role::Bash => match message.blocks.first() {
             Some(Block::Bash(card)) => command_card(index, 0, card, weak),
             _ => div().into_any_element(),
@@ -292,16 +312,40 @@ fn message_element(
             column.into_any_element()
         }
     };
-    let row = div()
+    let column = div()
         .w_full()
+        .max_w(px(theme::READING_WIDTH))
         .flex()
-        .justify_center()
-        .child(div().w_full()
-            .when(state.search_message == Some(index), |el| {
-                el.border_l_2().border_color(theme::accent())
-                    .bg(theme::wash(theme::accent(), 0.08))
-            })
-            .child(element));
+        .flex_col()
+        .when(state.search_message == Some(index), |el| {
+            el.border_l_2().border_color(theme::accent())
+                .bg(theme::wash(theme::accent(), 0.08))
+        })
+        // A página abre com o título da conversa: ele rola junto com o texto.
+        .when(index == 0, |el| el.child(page_title(state)))
+        .child(element);
+    let row = if margin_mode {
+        // Coluna e margem centradas juntas; a margem segura a atividade do turno.
+        div()
+            .w_full()
+            .flex()
+            .flex_row()
+            .justify_center()
+            .child(column.flex_none().w(px(theme::READING_WIDTH)))
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(theme::MARGIN_WIDTH))
+                    .pl(px(theme::S4))
+                    .pr(px(theme::S2))
+                    .flex()
+                    .flex_col()
+                    .gap(px(theme::S4))
+                    .children(margin),
+            )
+    } else {
+        div().w_full().flex().justify_center().child(column)
+    };
     // Só o turno que está chegando agora sobe para o lugar. Histórico rolado de
     // volta à vista não reanima, e o movimento termina com a resposta.
     if state.streaming && index + 1 == state.messages.len() {
@@ -312,7 +356,68 @@ fn message_element(
     }
 }
 
-/// Pedido compacto à direita; a resposta ocupa a área de trabalho à esquerda.
+/// Cabeçalho da página: o título da conversa em serifa e uma linha de contexto.
+fn page_title(state: &AppState) -> AnyElement {
+    let folder = state
+        .title_override
+        .clone()
+        .unwrap_or_else(|| crate::rpc::folder_label(&state.cwd));
+    let model = state.model.as_ref().map(|model| model.id.clone());
+    let count = state.messages.len();
+    div()
+        .w_full()
+        .px(px(theme::CHAT_INSET))
+        .pt(px(theme::S6 + theme::S2))
+        .pb(px(theme::S1))
+        .flex()
+        .flex_col()
+        .gap(px(theme::S2))
+        .child(
+            div()
+                .font_family(theme::FONT_PROSE)
+                .text_size(px(theme::PAGE_TITLE))
+                .line_height(px(theme::PAGE_TITLE + 8.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme::text())
+                .child(SharedString::from(state.display_title())),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .items_center()
+                .gap(px(theme::S2))
+                .text_size(px(theme::TEXT))
+                .text_color(theme::faint())
+                .child(SharedString::from(folder))
+                .child("·")
+                .child(SharedString::from(format!(
+                    "{count} {}",
+                    if count == 1 { "mensagem" } else { "mensagens" }
+                )))
+                .when_some(model, |el, model| {
+                    el.child("·").child(
+                        div()
+                            .font_family(theme::font_mono())
+                            .text_size(px(theme::TEXT_SM))
+                            .child(SharedString::from(model)),
+                    )
+                }),
+        )
+        .into_any_element()
+}
+
+/// Hora local de um carimbo do Pi, para a assinatura do pedido.
+fn clock(timestamp: i64) -> Option<String> {
+    use chrono::TimeZone;
+    (timestamp > 0)
+        .then(|| chrono::Local.timestamp_millis_opt(timestamp).single())
+        .flatten()
+        .map(|time| time.format("%H:%M").to_string())
+}
+
+/// O pedido é uma citação: serifa itálica, assinada "— você". Sem balão.
 fn request(
     state: &AppState,
     message: &Message,
@@ -322,8 +427,14 @@ fn request(
     cx: &mut App,
 ) -> AnyElement {
     let text = message.text();
-    let style = crate::markdown::MarkdownStyle { font: font(theme::FONT_UI), ..markdown_style() };
+    let mut quote_font = font(theme::FONT_PROSE);
+    quote_font.style = FontStyle::Italic;
+    let style = crate::markdown::MarkdownStyle { font: quote_font, ..markdown_style() };
     let copied = text.clone();
+    let signature = match clock(message.timestamp) {
+        Some(time) => format!("— você, {time}"),
+        None => "— você".to_string(),
+    };
 
     div()
         .id(SharedString::from(format!("request-turn-{index}")))
@@ -332,27 +443,21 @@ fn request(
         .flex()
         .flex_col()
         .px(px(theme::CHAT_INSET))
-        .pt(px(theme::S5))
-        .pb(px(theme::S2))
-        .gap(px(2.))
-        .items_end()
-        // O pedido é o único bloco com superfície própria: ele marca onde cada
-        // turno começa. Horário e cópia ficam sob ele, visíveis no hover.
+        .pt(px(theme::S6))
+        .pb(px(theme::S1))
+        .gap(px(theme::S1))
         .child(
             div()
                 .id(SharedString::from(format!("user-{index}")))
-                .max_w(relative(theme::REQUEST_MAX_FRACTION))
+                .w_full()
                 .flex()
                 .flex_col()
                 .gap(px(theme::S2))
-                .rounded(theme::r_surface())
-                .bg(theme::surface_2())
-                .border_1()
-                .border_color(theme::line_soft())
-                .px(px(theme::S4))
-                .py(px(theme::S3))
-                .text_size(px(theme::PROSE))
-                .line_height(px(theme::PROSE_LINE))
+                .font_family(theme::FONT_PROSE)
+                .italic()
+                .text_size(px(theme::QUOTE))
+                .line_height(px(theme::QUOTE + 10.))
+                .text_color(theme::text())
                 .children(markdown::blocks(&text, &style, &state.cwd, SharedString::from(format!("request-text-{index}")).into(), state.search_query.as_deref(), window, cx)),
         )
         .child(
@@ -362,6 +467,12 @@ fn request(
                 .items_center()
                 .gap(px(theme::S2))
                 .h(px(24.))
+                .child(
+                    div()
+                        .text_size(px(theme::TEXT_SM))
+                        .text_color(theme::faint())
+                        .child(SharedString::from(signature)),
+                )
                 .when_some(
                     crate::metadata::describe(
                         Some((message.timestamp, message.timestamp_origin)),
@@ -386,20 +497,21 @@ fn request(
         .into_any_element()
 }
 
+/// A resposta, e — com margem disponível — a atividade do turno ao lado.
+// O contexto de render (estado, janela, app) mais o modo da margem passam do
+// limite do clippy; agrupar só para isso esconderia de onde vem cada um.
+#[allow(clippy::too_many_arguments)]
 fn assistant_turn(
     state: &AppState,
     message: &Message,
     index: usize,
     weak: &WeakEntity<AppState>,
+    margin_mode: bool,
     window: &mut Window,
     cx: &mut App,
-) -> AnyElement {
+) -> (AnyElement, Vec<AnyElement>) {
     let style = markdown_style();
     let streaming = message.streaming;
-    let model = message
-        .model
-        .clone()
-        .unwrap_or_else(|| "Assistente".to_string());
     let duration = message.timing.elapsed_ms.map(crate::metadata::duration);
     let (response_status, response_error) = crate::metadata::assistant_status(
         streaming,
@@ -415,10 +527,10 @@ fn assistant_turn(
         .flex_col()
         .gap(px(theme::S3))
         .px(px(theme::CHAT_INSET))
-        .pt(px(theme::S3))
-        .pb(px(theme::S5))
-        // Cabeçalho mínimo: só o modelo (valor técnico, fonte de máquina) e o
-        // que importa agora. Horário, origem e cópia ficam no hover do turno.
+        .pt(px(theme::S4))
+        .pb(px(theme::S2))
+        // Linha discreta: estado só quando importa; horário, duração e cópia
+        // aparecem no hover do turno. O modelo já está no topo da página.
         .child(
             div()
                 .flex()
@@ -426,14 +538,7 @@ fn assistant_turn(
                 .flex_wrap()
                 .items_center()
                 .gap(px(theme::S2))
-                .min_h(px(24.))
-                .child(
-                    div()
-                        .font_family(theme::FONT_MONO)
-                        .text_size(px(theme::TEXT_XS))
-                        .text_color(theme::faint())
-                        .child(SharedString::from(model)),
-                )
+                .min_h(px(20.))
                 .when(streaming || response_error || matches!(message.stop_reason.as_deref(),
                     Some("aborted" | "length" | "toolUse" | "deferred")), |el| {
                     el.child(div().text_size(px(theme::TEXT_XS))
@@ -460,7 +565,7 @@ fn assistant_turn(
                 .when_some(duration, |el, duration| {
                     el.child(
                         div()
-                            .font_family(theme::FONT_MONO)
+                            .font_family(theme::font_mono())
                             .text_size(px(theme::TEXT_XS))
                             .text_color(theme::faint())
                             .child(SharedString::from(duration)),
@@ -477,18 +582,28 @@ fn assistant_turn(
         );
 
     // Percorre os blocos preservando a ordem, mas agrupando ferramentas
-    // consecutivas num único grupo expansível.
+    // consecutivas. Com margem, o grupo vira nota na margem; aberto (algum
+    // detalhe expandido), também aparece completo na coluna.
     let mut pending: Vec<(usize, ToolRef<'_>)> = Vec::new();
     let mut blocks: Vec<AnyElement> = Vec::new();
+    let mut margin: Vec<AnyElement> = Vec::new();
 
     let flush = |pending: &mut Vec<(usize, ToolRef<'_>)>,
                  blocks: &mut Vec<AnyElement>,
+                 margin: &mut Vec<AnyElement>,
                  state: &AppState| {
         if pending.is_empty() {
             return;
         }
         let group: Vec<(usize, ToolRef<'_>)> = std::mem::take(pending);
-        blocks.push(activity_group(state, index, &group, weak));
+        if margin_mode {
+            margin.push(margin_activity(index, margin.len(), &group, weak));
+            if group.iter().any(|(_, tool)| tool.expanded()) {
+                blocks.push(activity_group(state, index, &group, weak));
+            }
+        } else {
+            blocks.push(activity_group(state, index, &group, weak));
+        }
     };
 
     for (block_index, block) in message.blocks.iter().enumerate() {
@@ -496,7 +611,7 @@ fn assistant_turn(
             Block::Tool(card) => pending.push((block_index, ToolRef::Tool(card))),
             Block::Bash(card) => pending.push((block_index, ToolRef::Bash(card))),
             Block::Text(text) => {
-                flush(&mut pending, &mut blocks, state);
+                flush(&mut pending, &mut blocks, &mut margin, state);
                 if text.trim().is_empty() {
                     continue;
                 }
@@ -505,9 +620,8 @@ fn assistant_turn(
                         .w_full()
                         .flex()
                         .flex_col()
-                        .gap(px(theme::S3))
-                        // A resposta é o maior texto da tela: tamanho e
-                        // entrelinha de leitura, não os da interface.
+                        .gap(px(theme::S3 + 2.))
+                        // A resposta é o maior texto da tela: serifa de leitura.
                         .text_size(px(theme::PROSE))
                         .line_height(px(theme::PROSE_LINE))
                         .children(markdown::blocks(text, &style, &state.cwd, SharedString::from(format!("reply-text-{index}-{block_index}")).into(), state.search_query.as_deref(), window, cx))
@@ -519,16 +633,16 @@ fn assistant_turn(
                 done,
                 expanded,
             } => {
-                flush(&mut pending, &mut blocks, state);
+                flush(&mut pending, &mut blocks, &mut margin, state);
                 blocks.push(reasoning(index, block_index, text, *done, *expanded, weak));
             }
             Block::Note { label, text, tone } => {
-                flush(&mut pending, &mut blocks, state);
+                flush(&mut pending, &mut blocks, &mut margin, state);
                 blocks.push(note(label, text, crate::ui::tone_color(*tone)));
             }
         }
     }
-    flush(&mut pending, &mut blocks, state);
+    flush(&mut pending, &mut blocks, &mut margin, state);
 
     if blocks.is_empty() && streaming {
         blocks.push(
@@ -563,6 +677,83 @@ fn assistant_turn(
         ));
     }
 
+    (column.into_any_element(), margin)
+}
+
+/// A atividade de um grupo de ferramentas como nota de margem: uma linha por
+/// chamada, em fonte de máquina. Clicar abre os detalhes na coluna.
+fn margin_activity(
+    message_index: usize,
+    group_index: usize,
+    group: &[(usize, ToolRef<'_>)],
+    weak: &WeakEntity<AppState>,
+) -> AnyElement {
+    let elapsed: u64 = group
+        .iter()
+        .map(|(_, tool)| match tool {
+            ToolRef::Tool(card) => card.elapsed_ms.unwrap_or(0),
+            ToolRef::Bash(_) => 0,
+        })
+        .sum();
+    let count = group.len();
+    let mut heading = format!("{count} {}", if count == 1 { "AÇÃO" } else { "AÇÕES" });
+    if elapsed > 0 {
+        heading.push_str(&format!(" · {:.1} S", elapsed as f64 / 1000.));
+    }
+    let mut column = div()
+        .id(SharedString::from(format!("margin-activity-{message_index}-{group_index}")))
+        .pt(px(theme::S5))
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .child(
+            div()
+                .text_size(px(theme::TEXT_MICRO))
+                .letter_spacing(px(0.9))
+                .text_color(theme::faint())
+                .child(SharedString::from(heading)),
+        );
+    for (block_index, tool) in group {
+        let block_index = *block_index;
+        let (glyph, color, _) = crate::ui::status_word(tool.status());
+        let failed = tool.status() == ToolStatus::Failed;
+        let label = match tool {
+            ToolRef::Tool(card) => format!("{} {}", card.name, card.summary()),
+            ToolRef::Bash(card) => format!("$ {}", card.command),
+        };
+        let weak = weak.clone();
+        let expandable = matches!(tool, ToolRef::Tool(_));
+        column = column.child(
+            div()
+                .id(SharedString::from(format!("margin-tool-{message_index}-{block_index}")))
+                .flex()
+                .flex_row()
+                .items_start()
+                .gap(px(theme::S2))
+                .rounded(theme::r_small())
+                .when(expandable, |el| {
+                    el.cursor_pointer()
+                        .hover(|style| style.bg(theme::hover()))
+                        .on_click(move |_event: &ClickEvent, _window: &mut Window, cx: &mut App| {
+                            weak.update(cx, |state, cx| {
+                                state.toggle_tool(message_index, block_index, cx)
+                            })
+                            .ok();
+                        })
+                })
+                .child(div().pt(px(3.)).child(icon(glyph, 11., color)))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .font_family(theme::font_mono())
+                        .text_size(px(theme::TEXT_XS))
+                        .line_height(px(17.))
+                        .text_color(if failed { theme::failure() } else { theme::faint() })
+                        .child(SharedString::from(label)),
+                ),
+        );
+    }
     column.into_any_element()
 }
 
@@ -807,7 +998,7 @@ fn activity_group(
                 .when(elapsed > 0, |el| {
                     el.child(
                         div()
-                            .font_family(theme::FONT_MONO)
+                            .font_family(theme::font_mono())
                             .text_size(px(theme::TEXT_XS))
                             .text_color(theme::faint())
                             .child(SharedString::from(format!("{:.1}s", elapsed as f64 / 1000.))),
@@ -938,7 +1129,7 @@ fn tool_row(
         .child(
             div()
                 .flex_none()
-                .font_family(theme::FONT_MONO)
+                .font_family(theme::font_mono())
                 .text_size(px(theme::MONO))
                 .text_color(theme::dim())
                 .child(SharedString::from(card.name.clone())),
@@ -948,7 +1139,7 @@ fn tool_row(
                 .flex_1()
                 .min_w(px(0.))
                 .truncate()
-                .font_family(theme::FONT_MONO)
+                .font_family(theme::font_mono())
                 .text_size(px(theme::MONO))
                 .text_color(theme::faint())
                 .child(SharedString::from(summary)),
@@ -1046,7 +1237,7 @@ fn command_row(
                         .flex_1()
                         .min_w(px(0.))
                         .truncate()
-                        .font_family(theme::FONT_MONO)
+                        .font_family(theme::font_mono())
                         .text_size(px(theme::MONO))
                         .text_color(theme::text())
                         .child(super::selectable::plain(SharedString::from(format!("bash-command-text-{message_index}-{block_index}")).into(), &card.command)),
@@ -1257,7 +1448,7 @@ fn section(prefix: &str, label: &str, body: &str) -> AnyElement {
                 .bg(theme::inset())
                 .border_1()
                 .border_color(theme::line_soft())
-                .font_family(theme::FONT_MONO)
+                .font_family(theme::font_mono())
                 .text_size(px(theme::MONO))
                 .line_height(px(19.))
                 .text_color(theme::dim())

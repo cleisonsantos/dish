@@ -198,7 +198,7 @@ fn pair(label: &str, value: String, mono: bool) -> AnyElement {
                     .id(SharedString::from(format!("inspector-pair-{label}")))
                     .min_w(px(0.))
                     .truncate()
-                    .font_family(theme::FONT_MONO)
+                    .font_family(theme::font_mono())
                     .text_size(px(theme::TEXT_SM))
                     .text_color(theme::dim())
                     .tooltip(move |_, cx| {
@@ -227,7 +227,7 @@ fn pair(label: &str, value: String, mono: bool) -> AnyElement {
                 .min_w(px(0.))
                 .text_size(px(theme::TEXT_SM))
                 .text_color(theme::dim())
-                .when(mono, |el| el.font_family(theme::FONT_MONO))
+                .when(mono, |el| el.font_family(theme::font_mono()))
                 .child(SharedString::from(value)),
         )
         .into_any_element()
@@ -326,7 +326,7 @@ fn files_section(state: &AppState) -> Div {
                         .flex_1()
                         .min_w(px(0.))
                         .truncate()
-                        .font_family(theme::FONT_MONO)
+                        .font_family(theme::font_mono())
                         .text_size(px(theme::TEXT_XS))
                         .text_color(if file.edited {
                             theme::dim()
@@ -385,7 +385,7 @@ fn context_section(state: &AppState) -> Div {
                         .justify_between()
                         .child(
                             div()
-                                .font_family(theme::FONT_MONO)
+                                .font_family(theme::font_mono())
                                 .text_size(px(theme::TITLE))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(if ratio > 0.6 { color } else { theme::text() })
@@ -393,7 +393,7 @@ fn context_section(state: &AppState) -> Div {
                         )
                         .child(
                             div()
-                                .font_family(theme::FONT_MONO)
+                                .font_family(theme::font_mono())
                                 .text_size(px(theme::TEXT_XS))
                                 .text_color(theme::dim())
                                 .child(SharedString::from(format!(
@@ -505,7 +505,7 @@ fn timeline_section(state: &AppState) -> Div {
                     div()
                         .flex_none()
                         .w(px(22.))
-                        .font_family(theme::FONT_MONO)
+                        .font_family(theme::font_mono())
                         .text_size(px(theme::TEXT_XS))
                         .text_color(theme::faint())
                         .child(SharedString::from(turn.number.to_string())),
@@ -534,7 +534,7 @@ fn timeline_section(state: &AppState) -> Div {
                                 .when_some(turn.duration, |el, duration| {
                                     el.child(
                                         div()
-                                            .font_family(theme::FONT_MONO)
+                                            .font_family(theme::font_mono())
                                             .text_size(px(theme::TEXT_XS))
                                             .text_color(theme::faint())
                                             .child(SharedString::from(duration)),

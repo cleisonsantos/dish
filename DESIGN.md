@@ -1,123 +1,96 @@
 ---
 name: Dish
-description: The Graphite Instrument Panel — quiet, precise desktop controls for Pi.
+description: Editorial calmo — a conversation with an agent, set like a page.
 colors:
-  bg: "#22272f"
-  surface: "#171b21"
-  surface-2: "#2b323c"
-  inset: "#101318"
-  hover: "#323a46"
-  line: "#39424f"
-  line-soft: "#2a313c"
-  line-strong: "#556070"
-  text: "#edf0f4"
-  dim: "#aab3bf"
-  faint: "#9ca8b8"
-  on-accent: "#171b21"
-  effort-off: "#6c767b"
-  effort-minimal: "#68808d"
-  effort-low: "#5489a4"
-  effort-medium: "#6185cc"
-  effort-high: "#9776e5"
-  effort-xhigh: "#de54c1"
-  effort-max: "#fe5462"
-  running: "#4fb3a5"
-  failure: "#cf5f92"
-  warn: "#d8a24a"
-  attention: "#2ecc71"
+  # Noite (id dish-dark): the canonical dark theme.
+  bg: "#131614"
+  surface: "#171a18"
+  surface-2: "#1d211e"
+  inset: "#0e100f"
+  hover: "#252a27"
+  line: "#2a2f2c"
+  line-soft: "#212522"
+  line-strong: "#3a403c"
+  text: "#e9ece7"
+  dim: "#b5bcb5"
+  faint: "#8e968f"
+  accent: "#86c2ac"
+  on-accent: "#0f1a16"
+  running: "#86c2ac"
+  failure: "#e0876a"
+  warn: "#d9a441"
+  attention: "#e9ece7"
   git-added: "#81b88b"
   git-removed: "#d98282"
-  # Variante clara: `system` segue o desktop; os temas embutidos são fixos.
-  light-bg: "#f7f9fc"
-  light-surface: "#e9edf3"
+  # Papel (id dish-light): the light counterpart.
+  light-bg: "#f6f6f2"
+  light-surface: "#eeefea"
   light-surface-2: "#ffffff"
-  light-inset: "#e3e8ee"
-  light-hover: "#e8edf3"
-  light-line: "#d5dbe3"
-  light-line-soft: "#e2e7ee"
-  light-line-strong: "#c3cbd5"
-  light-text: "#1a1f26"
-  light-dim: "#3f4753"
-  light-faint: "#545c68"
+  light-inset: "#ecede6"
+  light-hover: "#e6e8e1"
+  light-line: "#d6d9d0"
+  light-line-soft: "#e2e4dc"
+  light-line-strong: "#c3c7bc"
+  light-text: "#1b1e1c"
+  light-dim: "#444a45"
+  light-faint: "#5e655f"
+  light-accent: "#2e6b58"
   light-on-accent: "#ffffff"
-  light-effort-off: "#6a7378"
-  light-effort-minimal: "#53778b"
-  light-effort-low: "#4a778f"
-  light-effort-medium: "#4670c3"
-  light-effort-high: "#7d54de"
-  light-effort-xhigh: "#ca27a8"
-  light-effort-max: "#e50c1e"
-  light-running: "#1f7a6d"
-  light-failure: "#a93a67"
-  light-warn: "#8a5c10"
-  light-attention: "#187237"
-  light-git-added: "#2f6f38"
-  light-git-removed: "#a83c3c"
-  # Presets: re-derivam só os neutros e herdam semânticos e rampa do base.
-  paper-bg: "#f5f1e7"
-  paper-surface: "#faf7f0"
-  paper-surface-2: "#fffdf9"
-  paper-inset: "#eae4d6"
-  paper-hover: "#efeadd"
-  paper-line: "#ddd5c3"
-  paper-line-soft: "#e8e1d2"
-  paper-line-strong: "#ccc3ae"
-  paper-text: "#27231a"
-  paper-dim: "#47402f"
-  paper-faint: "#5a523f"
-  paper-ok: "#47402f"
-  dim-bg: "#17191e"
-  dim-surface: "#1c1f25"
-  dim-surface-2: "#23272e"
-  dim-inset: "#131519"
-  dim-hover: "#282d35"
-  dim-line: "#2e333c"
-  dim-line-soft: "#262a32"
-  dim-line-strong: "#3b414c"
-  dim-text: "#d3d7dd"
-  dim-dim: "#a4acb8"
-  dim-faint: "#8b929e"
-  dim-ok: "#a4acb8"
+  light-running: "#2e6b58"
+  light-failure: "#a8432b"
+  light-warn: "#8a6212"
+  light-attention: "#1b1e1c"
+  # Presets re-derive neutrals and bring their own accent.
+  slate-bg: "#1a1d24"
+  slate-accent: "#8fb0e8"
+  mist-bg: "#f3f1ec"
+  mist-accent: "#3e5c8a"
 typography:
+  prose:
+    fontFamily: Source Serif 4 (bundled)
+    fontSize: "18px"
+    lineHeight: "30px"
+  quote:
+    fontFamily: Source Serif 4 (bundled), italic
+    fontSize: "21px"
+    lineHeight: "31px"
+  page-title:
+    fontFamily: Source Serif 4 (bundled), semibold
+    fontSize: "34px"
+    lineHeight: "42px"
   display:
-    fontFamily: Noto Sans
-    fontSize: "32px"
-    fontWeight: 500
-  title:
-    fontFamily: Noto Sans
-    fontSize: "20px"
-    fontWeight: 500
-  body:
-    fontFamily: Noto Sans
-    fontSize: "15px"
-    lineHeight: "23px"
+    fontFamily: Source Serif 4 (bundled)
+    fontSize: "46px"
   text:
-    fontFamily: Noto Sans
+    fontFamily: Geist (bundled)
     fontSize: "13px"
     lineHeight: "20px"
   text-sm:
-    fontFamily: Noto Sans
+    fontFamily: Geist (bundled)
     fontSize: "12px"
   text-xs:
-    fontFamily: Noto Sans
+    fontFamily: Geist (bundled)
     fontSize: "11.5px"
-  text-micro:
-    fontFamily: Noto Sans
-    fontSize: "11px"
   mono:
-    fontFamily: JetBrains Mono
+    fontFamily: JetBrains Mono, else the first installed monospace
     fontSize: "12.5px"
   code:
-    fontFamily: JetBrains Mono
+    fontFamily: JetBrains Mono, else the first installed monospace
     fontSize: "13px"
     lineHeight: "20px"
+layout:
+  rail: "56px"
+  drawer: "320px (200–420, draggable when docked)"
+  drawer-docks-from: "1120px window width"
+  reading-column: "712px (680px text + 16px inset each side)"
+  margin: "260px"
+  inspector: "316px"
 rounded:
   control: "8px"
   small: "6px"
-  surface: "14px"
-  technical: "4px"
-  action: "10px"
-  keycap: "4px"
+  row: "10px"
+  composer: "16px"
+  pill: "half the height"
 spacing:
   s1: "4px"
   s2: "8px"
@@ -125,224 +98,154 @@ spacing:
   s4: "16px"
   s5: "24px"
   s6: "32px"
-components:
-  send:
-    backgroundColor: "{colors.text}"
-    textColor: "{colors.on-accent}"
-    rounded: "{rounded.action}"
-    size: "34px"
-  send-hover:
-    backgroundColor: "{colors.dim}"
-  send-disabled:
-    backgroundColor: "{colors.line}"
-    textColor: "{colors.faint}"
-  action:
-    textColor: "{colors.dim}"
-    typography: "{typography.text-sm}"
-    rounded: "{rounded.control}"
-    padding: "7px 12px"
-  action-hover:
-    backgroundColor: "{colors.hover}"
-  composer:
-    backgroundColor: "{colors.surface-2}"
-    rounded: "{rounded.surface}"
-  search:
-    backgroundColor: "{colors.inset}"
-    rounded: "{rounded.technical}"
-    padding: "8px 10px"
-    height: "38px"
-  nav-active:
-    backgroundColor: "{colors.surface-2}"
-    textColor: "{colors.text}"
-    rounded: "{rounded.control}"
-    padding: "6px 8px 6px 12px"
-  keycap:
-    backgroundColor: "{colors.inset}"
-    textColor: "{colors.dim}"
-    typography: "{typography.text-xs}"
-    rounded: "{rounded.keycap}"
-    padding: "3px 7px"
-  user-request:
-    backgroundColor: "{colors.surface-2}"
-    rounded: "{rounded.surface}"
-    padding: "8px 16px"
 ---
 
 # Design System: Dish
 
 ## Overview
 
-**Creative North Star: "The Graphite Instrument Panel"**
+**Creative North Star: "Editorial calmo".** A conversation with a coding agent
+is read far more than it is operated, so Dish sets it like a page: a serif
+title, the request as a pull quote, answers in a reading serif at a
+comfortable measure, and the agent's mechanical activity pushed to the margin
+like annotations. Chrome is quiet — a thin rail, a breadcrumb, a single accent
+per theme — and appears only where it means "you can act here" or "the agent is
+alive".
 
-Dish is quiet, precise, and restrained. Graphite layers organize the workspace, compact controls expose agent activity, and readable answers take priority over decoration. Depth is felt, not measured: in the dark theme each rising layer carries a touch more blue than the one below; in the light theme it rises toward white while recessed surfaces darken. Hover states read at a glance, and the accent appears only where it means "this is your turn".
+`src/theme.rs` is the implementation authority for tokens. The approved
+mockups live in the "Dish Editorial" design canvas (issue #206); the brand mark
+lives in `assets/brand/`.
 
-This is a record of the existing Rust/GPUI desktop implementation, not a redesign or a web theme. `src/theme.rs` is the implementation authority for shared tokens; component sources own their local exceptions. Browser-preview snippets in `.impeccable/design.json` illustrate native patterns but are not production components. This documentation was extracted from source, not validated against a fresh rendered capture.
+**Key characteristics**
 
-The system is a value, not a stylesheet: `Theme` carries every token below, the dark set is canonical, and the light set (`light-*`) re-derives each role for light surfaces. `system`, `dark`, and `light` are the user's choices; nothing about the layout or components changes between them.
-
-**Key Characteristics:**
-- Graphite neutrals separated by tone, hairlines, and a rising blue temperature.
-- A Pi effort ladder independent of operational status.
-- Readable proportional prose and monospace technical content.
-- Flat surfaces at rest; structural shadows for floating UI.
-- Compact controls, progressive disclosure, and distinct send/stop actions.
+- Paper and ink: a quiet ground, a darker rail, recessed wells for code.
+  Separation by tone and hairlines, not by cards.
+- One accent per theme. It never encodes reasoning effort.
+- Reading serif for what people read; Geist for interface; monospace for
+  anything a machine produced.
+- Activity in the margin when there is room, inline when there is not.
+- States (running, failure, warning, new) are always paired with a shape or a
+  word.
 
 ## Colors
 
-Graphite neutrals form the workspace; the Pi effort ladder and independent activity/status signals carry meaning. Four built-in themes share this vocabulary: `dish-dark` holds the canonical values above, `dish-light` carries the `light-*` counterparts, and the presets `dish-paper` (`paper-*`) and `dish-dim` (`dim-*`) re-derive the neutrals. Appearance is a user preference (`system`, `dark`, or `light`, plus an explicit theme) resolved on every render, so switching themes — including following the desktop — never restarts the app.
+Four built-in themes share one vocabulary: **Noite** (`dish-dark`, canonical
+dark), **Ardósia** (`dish-slate`), **Papel** (`dish-light`, canonical light)
+and **Névoa** (`dish-mist`). Old ids `dish-dark`/`dish-light` were kept so
+saved preferences resolve; the six presets removed in the redesign fall back
+to the default for the appearance. User themes (`docs/themes.md`) declare the
+roles they want, including `accent`, and inherit the rest.
 
-### Primary
+### Neutrals
 
-The primary accent is dynamic, not a fixed brand color. `effort-off`, `effort-minimal`, `effort-low`, `effort-medium`, `effort-high`, `effort-xhigh`, and `effort-max` follow Pi's dark-theme reasoning colors: quiet slate through blue, violet, magenta, and coral. Unknown levels and models without reasoning controls fall back to off.
+- `bg`: the page — conversation, welcome and settings.
+- `surface`: the rail and the sessions drawer.
+- `surface-2`: the composer and raised controls.
+- `inset`: code wells, search fields.
+- `hover`: row hover, the active session row, the active rail button.
+- `line-soft`, `line`, `line-strong`: hairlines from subtle to firm.
+- `text`, `dim`, `faint`: reading text, secondary text, metadata.
 
-Use the active effort color for composer focus, selected navigation edges, command selection, reasoning controls, and supported accent actions. `accent_edge()` applies 42% opacity; `accent_hover()` moves the accent away from the current background (lighter on dark, darker on light). These are computed states, not additional fixed palette tokens.
+### Accent
 
-`dish-light` keeps each level's hue and lowers its lightness until the level reads at 4.5:1 on white: the light ladder is a documented derivation of the same ramp, not a second set of meanings. Both presets inherit the ramp of the theme they derive from, so the ladder never drifts from the base.
+`accent()` returns the theme's `brand` colour. It marks the send button (filled
+only when there is something to send), keyboard focus, the composer border
+while focused or while Pi works, the chosen effort level, the rail mark and the
+running indicator. `accent_edge()` (42%) and `accent_hover()` are computed
+states. **The Accent-Is-Not-Effort Rule:** the reasoning level is shown as text
+("raciocínio alto"); it never recolours the window.
 
-### Neutral
+### Status
 
-- `bg`: deepest workspace backdrop.
-- `surface`: navigation, inspector, and floating panels.
-- `surface-2`: composer, user requests, and active rows.
-- `inset`: recessed code, search, and technical output.
-- `hover`: interactive row hover and keyboard-highlight backgrounds, one step above the raised surface.
-- `line-soft`, `line`, `line-strong`: subtle separators through stronger control boundaries.
-- `text`, `dim`, `faint`: primary reading text, secondary controls, and metadata.
-- `on-accent`: foreground on accent-filled controls (the dark backdrop in dark, white in light).
-- Success deliberately reuses `dim`; the light theme darkens it instead of reusing the dark value.
-
-### Presets
-
-Presets change only the neutrals. `dish-paper` is a warm light theme for bright rooms; `dish-dim` lifts the dark surfaces and softens the text for a lower-contrast dark — still above the 4.5:1 floor the tests enforce, not below it. Their `on-accent`, status signals and effort ladder come from `dish-light` and `dish-dark` respectively, so a preset can never invalidate the status separation.
-
-Themes created by users (`docs/themes.md`) follow the same rule: declare the roles you want, inherit the rest from the `dark` or `light` base. They appear in the same picker as the built-ins.
-
-### Independent Status Signals
-
-`running` is sea-glass teal; `failure` is carmine-magenta; `warn` is amber; `attention` is new-content green. Git additions and removals use separate muted green and rose tokens. Status is reinforced by icons, words, and tooltips.
-
-**The Effort-Is-Not-Status Rule.** Reasoning intensity must not stand in for execution, success, or failure. Maximum effort is coral, not an error state.
-
-The theme tests enforce normal-text contrast of at least 4.5:1 across core surfaces and perceptual separation between status colors and effort levels. They do not constitute a complete accessibility audit.
+`running` equals the accent ("the agent is alive"); `failure` is rust, `warn`
+is ochre; `attention` (new, unread content) is the strongest ink, distinguished
+by weight and a filled dot rather than by hue. Theme tests keep running,
+failure, warning and attention at ΔE ≥ 25 from each other and readable at
+4.5:1 on every surface where they appear.
 
 ## Typography
 
-**Interface and body font:** Noto Sans.
-**Technical font:** JetBrains Mono.
+Fonts are bundled (OFL-1.1, `assets/fonts/`) and registered at startup:
 
-Proportional text supports reading and interface scanning; monospace identifies code, commands, model identifiers, paths, and technical values. Assistant prose and user requests are proportional (15px with 23px leading); only code, commands, model identifiers, paths and technical values use monospace. Font names are requested by GPUI; this record does not claim bundled fonts or a verified fallback stack.
+- **Source Serif 4** (`theme::FONT_PROSE`): page titles, the request quote,
+  assistant prose, the welcome question, settings and drawer headings, the
+  composer's writing text.
+- **Geist** (`theme::font_ui()`): interface text, controls, metadata.
+- **Monospace** (`theme::font_mono()`): code, commands, tool calls, model ids,
+  paths, branch names. JetBrains Mono when installed, else the first installed
+  monospace from `MONO_FONT_CANDIDATES` — never a proportional fallback.
 
-### Hierarchy
-
-- `display`: 32px, used only by the empty-state heading.
-- `title`: 20px semibold conversation titles.
-- `body`: user prompts and assistant prose (15px / 23px).
-- `text`: default interface text.
-- `text-sm`: controls and secondary rows.
-- `text-xs`: metadata, paths, durations, and section labels.
-- `text-micro`: sparingly used technical micro-labels.
-- `mono`: tool names and argument summaries.
-- `code`: code-block text with its own line height.
-
-The only display-sized type is the empty-state heading. Markdown headings are content-renderer styles, not replacements for the interface hierarchy. Most labels use normal case; the code-language label is uppercase with local letter spacing (0.9px).
-
-**The Reading-First Rule.** Keep answers visually larger than the metadata and controls surrounding them; do not turn all assistant output into monospace.
+Hierarchy: `DISPLAY` 46 (welcome only) › `PAGE_TITLE` 34 › `QUOTE` 21 italic ›
+`PROSE` 18/30 › `TEXT` 13 › `TEXT_SM` 12 › `TEXT_XS` 11.5 › `TEXT_MICRO` 11.
+**The Reading-First Rule:** answers are the largest running text on screen;
+metadata never competes with them.
 
 ## Layout
 
-The desktop shell combines a project/session navigation pane, a flexible conversation column, and an optional details inspector. The transcript consumes remaining height; the composer and Git context footer remain below it. Navigation and inspector have independent scrolling.
-
-Shared spacing is the six-step `s1`–`s6` scale. Header, conversation and composer share one fixed 16px inset (`CHAT_INSET`); composer writing content uses its own internal padding. Component-specific offsets are observed exceptions, not a new universal scale.
-
-The inspector is fixed-width (316px). On first initialization it opens for viewport widths at or above (1120px), unless a saved preference already supplies the choice. Below that threshold it overlays the conversation instead of squeezing it. Later toggles remain user-controlled.
-
-Navigation is draggable within (200–420px). Settings width is viewport width minus (48px), capped at (840px), with a local menu width (184px). These are desktop adaptation rules; no mobile-web layouts are implemented or promised here.
-
-The composer grows until its editor reaches (220px), then scrolls. Model lists cap at (300px); code blocks cap vertically at (420px). Wide Markdown tables scroll horizontally. The transcript is virtualized and follows the tail only while the reader has not scrolled away.
-
-## Elevation & Depth
-
-Flat tonal layers and hairlines convey depth at rest. Floating menus, dialogs, inspector overlays, tooltips, and the jump-to-end control can use the shared two-layer overlay shadow. Keyboard focus outlines are a separate structural cue, not surface elevation.
-
-### Shadow Vocabulary
-
-- `shadow_overlay()`: black layers with offsets/blur (0px 18px / 48px) and (0px 2px / 8px); exact alpha values are in the sidecar.
-- `focus_ring()`: an external outline with zero blur and spread (2px), using the effort accent at 90% opacity.
-- `accent_glow(strength)`: a soft effort-colored halo for the composer. It rests at a faint level while the composer has focus and pulses (2.4s) only while Pi is working.
-- Overlays (settings, dialogs, narrow inspector, extension modals) sit on a translucent `scrim()` with `backdrop_blur` (10px) — a real GPU backdrop filter, not a flat dim.
-
-All scrims now share `theme::scrim()` and `theme::SCRIM_BLUR`.
-
-**The Flat-At-Rest Rule.** Reserve structural shadows for floating UI; ordinary panels and transcript containers separate by tone and hairlines.
-
-## Shapes
-
-Shared control and surface radii are distinct. Compact controls use `control`; the composer and user requests use `surface`; menu rows, option rows and inner wells use `small`. Preserve local exceptions: recessed technical fields/code (4px), send/stop actions (10px), keycaps (4px).
-
-Most separators and control strokes are hairlines (1px); active-navigation and semantic banner edges use (2px). Inner cards, menu rows and technical blocks use `small` (6px); recessed fields keep `technical` (4px); keycaps are 4px. Small indicators are softened squares rather than universal circular bullets. Circular geometry exists where functional: switch thumbs and the jump-to-end control.
+- **Rail** (56px, `theme::RAIL_WIDTH`): the mark, sessions, new session,
+  search, a running/pending indicator, settings. It never moves.
+- **Sessions drawer** (default 320px): docks beside the conversation from
+  1120px of window width (`DRAWER_DOCK_WIDTH`) and is resizable there; below
+  that it floats over the conversation and closes on an outside click.
+- **Conversation**: full bleed, no card. A 52px breadcrumb bar (`pasta /
+  título`, status, Details) closes with a `line-soft` hairline.
+- **The Reading-Column Rule.** Turns, the composer, banners and the Git footer
+  share one centred measure, `READING_WIDTH` (712px). When the remaining width
+  fits the column plus `MARGIN_WIDTH` (260px), the agent's activity moves to
+  the margin and column + margin centre together (`ui::marginalia`); the
+  composer and footer follow the column, not the window centre.
+- **Inspector** (316px) opens on demand from the Details button.
+- **Settings** is a page beside the rail, not a modal: a serif title over a
+  text menu on the left, the section on the right (max 640px). Clicking the
+  rail or pressing Esc returns to the conversation.
 
 ## Components
 
-### Buttons
+- **Page title**: the first message carries the conversation title (serif 34)
+  and a context line (`pasta · N mensagens · modelo`); it scrolls with the
+  text.
+- **Request**: an italic serif pull quote signed "— você, HH:MM". No bubble.
+  Copy and metadata appear on hover.
+- **Assistant turn**: no model label (it is in the page context line). Status
+  appears only while streaming or on error/abort; duration, metadata and copy
+  appear on hover.
+- **Marginalia**: per tool group, a micro heading ("3 AÇÕES · 2,1 S") and one
+  monospace line per call with its status icon; failures in `failure`.
+  Clicking a line opens its details inline in the column.
+- **Code**: inline code on `code_wash()` (a veil of the text colour); blocks in
+  an `inset` well with a small language header and copy.
+- **Composer**: a 16px-radius sheet in the column. Serif writing text; below,
+  attach (+), model (monospace), effort as text, and on the right Stop
+  ("Parar", rust) while Pi works and the circular Send (up arrow) — outlined
+  when empty, filled with the accent when there is something to send. The
+  character counter appears only with text or when expanded.
+- **Welcome**: folder eyebrow, the serif question, the composer, and three
+  suggestions as an index of serif lines separated by hairlines.
+- **Drawer**: serif "Sessões" title with open-folder and "Nova" pills; filters
+  as text tabs with an ink underline; rows without side stripes, a state
+  marker (filled dot = open/active/new, ring = saved, icons for pending and
+  error) and a state line; row actions (`…`) appear on hover, focus or when
+  active.
 
-Refined and restrained, with local variants rather than one universal primary button.
+## Motion
 
-- **Send:** inverse neutral fill (the `text` color) with `on-accent` foreground; hover shifts to `dim` and adds the effort glow. Empty/loading draft becomes a legible outline (`line-strong` border, `faint` label) so it neither disappears nor pretends to be available.
-- **Stop:** a separate outlined control with failure-colored icon; hover uses a 14% failure wash. It appears while streaming and never replaces Send.
-- **Inspector action:** compact outlined text button; hover raises the background and strengthens the border.
-- **Extension confirmation:** active effort fill with `on-accent` foreground; hover uses computed `accent_hover()`.
-- **Focus:** handling varies by component. Copy controls and navigation support explicit keyboard focus treatments; do not imply every clickable container already has equivalent keyboard support.
-
-### Chips
-
-Keycaps use an inset background, fine border, dim monospace label, and a small radius. Conversation-state badges combine an icon and status word on a raised surface. Queued work is currently a collapsible list with labeled rows, not a collection of decorative pills.
-
-### Cards / Containers
-
-User requests occupy quiet raised containers rather than speech bubbles, with no "Você" label; time and copy appear beneath them on hover. Assistant responses remain open on the conversation background, introduced by a minimal header (model and live status). Time, source and copy are revealed when the turn is hovered or when they receive keyboard focus. Consecutive tool calls group into expandable activity; technical details recess beneath their rows.
-
-The roomy composer is the principal writing surface. Floating picker panels use `surface`, a strong hairline, the surface radius, and overlay shadows. Do not apply floating-panel styling to every content section.
-
-### Inputs / Fields
-
-Composer focus changes the outer border to `accent_edge()`; the raised background remains stable. Model-search and extension-input fields are recessed with fine accent-edge strokes. Technical field heights and local radii differ from the composer.
-
-Model and effort controls sit inside the composer near the input they affect. Slash, model, and effort menus appear above it. Preserve text-selection and editor behaviors instead of substituting static text styled like a field.
-
-### Navigation
-
-Project groups contain session rows with truncated titles and supporting status information. Active rows use `surface-2` and an effort-colored left edge. Unread inactive rows use a green wash and edge; pending input gives the amber edge priority. Keyboard selection adds an external focus outline, separate from those signals.
-
-The session filter is a segmented control whose four segments share the row equally; it uses full names ("Todas", "Pendentes", "Novas", "Rodando") from 250px of navigation width and compact names below that.
-
-Collapsed navigation retains compact markers and contextual tooltips. Keep unread, running, pending, active, and saved states distinguishable by more than color alone.
-
-### Signature Components
-
-- **Effort selector:** the Pi ladder shows each available level in its own color; selected levels gain a marker and active label.
-- **Activity/tool row:** technical name and summary, elapsed metadata, explicit status icon/word, copy action, and expandable details.
-- **Context meter:** a 6px recessed rail with a gradient fill, headed by a large percentage; effort accent up to 60%, amber above 60%, and failure-colored above 85%.
-- **Live marker:** a repeating opacity pulse (1400ms) that exists only while Pi reports work. All animation goes through `src/ui/motion.rs` (cubic ease-out, at most 220ms for one-shot transitions) and honours Appearance › Reduce motion.
-- **Switch:** 34×18 track whose knob slides on the same easing; it is only animated when its state changes.
-- **Welcome:** a vertical effort-colored wash (`accent_wash()`) fades from the top of the empty state, over suggestion cards that light their border with `accent_edge()` on hover.
+All animation goes through `src/ui/motion.rs` and honours Reduce motion. A
+repeating animation runs only while Pi works (the running pulse, the composer
+glow); one-shot transitions stay under 220ms.
 
 ## Do's and Don'ts
 
-### Do:
-- **Do** use shared theme tokens and preserve documented local component exceptions.
-- **Do** separate reasoning intensity from operational status.
-- **Do** prioritize readable answers and reveal technical detail on demand.
-- **Do** retain independent send and stop controls.
-- **Do** reveal secondary per-turn actions (copy, timestamps) on hover and keyboard focus rather than repeating them on every turn.
-- **Do** pair consequential status colors with words or recognizable icons.
-- **Do** preserve tonal depth, hairline boundaries, and visible keyboard focus cues.
-- **Do** keep presets and user themes re-deriving the documented roles; a new role starts in `src/theme.rs` and this document, never in a theme file.
+### Do
 
-### Don't:
-- **Don't** turn every section into a raised or shadowed card.
-- **Don't** run a repeating animation unless Pi is actually working; one-shot transitions stop requesting frames at rest.
-- **Don't** use maximum-effort coral as the failure signal.
-- **Don't** replace proportional answer text with blanket monospace styling.
-- **Don't** infer a mobile layout, universal focus treatment, or accessibility certification from this record.
-- **Don't** reintroduce effort-colored transcript spines or an effort-filled send button based on outdated README descriptions.
-- **Don't** hardcode a hex value in a component or assume the dark surface ordering holds in light or in a preset.
+- Use tokens from `src/theme.rs`; a hex literal in a component is a defect.
+- Keep prose in the serif and machine output in monospace.
+- Put mechanical detail in the margin or behind a click, never in the way of
+  the answer.
+- Pair every status colour with an icon or a word.
+
+### Don't
+
+- Don't colour the interface by reasoning effort.
+- Don't wrap turns or sections in cards, side stripes or shadows.
+- Don't add a second filled action next to Send.
+- Don't run repeating animations while Pi is idle.

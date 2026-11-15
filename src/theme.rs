@@ -1,22 +1,22 @@
 //! Visual language for Dish.
 //!
-//! Three rules hold the design together:
+//! Three rules hold the design together ("Editorial calmo", issue #206):
 //!
-//! 1. **Graphite with separation.** Surfaces step up from the conversation to
-//!    the panels; nothing is outlined just to be outlined. Steps between
-//!    layers carry a touch more blue as they rise, so the depth is felt
-//!    instead of only measured.
-//! 2. **The accent is the effort meter.** Pi's own effort palette drives the
-//!    accent, so the window looks different when the model is thinking hard.
-//!    It stays concentrated on the effort control, focus and small indicators.
-//! 3. **Effort colours are not status colours.** Execution, success and failure
-//!    live on their own hues so that `max` never reads as an error — enforced by
+//! 1. **Paper and ink.** The conversation is a page: a quiet ground, a darker
+//!    rail and recessed wells for code. Surfaces separate by tone and
+//!    hairlines, never by cards for their own sake.
+//! 2. **One accent per theme.** The accent belongs to the theme (verdigris on
+//!    Noite, ink green on Papel) and marks what is alive or actionable: send,
+//!    focus, the running agent, the chosen effort level. The effort level is
+//!    shown as text; it no longer recolours the window.
+//! 3. **States stay apart.** Running, failure, warning and new content keep
+//!    distinct colours and always come with an icon or a word — enforced by
 //!    the tests at the bottom of this file, not by opinion.
 //!
-//! The palette is a [`Theme`] value. `dish-dark` is the original look and
-//! `dish-light` is its light counterpart. Six additional presets cover warm,
-//! dim, blue, plum, lavender and sage surfaces. User themes live in
-//! `$XDG_CONFIG_HOME/dish/themes/*.json` (see
+//! The palette is a [`Theme`] value: Noite (`dish-dark`), Ardósia
+//! (`dish-slate`), Papel (`dish-light`) and Névoa (`dish-mist`). The old ids
+//! `dish-dark`/`dish-light` are kept so saved preferences still resolve. User
+//! themes live in `$XDG_CONFIG_HOME/dish/themes/*.json` (see
 //! `docs/themes.md`). The active one is resolved at render time from the
 //! user's choice and the desktop, so switching never needs a restart.
 
@@ -24,41 +24,106 @@ use gpui::{BoxShadow, Hsla, Pixels, WindowAppearance, point, px, rgb_to_hsla, rg
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU8, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+
+/// Fonts compiled into the binary: the reading serif and the interface sans.
+pub fn bundled_fonts() -> Vec<std::borrow::Cow<'static, [u8]>> {
+    vec![
+        std::borrow::Cow::Borrowed(include_bytes!("../assets/fonts/source-serif-4/SourceSerif4-Regular.ttf").as_slice()),
+        std::borrow::Cow::Borrowed(include_bytes!("../assets/fonts/source-serif-4/SourceSerif4-It.ttf").as_slice()),
+        std::borrow::Cow::Borrowed(include_bytes!("../assets/fonts/source-serif-4/SourceSerif4-Semibold.ttf").as_slice()),
+        std::borrow::Cow::Borrowed(include_bytes!("../assets/fonts/geist/Geist-Regular.ttf").as_slice()),
+        std::borrow::Cow::Borrowed(include_bytes!("../assets/fonts/geist/Geist-Medium.ttf").as_slice()),
+        std::borrow::Cow::Borrowed(include_bytes!("../assets/fonts/geist/Geist-SemiBold.ttf").as_slice()),
+    ]
+}
+
+/// Reading font for prose (answers, requests, titles). Bundled, so it always resolves.
+pub const FONT_PROSE: &str = "Source Serif 4";
+
+/// Interface fonts, in order of preference. The first installed one wins.
+pub const UI_FONT_CANDIDATES: &[&str] = &[
+    "Geist", "Noto Sans", "Inter", "Segoe UI", "Cantarell", "Ubuntu", "DejaVu Sans",
+    "Helvetica Neue", "Liberation Sans", "Arial",
+];
+/// Monospace fonts, in order of preference. Anything a machine wrote must stay
+/// monospaced even when JetBrains Mono is missing: GPUI has no generic
+/// `monospace` fallback, so an absent family lands on a proportional face.
+pub const MONO_FONT_CANDIDATES: &[&str] = &[
+    "JetBrains Mono", "Cascadia Mono", "Cascadia Code", "Fira Code", "Source Code Pro",
+    "DejaVu Sans Mono", "Ubuntu Mono", "Liberation Mono", "Noto Sans Mono", "Consolas",
+    "Menlo", "Courier New",
+];
+
+static FONT_UI_FAMILY: OnceLock<&'static str> = OnceLock::new();
+static FONT_MONO_FAMILY: OnceLock<&'static str> = OnceLock::new();
+
+/// First candidate present in `installed` (case-insensitive), else the first candidate.
+fn pick_font(candidates: &[&'static str], installed: &[String]) -> &'static str {
+    candidates
+        .iter()
+        .copied()
+        .find(|candidate| installed.iter().any(|name| name.eq_ignore_ascii_case(candidate)))
+        .unwrap_or(candidates[0])
+}
+
+/// Resolve both families once, from the fonts the platform reports.
+pub fn resolve_fonts(installed: &[String]) {
+    let _ = FONT_UI_FAMILY.set(pick_font(UI_FONT_CANDIDATES, installed));
+    let _ = FONT_MONO_FAMILY.set(pick_font(MONO_FONT_CANDIDATES, installed));
+}
 
 /// Interface font.
-pub const FONT_UI: &str = "Noto Sans";
+pub fn font_ui() -> &'static str {
+    FONT_UI_FAMILY.get().copied().unwrap_or(UI_FONT_CANDIDATES[0])
+}
 /// Monospace font, used for anything a machine wrote.
-pub const FONT_MONO: &str = "JetBrains Mono";
+pub fn font_mono() -> &'static str {
+    FONT_MONO_FAMILY.get().copied().unwrap_or(MONO_FONT_CANDIDATES[0])
+}
 
 // ----------------------------------------------------------------- tipografia
 
-/// Reading text: the assistant's answer and the user's request.
-pub const PROSE: f32 = 15.0;
-/// Leading for reading text: 1.55 of the prose size, comfortable for long answers.
-pub const PROSE_LINE: f32 = 23.0;
+/// Reading text: the assistant's answer, set in the bundled serif.
+pub const PROSE: f32 = 18.0;
+/// Leading for reading text: 1.65 of the prose size, an editorial measure.
+pub const PROSE_LINE: f32 = 30.0;
+/// The conversation title at the top of the page.
+pub const PAGE_TITLE: f32 = 34.0;
+/// The user's request, set as an italic pull quote.
+pub const QUOTE: f32 = 21.0;
 /// Session title.
 pub const TITLE: f32 = 20.0;
 /// Default interface text.
 pub const TEXT: f32 = 13.0;
 /// Welcome heading: the only display-sized type in the workspace.
-pub const DISPLAY: f32 = 32.0;
+pub const DISPLAY: f32 = 46.0;
 /// Fixed inset, shared by header, transcript and composer at any window width.
 pub const CHAT_INSET: f32 = 16.0;
+/// Reading measure: transcript, composer and the rows around them share one
+/// centred column, so prose stays near 90 characters per line on wide windows.
+/// Includes the `CHAT_INSET` on both sides.
+pub const READING_WIDTH: f32 = 712.0;
+/// Marginalia: the agent's activity sits beside the column when there is room.
+pub const MARGIN_WIDTH: f32 = 260.0;
 /// Popup controls keep their own measure when the writing area grows.
 pub const EFFORT_MENU_WIDTH: f32 = 360.0;
 pub const COMPOSER_PICKER_WIDTH: f32 = 640.0;
 /// Code stays readable on wide windows and reveals overflow in long snippets.
-pub const CODE_BLOCK_MAX_WIDTH: f32 = 720.0;
+/// Code fills the reading column, aligned with tables and prose.
+pub const CODE_BLOCK_MAX_WIDTH: f32 = READING_WIDTH - 2.0 * CHAT_INSET;
 pub const CODE_BLOCK_MAX_HEIGHT: f32 = 340.0;
-/// User bubbles stay compact but long requests can use a wide workspace.
-pub const REQUEST_MAX_FRACTION: f32 = 0.9;
 /// The writing surface reserves space without growing on every short draft.
 pub const WRITING_HEIGHT: f32 = 52.0;
 /// Header rhythm shared by the conversation and inspector.
 pub const HEADER_HEIGHT: f32 = 72.0;
 /// Default expanded navigation width.
-pub const NAV_WIDTH: f32 = 264.0;
+pub const NAV_WIDTH: f32 = 320.0;
+/// The fixed icon rail on the left edge; the sessions drawer opens beside it.
+pub const RAIL_WIDTH: f32 = 56.0;
+/// From this window width the sessions drawer docks beside the conversation;
+/// below it the drawer floats over the conversation.
+pub const DRAWER_DOCK_WIDTH: f32 = 1120.0;
 /// Secondary interface text: rows, values.
 pub const TEXT_SM: f32 = 12.0;
 /// Metadata: paths, durations, counts.
@@ -129,8 +194,7 @@ pub enum AppearanceMode {
     System,
 }
 
-/// Um esquema de cores completo. `effort` guarda a rampa na ordem
-/// `off, minimal, low, medium, high, xhigh, max`.
+/// Um esquema de cores completo.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Theme {
     /// Identificador estável de um tema embutido, ou `user:<arquivo>`.
@@ -152,6 +216,8 @@ pub struct Theme {
     pub dim: Hsla,
     pub faint: Hsla,
     pub on_accent: Hsla,
+    /// O acento da identidade: fixo por tema, independente do esforço.
+    pub brand: Hsla,
     pub running: Hsla,
     pub failure: Hsla,
     pub warn: Hsla,
@@ -159,11 +225,8 @@ pub struct Theme {
     pub ok: Hsla,
     pub git_added: Hsla,
     pub git_removed: Hsla,
-    pub effort: [Hsla; 7],
 }
 
-/// Níveis de raciocínio, na ordem da rampa de esforço.
-pub const LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 fn base_theme(id: &str, name: &str, dark: bool) -> Theme {
     Theme {
@@ -183,6 +246,7 @@ fn base_theme(id: &str, name: &str, dark: bool) -> Theme {
         dim: c(0x000000ff),
         faint: c(0x000000ff),
         on_accent: c(0x000000ff),
+        brand: c(0x000000ff),
         running: c(0x000000ff),
         failure: c(0x000000ff),
         warn: c(0x000000ff),
@@ -190,207 +254,105 @@ fn base_theme(id: &str, name: &str, dark: bool) -> Theme {
         ok: c(0x000000ff),
         git_added: c(0x000000ff),
         git_removed: c(0x000000ff),
-        effort: [c(0x000000ff); 7],
     }
 }
 
-/// O visual original do Dish: grafite com separação.
+/// Noite: papel escuro levemente esverdeado, tinta clara e acento verdete.
+/// Mantém a id `dish-dark` para preferências salvas antes do redesign.
 fn dark_theme() -> Theme {
     Theme {
-        bg: c(0x22272fff),
-        surface: c(0x171b21ff),
-        surface_2: c(0x2b323cff),
-        inset: c(0x101318ff),
-        hover: c(0x323a46ff),
-        line: c(0x39424fff),
-        line_soft: c(0x2a313cff),
-        line_strong: c(0x556070ff),
-        text: c(0xedf0f4ff),
-        dim: c(0xaab3bfff),
-        faint: c(0x9ca8b8ff),
-        on_accent: c(0x171b21ff),
-        running: c(0x4fb3a5ff),
-        failure: c(0xcf5f92ff),
-        warn: c(0xd8a24aff),
-        attention: c(0x2ecc71ff),
-        ok: c(0xa6aeb8ff),
+        bg: c(0x131614ff),
+        surface: c(0x171a18ff),
+        surface_2: c(0x1d211eff),
+        inset: c(0x0e100fff),
+        hover: c(0x252a27ff),
+        line: c(0x2a2f2cff),
+        line_soft: c(0x212522ff),
+        line_strong: c(0x3a403cff),
+        text: c(0xe9ece7ff),
+        dim: c(0xb5bcb5ff),
+        faint: c(0x8e968fff),
+        on_accent: c(0x0f1a16ff),
+        brand: c(0x86c2acff),
+        running: c(0x86c2acff),
+        failure: c(0xe0876aff),
+        warn: c(0xd9a441ff),
+        attention: c(0xe9ece7ff),
+        ok: c(0xb5bcb5ff),
         git_added: c(0x81b88bff),
         git_removed: c(0xd98282ff),
-        effort: [
-            c(0x6c767bff),
-            c(0x68808dff),
-            c(0x5489a4ff),
-            c(0x6185ccff),
-            c(0x9776e5ff),
-            c(0xde54c1ff),
-            c(0xfe5462ff),
-        ],
-        ..base_theme("dish-dark", "Grafite", true)
+        ..base_theme("dish-dark", "Noite", true)
     }
 }
 
-/// O par claro do tema escuro: papel por papel, com as mesmas regras.
-///
-/// A rampa de esforço mantém o matiz do Pi e desce a luminosidade até 4,5:1
-/// sobre o branco — é a derivação documentada de `effort` para o tema claro.
+/// Papel: o par claro da Noite, papel quase branco e tinta verde-escura.
+/// Mantém a id `dish-light`.
 fn light_theme() -> Theme {
     Theme {
-        bg: c(0xf7f9fcff),
-        surface: c(0xe9edf3ff),
+        bg: c(0xf6f6f2ff),
+        surface: c(0xeeefeaff),
         surface_2: c(0xffffffff),
-        inset: c(0xe3e8eeff),
-        hover: c(0xe8edf3ff),
-        line: c(0xd5dbe3ff),
-        line_soft: c(0xe2e7eeff),
-        line_strong: c(0xc3cbd5ff),
-        text: c(0x1a1f26ff),
-        dim: c(0x3f4753ff),
-        faint: c(0x545c68ff),
+        inset: c(0xecede6ff),
+        hover: c(0xe6e8e1ff),
+        line: c(0xd6d9d0ff),
+        line_soft: c(0xe2e4dcff),
+        line_strong: c(0xc3c7bcff),
+        text: c(0x1b1e1cff),
+        dim: c(0x444a45ff),
+        faint: c(0x5e655fff),
         on_accent: c(0xffffffff),
-        running: c(0x1f7a6dff),
-        failure: c(0xa93a67ff),
-        warn: c(0x8a5c10ff),
-        attention: c(0x187237ff),
-        ok: c(0x3f4753ff),
+        brand: c(0x2e6b58ff),
+        running: c(0x2e6b58ff),
+        failure: c(0xa8432bff),
+        warn: c(0x8a6212ff),
+        attention: c(0x1b1e1cff),
+        ok: c(0x444a45ff),
         git_added: c(0x2f6f38ff),
         git_removed: c(0xa83c3cff),
-        effort: [
-            c(0x6a7378ff),
-            c(0x53778bff),
-            c(0x4a778fff),
-            c(0x4670c3ff),
-            c(0x7d54deff),
-            c(0xca27a8ff),
-            c(0xe50c1eff),
-        ],
-        ..base_theme("dish-light", "Papel frio", false)
+        ..base_theme("dish-light", "Papel", false)
     }
 }
 
-/// Preset claro e quente: papel porcelana, para salas claras.
-///
-/// Reusa os semânticos e a rampa do `dish-light` — validados sobre as
-/// superfícies claras — e aquece só os neutros.
-fn paper_theme() -> Theme {
-    let light = light_theme();
+/// Ardósia: escuro azulado, para quem prefere o frio ao verde.
+fn slate_theme() -> Theme {
     Theme {
-        bg: c(0xf5f1e7ff),
-        surface: c(0xfaf7f0ff),
-        surface_2: c(0xfffdf9ff),
-        inset: c(0xeae4d6ff),
-        hover: c(0xefeaddff),
-        line: c(0xddd5c3ff),
-        line_soft: c(0xe8e1d2ff),
-        line_strong: c(0xccc3aeff),
-        text: c(0x27231aff),
-        dim: c(0x47402fff),
-        faint: c(0x5a523fff),
-        ok: c(0x47402fff),
-        ..base_theme("dish-paper", "Papel quente", false)
-    }
-    .inherit(&light)
-}
-
-/// Preset escuro de baixo contraste: o grafite sobe um degrau e o texto
-/// desce, sempre acima do piso de 4,5:1 dos testes.
-fn dim_theme() -> Theme {
-    let dark = dark_theme();
-    Theme {
-        bg: c(0x17191eff),
-        surface: c(0x1c1f25ff),
-        surface_2: c(0x23272eff),
-        inset: c(0x131519ff),
-        hover: c(0x282d35ff),
-        line: c(0x2e333cff),
-        line_soft: c(0x262a32ff),
-        line_strong: c(0x3b414cff),
-        text: c(0xd3d7ddff),
-        dim: c(0xa4acb8ff),
-        faint: c(0x8b929eff),
-        ok: c(0xa4acb8ff),
-        ..base_theme("dish-dim", "Grafite baixo", true)
-    }
-    .inherit(&dark)
-}
-
-/// Azul profundo, com navegação recuada e superfícies de aço azulado.
-fn midnight_theme() -> Theme {
-    Theme {
-        bg: c(0x172435ff),
-        surface: c(0x111b29ff),
-        surface_2: c(0x203249ff),
-        inset: c(0x0c1420ff),
-        hover: c(0x293f59ff),
-        line: c(0x31465fff),
-        line_soft: c(0x23344aff),
-        line_strong: c(0x496380ff),
-        text: c(0xe6effaff),
-        dim: c(0xa8b9ceff),
-        faint: c(0xa2b2c8ff),
-        ok: c(0xa8b9ceff),
-        ..base_theme("dish-midnight", "Noite azul", true)
+        bg: c(0x1a1d24ff),
+        surface: c(0x15181eff),
+        surface_2: c(0x21252dff),
+        inset: c(0x101217ff),
+        hover: c(0x2a2f38ff),
+        line: c(0x30353fff),
+        line_soft: c(0x252a33ff),
+        line_strong: c(0x434a57ff),
+        text: c(0xe6e9f0ff),
+        dim: c(0xb3bac8ff),
+        faint: c(0x959dadff),
+        ok: c(0xb3bac8ff),
+        ..base_theme("dish-slate", "Ardósia", true)
     }
     .inherit(&dark_theme())
+    .with_brand(c(0x8fb0e8ff), c(0x10151fff))
 }
 
-/// Ameixa escura: distingue as superfícies pelo matiz, sem brilho decorativo.
-fn plum_theme() -> Theme {
+/// Névoa: claro de cinza quente, acento azul-tinta.
+fn mist_theme() -> Theme {
     Theme {
-        bg: c(0x28212dff),
-        surface: c(0x1c1820ff),
-        surface_2: c(0x342b3bff),
-        inset: c(0x141117ff),
-        hover: c(0x403548ff),
-        line: c(0x4b3f54ff),
-        line_soft: c(0x382f40ff),
-        line_strong: c(0x6b5978ff),
-        text: c(0xf1eaf4ff),
-        dim: c(0xc0b0c9ff),
-        faint: c(0xb3a2beff),
-        ok: c(0xb8aabeff),
-        ..base_theme("dish-plum", "Ameixa", true)
-    }
-    .inherit(&dark_theme())
-}
-
-/// Claro violeta frio, sem o calor do preset Papel quente.
-fn lavender_theme() -> Theme {
-    Theme {
-        bg: c(0xf5f3faff),
-        surface: c(0xebe7f2ff),
-        surface_2: c(0xfdfbffff),
-        inset: c(0xe5e0eeff),
-        hover: c(0xe9e3f1ff),
-        line: c(0xd4caddff),
-        line_soft: c(0xe6dfedff),
-        line_strong: c(0xbeb0ceff),
-        text: c(0x2c2538ff),
-        dim: c(0x51475eff),
-        faint: c(0x5d526bff),
-        ok: c(0x51475eff),
-        ..base_theme("dish-lavender", "Lavanda", false)
+        bg: c(0xf3f1ecff),
+        surface: c(0xeae7e0ff),
+        surface_2: c(0xfcfbf8ff),
+        inset: c(0xe6e2d9ff),
+        hover: c(0xe3dfd6ff),
+        line: c(0xd5d0c4ff),
+        line_soft: c(0xe2ded4ff),
+        line_strong: c(0xc2bcaeff),
+        text: c(0x2a2722ff),
+        dim: c(0x4a453dff),
+        faint: c(0x5f594fff),
+        ok: c(0x4a453dff),
+        ..base_theme("dish-mist", "Névoa", false)
     }
     .inherit(&light_theme())
-}
-
-/// Claro verde mineral; a rampa de esforço e os estados continuam independentes.
-fn sage_theme() -> Theme {
-    Theme {
-        bg: c(0xf1f6f2ff),
-        surface: c(0xe6eee8ff),
-        surface_2: c(0xfafdfbff),
-        inset: c(0xdde7e0ff),
-        hover: c(0xe1ebe4ff),
-        line: c(0xc8d6ccff),
-        line_soft: c(0xdee7e0ff),
-        line_strong: c(0xacbfb2ff),
-        text: c(0x25362dff),
-        dim: c(0x455c4eff),
-        faint: c(0x52665aff),
-        ok: c(0x455c4eff),
-        ..base_theme("dish-sage", "Sálvia", false)
-    }
-    .inherit(&light_theme())
+    .with_brand(c(0x3e5c8aff), c(0xffffffff))
 }
 
 impl Theme {
@@ -403,17 +365,22 @@ impl Theme {
         self.attention = base.attention;
         self.git_added = base.git_added;
         self.git_removed = base.git_removed;
-        self.effort = base.effort;
+        self.brand = base.brand;
+        self
+    }
+
+    /// Acento próprio de um preset; `running` acompanha o acento.
+    fn with_brand(mut self, brand: Hsla, on_accent: Hsla) -> Theme {
+        self.brand = brand;
+        self.running = brand;
+        self.on_accent = on_accent;
         self
     }
 }
 
 /// Os temas embutidos, na ordem em que a tela de Aparência os mostra.
 pub fn built_in_themes() -> Vec<Theme> {
-    vec![
-        dark_theme(), dim_theme(), midnight_theme(), plum_theme(),
-        light_theme(), paper_theme(), lavender_theme(), sage_theme(),
-    ]
+    vec![dark_theme(), slate_theme(), light_theme(), mist_theme()]
 }
 
 // ------------------------------------------------------------------- catálogo
@@ -513,6 +480,7 @@ struct ThemeColors {
     dim: Option<String>,
     faint: Option<String>,
     on_accent: Option<String>,
+    accent: Option<String>,
     running: Option<String>,
     failure: Option<String>,
     warn: Option<String>,
@@ -586,6 +554,7 @@ fn load_theme(path: &std::path::Path) -> Result<Theme, String> {
         dim: pick(colors.dim, "dim", base.dim)?,
         faint: pick(colors.faint, "faint", base.faint)?,
         on_accent: pick(colors.on_accent, "onAccent", base.on_accent)?,
+        brand: pick(colors.accent, "accent", base.brand)?,
         running: pick(colors.running, "running", base.running)?,
         failure: pick(colors.failure, "failure", base.failure)?,
         warn: pick(colors.warn, "warn", base.warn)?,
@@ -593,7 +562,6 @@ fn load_theme(path: &std::path::Path) -> Result<Theme, String> {
         ok: pick(colors.ok, "ok", base.ok)?,
         git_added: pick(colors.git_added, "gitAdded", base.git_added)?,
         git_removed: pick(colors.git_removed, "gitRemoved", base.git_removed)?,
-        effort: base.effort,
     };
     Ok(theme)
 }
@@ -742,8 +710,7 @@ pub fn on_accent() -> Hsla {
 
 // --------------------------------------------------------------- semântica
 //
-// Fora da rampa de effort, que vai do cinza-azulado ao coral passando pelo
-// magenta. Estas ficam a ΔE ≥ 25 de todos os níveis (ver testes).
+// Estados semânticos: ficam a ΔE ≥ 25 uns dos outros (ver testes).
 
 /// Executando. Verde-água.
 pub fn running() -> Hsla {
@@ -792,24 +759,9 @@ pub fn wash(color: Hsla, alpha: f32) -> Hsla {
 // converted from OKHSL with pi-tui's parseColor/colorToHex. The light theme
 // keeps those hues and lowers lightness until each level reads on white.
 
-/// Hue, saturation and lightness of the current accent, packed as f32 bits.
-static ACCENT_H: AtomicU32 = AtomicU32::new(f32::to_bits(0.60));
-static ACCENT_S: AtomicU32 = AtomicU32::new(f32::to_bits(0.18));
-static ACCENT_L: AtomicU32 = AtomicU32::new(f32::to_bits(0.66));
-
-fn store(h: f32, s: f32, l: f32) {
-    ACCENT_H.store(h.to_bits(), Ordering::Relaxed);
-    ACCENT_S.store(s.to_bits(), Ordering::Relaxed);
-    ACCENT_L.store(l.to_bits(), Ordering::Relaxed);
-}
-
-fn load(cell: &AtomicU32) -> f32 {
-    f32::from_bits(cell.load(Ordering::Relaxed))
-}
-
-/// The accent in use right now.
+/// The accent in use right now: the theme's own, never the effort level.
 pub fn accent() -> Hsla {
-    hsla_f(load(&ACCENT_H), load(&ACCENT_S), load(&ACCENT_L), 1.0)
+    active().brand
 }
 
 /// The accent lifted for hover states. No tema escuro "levantar" é clarear;
@@ -836,32 +788,10 @@ pub fn accent_edge() -> Hsla {
     }
 }
 
-fn hsla_f(h: f32, s: f32, l: f32, a: f32) -> Hsla {
-    gpui::hsla(h, s, l, a)
-}
 
-fn effort_index(level: &str) -> usize {
-    LEVELS.iter().position(|name| *name == level).unwrap_or(0)
-}
-
-/// The colour of a single reasoning level, so the selector can show the ramp.
-pub fn effort_color(level: &str, _available: &[String]) -> Hsla {
-    active().effort[effort_index(level)]
-}
-
-/// Point the accent at the current reasoning level.
-pub fn set_effort(level: Option<&str>, _available: &[String]) {
-    let color = match level {
-        Some(level) => active().effort[effort_index(level)],
-        None => active().effort[0],
-    }
-    .color;
-    store(
-        color.hue.into_positive_degrees() / 360.0,
-        color.saturation,
-        color.lightness,
-    );
-}
+/// Kept for callers that still report the level: since the editorial
+/// redesign the accent belongs to the theme and the level is shown as text.
+pub fn set_effort(_level: Option<&str>, _available: &[String]) {}
 
 /// Anel de foco do teclado. Fica fora da caixa, para não competir com as
 /// bordas e cores de estado das linhas. Usa o acento do esforço: o foco é o
@@ -905,6 +835,12 @@ pub fn accent_wash() -> gpui::Background {
         gpui::linear_color_stop(wash(accent(), if is_dark() { 0.10 } else { 0.08 }), 0.0),
         gpui::linear_color_stop(wash(accent(), 0.0), 1.0),
     )
+}
+
+/// Fundo do código inline: um véu do próprio texto, não o `inset`. O poço
+/// recuado (quase preto no escuro) partia a frase em blocos duros.
+pub fn code_wash() -> Hsla {
+    wash(text(), if is_dark() { 0.10 } else { 0.07 })
 }
 
 /// Cobertura translúcida atrás de diálogos; combinada com `backdrop_blur`.
@@ -951,6 +887,16 @@ pub fn shadow_overlay() -> Vec<BoxShadow> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn font_pick_falls_back_to_an_installed_monospace() {
+        let installed = vec!["DejaVu Sans".to_string(), "dejavu sans mono".to_string()];
+        assert_eq!(pick_font(MONO_FONT_CANDIDATES, &installed), "DejaVu Sans Mono");
+        assert_eq!(pick_font(UI_FONT_CANDIDATES, &installed), "DejaVu Sans");
+        let preferred = vec!["JetBrains Mono".to_string(), "DejaVu Sans Mono".to_string()];
+        assert_eq!(pick_font(MONO_FONT_CANDIDATES, &preferred), "JetBrains Mono");
+        assert_eq!(pick_font(MONO_FONT_CANDIDATES, &[]), "JetBrains Mono");
+    }
 
     fn built_ins() -> Vec<Theme> {
         built_in_themes()
@@ -1058,41 +1004,29 @@ mod tests {
         }
     }
 
+    /// Desde o redesign editorial o esforço não pinta a interface (vira
+    /// texto no composer), então o que precisa de separação são os estados
+    /// entre si. `running` é o próprio acento: "o agente está vivo".
     #[test]
-    fn status_colors_are_distinct_from_the_effort_ramp() {
+    fn status_colors_are_distinct_from_each_other() {
         for theme in built_ins() {
-            for (name, semantic) in [
+            let states = [
                 ("running", theme.running),
                 ("failure", theme.failure),
                 ("warn", theme.warn),
                 ("attention", theme.attention),
-            ] {
-                for (level, effort) in LEVELS.iter().zip(theme.effort) {
-                    let distance = delta_e(semantic, effort);
+            ];
+            for (index, (name, color)) in states.iter().enumerate() {
+                for (other, other_color) in &states[index + 1..] {
+                    let distance = delta_e(*color, *other_color);
                     assert!(
                         distance > 25.0,
-                        "{} {name} vs effort {level}: ΔE {distance:.1} (mínimo 25)",
+                        "{} {name} vs {other}: ΔE {distance:.1} (mínimo 25)",
                         theme.name
                     );
                 }
             }
-        }
-    }
-
-    /// Sucesso é neutro de propósito (decisão de produto): o significado vem do
-    /// ícone e do texto, não da cor. Ele só não pode encostar no neutro do
-    /// esforço `off`, senão vira mingau.
-    #[test]
-    fn success_neutral_stays_off_the_neutral_effort() {
-        for theme in built_ins() {
-            for (level, effort) in [("off", theme.effort[0]), ("minimal", theme.effort[1])] {
-                let distance = delta_e(theme.ok, effort);
-                assert!(
-                    distance > 15.0,
-                    "{} ok vs effort {level}: ΔE {distance:.1}",
-                    theme.name
-                );
-            }
+            assert_eq!(theme.running, theme.brand, "{}: running acompanha o acento", theme.name);
         }
     }
 
@@ -1101,11 +1035,12 @@ mod tests {
     #[test]
     fn attention_reads_as_new_content_not_as_running_or_warning() {
         for theme in built_ins() {
+            // `ok` fica de fora: resposta nova é a tinta mais forte com peso e
+            // ponto cheio; concluída é o ícone de check. A forma separa os dois.
             for (name, color) in [
                 ("running", theme.running),
                 ("failure", theme.failure),
                 ("warn", theme.warn),
-                ("ok", theme.ok),
             ] {
                 let distance = delta_e(theme.attention, color);
                 assert!(
@@ -1118,43 +1053,6 @@ mod tests {
                 let ratio = contrast(theme.attention, surface);
                 assert!(ratio >= 4.5, "{} attention: {ratio:.2}:1", theme.name);
             }
-        }
-    }
-
-    #[test]
-    fn effort_colors_match_pi_dark_theme() {
-        let dark = dark_theme();
-        for (index, level) in LEVELS.iter().enumerate() {
-            let actual = dark.effort[index].color;
-            let hex = [
-                0x6c767bff, 0x68808dff, 0x5489a4ff, 0x6185ccff, 0x9776e5ff, 0xde54c1ff, 0xfe5462ff,
-            ][index];
-            let expected = c(hex).color;
-            assert!(
-                (actual.hue.into_positive_degrees() - expected.hue.into_positive_degrees()).abs()
-                    < 0.001,
-                "{level}"
-            );
-            assert!((actual.saturation - expected.saturation).abs() < 0.00001, "{level}");
-            assert!((actual.lightness - expected.lightness).abs() < 0.00001, "{level}");
-        }
-        // Nível desconhecido cai no `off`, como no Pi.
-        assert_eq!(effort_index("desconhecido"), effort_index("off"));
-    }
-
-    /// A rampa clara é a mesma progressão do Pi com a luminosidade baixada: os
-    /// matizes seguem o tema escuro e cada nível lê sobre o branco.
-    #[test]
-    fn light_effort_ramp_keeps_the_dark_hues_and_stays_readable() {
-        let dark = built_in("dish-dark");
-        let light = built_in("dish-light");
-        for (index, level) in LEVELS.iter().enumerate() {
-            let a = dark.effort[index].color.hue.into_positive_degrees();
-            let b = light.effort[index].color.hue.into_positive_degrees();
-            let difference = (a - b).abs().min(360.0 - (a - b).abs());
-            assert!(difference < 2.0, "{level}: hue {a:.1} vs {b:.1}");
-            let ratio = contrast(light.effort[index], light.surface_2);
-            assert!(ratio >= 4.5, "{level} clear: {ratio:.2}:1");
         }
     }
 
@@ -1216,7 +1114,7 @@ mod tests {
         assert_eq!(theme.attention, c(0x118844ff));
         // O que falta vem do base claro, não do tema ativo.
         assert_eq!(theme.text, light_theme().text);
-        assert_eq!(theme.effort, light_theme().effort);
+        assert_eq!(theme.brand, light_theme().brand);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1291,16 +1189,13 @@ mod tests {
     fn built_in_catalog_is_unique_and_ordered() {
         let themes = built_in_themes();
         let ids: Vec<&str> = themes.iter().map(|theme| theme.id.as_str()).collect();
-        assert_eq!(ids, vec![
-            "dish-dark", "dish-dim", "dish-midnight", "dish-plum",
-            "dish-light", "dish-paper", "dish-lavender", "dish-sage",
-        ]);
+        assert_eq!(ids, vec!["dish-dark", "dish-slate", "dish-light", "dish-mist"]);
         // Escuros primeiro, claros depois: a lista se agrupa sem reordenar.
         let first_light = themes.iter().position(|theme| !theme.dark).unwrap();
         assert!(themes[..first_light].iter().all(|theme| theme.dark));
         assert!(themes[first_light..].iter().all(|theme| !theme.dark));
-        assert_eq!(first_light, 4);
-        assert_eq!(themes.len() - first_light, 4);
+        assert_eq!(first_light, 2);
+        assert_eq!(themes.len() - first_light, 2);
         for (index, theme) in themes.iter().enumerate() {
             assert!(!theme.user);
             assert!(!theme.name.trim().is_empty());

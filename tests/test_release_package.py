@@ -128,6 +128,25 @@ class ReleaseToolTests(unittest.TestCase):
 
 
 @unittest.skipUnless(os.uname().sysname == "Linux" and os.uname().machine == "x86_64", "Linux x86_64 installer")
+class BundledFontLicenseTests(unittest.TestCase):
+    """Fontes embutidas no binário levam a licença junto, ou o pacote para."""
+
+    def test_repository_fonts_ship_their_license_texts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory)
+            self.assertEqual(license_bundle.font_licenses(out, ROOT), 2)
+            self.assertTrue((out / "fonts/geist/OFL.txt").is_file())
+            self.assertTrue((out / "fonts/source-serif-4/LICENSE.md").is_file())
+
+    def test_font_without_license_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "assets/fonts/nova").mkdir(parents=True)
+            (root / "assets/fonts/nova/Nova-Regular.ttf").write_bytes(b"\0")
+            with self.assertRaisesRegex(RuntimeError, "Missing license text for bundled font: nova"):
+                license_bundle.font_licenses(root / "out", root)
+
+
 class InstallerTests(unittest.TestCase):
     def test_install_and_uninstall_preserve_user_data(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -576,7 +576,7 @@ impl Render for Startup {
             .p(px(24.))
             .bg(theme::bg())
             .text_color(theme::text())
-            .font_family(theme::FONT_UI)
+            .font_family(theme::font_ui())
             .text_size(px(14.))
             .line_height(px(20.))
             .on_action(cx.listener(|this, _: &crate::ui::Dismiss, window, cx| {
@@ -683,7 +683,7 @@ impl Render for Startup {
                         div()
                             .max_w(px(680.))
                             .text_center()
-                            .font_family(theme::FONT_MONO)
+                            .font_family(theme::font_mono())
                             .text_size(px(theme::TEXT_SM))
                             .text_color(if found { theme::text() } else { theme::dim() })
                             .child(status),
@@ -736,7 +736,7 @@ impl Render for Startup {
                             .bg(theme::inset())
                             .border_1()
                             .border_color(theme::line_soft())
-                            .font_family(theme::FONT_MONO)
+                            .font_family(theme::font_mono())
                             .text_size(px(theme::TEXT_SM))
                             .text_color(theme::text())
                             .child(SharedString::from(format!("$ {command}"))),
@@ -821,7 +821,7 @@ impl Render for Startup {
                         div()
                             .max_w(px(680.))
                             .text_center()
-                            .font_family(theme::FONT_MONO)
+                            .font_family(theme::font_mono())
                             .text_size(px(theme::TEXT_SM))
                             .text_color(if node_ready { theme::text() } else { theme::dim() })
                             .child(status),
@@ -891,7 +891,7 @@ impl Render for Startup {
                     div()
                         .max_w(px(680.))
                         .text_center()
-                        .font_family(theme::FONT_MONO)
+                        .font_family(theme::font_mono())
                         .text_size(px(theme::TEXT_SM))
                         .text_color(theme::text())
                         .child(summary),

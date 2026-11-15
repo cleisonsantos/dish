@@ -1,23 +1,24 @@
 # Temas do Dish
 
-O Dish traz oito temas embutidos, agrupados em **Escuros** e **Claros** na
+O Dish traz quatro temas embutidos, agrupados em **Escuros** e **Claros** na
 seção **Aparência** das configurações. Também aceita temas seus em JSON.
 
-| Aparência | Nome | Id | Superfícies |
+| Aparência | Nome | Id | Papel e acento |
 | --- | --- | --- | --- |
-| Escuro | Grafite | `dish-dark` | Grafite com conversa elevada |
-| Escuro | Grafite baixo | `dish-dim` | Neutros suaves |
-| Escuro | Noite azul | `dish-midnight` | Azul profundo e aço |
-| Escuro | Ameixa | `dish-plum` | Violeta escuro |
-| Claro | Papel frio | `dish-light` | Branco frio e cinza azulado |
-| Claro | Papel quente | `dish-paper` | Porcelana e papel quente |
-| Claro | Lavanda | `dish-lavender` | Violeta claro |
-| Claro | Sálvia | `dish-sage` | Verde mineral claro |
+| Escuro | Noite | `dish-dark` | Papel escuro esverdeado, acento verdete |
+| Escuro | Ardósia | `dish-slate` | Escuro azulado, acento azul claro |
+| Claro | Papel | `dish-light` | Quase branco, acento verde-tinta |
+| Claro | Névoa | `dish-mist` | Cinza quente, acento azul-tinta |
 
 Escolher um tema aplica sua paleta imediatamente e salva a escolha para a próxima
-abertura. A lista rola para alcançar todos os temas, inclusive os personalizados.
-A tipografia, a composição e a rampa de esforço não mudam entre presets da mesma
-aparência. As cores de execução, erro e conteúdo novo continuam independentes.
+abertura. A tipografia e a composição não mudam entre temas; cada tema tem um
+único acento, que marca o que está vivo ou disponível (enviar, foco, o agente
+trabalhando, o nível de esforço escolhido). As cores de execução, erro, aviso e
+conteúdo novo continuam independentes.
+
+Temas embutidos removidos no redesign (`dish-dim`, `dish-midnight`,
+`dish-plum`, `dish-paper`, `dish-lavender`, `dish-sage`): uma preferência salva
+com um deles volta ao tema padrão da aparência.
 
 ## Onde os arquivos ficam
 
@@ -52,7 +53,8 @@ arquivo, feche e abra o Dish de novo para vê-lo na lista.
     "dim": "#a6aeb8",
     "faint": "#858d97",
     "onAccent": "#0c0e12",
-    "running": "#4fb3a5",
+    "accent": "#86c2ac",
+    "running": "#86c2ac",
     "failure": "#cf5f92",
     "warn": "#d8a24a",
     "attention": "#2ecc71",
@@ -65,9 +67,8 @@ arquivo, feche e abra o Dish de novo para vê-lo na lista.
 
 - `name`: o nome na lista. Sem ele, vale o nome do arquivo.
 - `appearance`: `dark` ou `light` (padrão `dark`). Define de qual tema
-  embutido vêm as cores que você não declarar e qual rampa de esforço é
-  usada — como no tema escuro do Pi, os tons de raciocínio são os mesmos
-  do `Grafite`; no claro, do `Papel frio`.
+  embutido vêm as cores que você não declarar: `Noite` no escuro, `Papel`
+  no claro.
 - `colors`: as cores, em `#rrggbb` ou `#rrggbbaa`.
 - `$schema`: opcional; serve para o editor validar e completar o arquivo.
   O esquema está em [`docs/theme-v1.schema.json`](theme-v1.schema.json).
@@ -83,16 +84,14 @@ arquivo, feche e abra o Dish de novo para vê-lo na lista.
 | `hover` | Realce de linha sob o mouse ou teclado. |
 | `line`, `lineSoft`, `lineStrong` | Fios, do mais sutil ao mais firme. |
 | `text`, `dim`, `faint` | Texto principal, secundário e metadados. |
-| `onAccent` | Texto sobre o accent (o botão de enviar, por exemplo). |
-| `running` | Execução em andamento. |
-| `failure` | Falha. Não pode parecer o coral do esforço máximo. |
+| `accent` | O acento do tema: enviar, foco, nível de esforço escolhido. |
+| `onAccent` | Texto sobre o acento (a seta do botão de enviar, por exemplo). |
+| `running` | Execução em andamento. Nos embutidos, igual ao acento. |
+| `failure` | Falha. |
 | `warn` | Aviso de recurso (contexto cheio). |
 | `attention` | Resposta nova ainda não lida. |
 | `ok` | Sucesso: neutro de propósito. |
 | `gitAdded`, `gitRemoved` | Diff do rodapé de Git. |
-
-A rampa de esforço (`off`…`max`) acompanha o tema base e **não** é
-configurável nesta versão.
 
 ## Validação e erros
 

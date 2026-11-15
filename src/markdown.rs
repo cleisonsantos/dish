@@ -65,7 +65,7 @@ fn run_for(style: &MarkdownStyle, inline: Inline) -> TextRun {
         run.font = run.font.italic();
     }
     if inline.code {
-        run.font.family = SharedString::from(theme::FONT_MONO);
+        run.font.family = SharedString::from(theme::font_mono());
         run.font.weight = FontWeight::NORMAL;
         run.color = style.code_color;
         run.background_color = Some(style.code_bg);
@@ -263,9 +263,9 @@ fn code_block(
         .max_w(px(theme::CODE_BLOCK_MAX_WIDTH))
         .self_start()
         .flex_none()
-        .rounded(theme::r_technical())
+        .rounded(theme::r_small())
         .border_1()
-        .border_color(theme::line())
+        .border_color(theme::line_soft())
         .bg(theme::inset())
         .overflow_hidden()
         .child(
@@ -275,14 +275,15 @@ fn code_block(
                 .items_center()
                 .justify_between()
                 .px(px(12.))
-                .py(px(6.))
+                .py(px(4.))
+                .bg(theme::wash(theme::surface(), 0.6))
                 .border_b_1()
                 .border_color(theme::line_soft())
                 .child(
                     div()
                         .text_size(px(theme::TEXT_MICRO))
                         .letter_spacing(px(0.9))
-                        .font_family(SharedString::from(theme::FONT_MONO))
+                        .font_family(SharedString::from(theme::font_mono()))
                         .text_color(theme::faint())
                         .child(language.unwrap_or("code").to_uppercase()),
                 )
@@ -339,7 +340,7 @@ fn code_block(
                         .py(px(10.))
                         .text_size(px(13.))
                         .line_height(px(20.))
-                        .font_family(SharedString::from(theme::FONT_MONO))
+                        .font_family(SharedString::from(theme::font_mono()))
                         .text_color(style.code_color)
                         .whitespace_nowrap()
                         .child(selection.text(body, None)),
@@ -454,18 +455,20 @@ fn table_with_scroll(
 ) -> AnyElement {
     let widths: Vec<f32> = (0..alignments.len()).map(|col| {
         rows.iter().filter_map(|row| row.get(col))
-            .map(|cell| cell.chars().count() as f32 * 7.5 + 24.)
+            // Estimativa por caractere na prosa de 15px; código inline é
+            // monoespaçado e mais largo, então a margem é generosa.
+            .map(|cell| cell.chars().count() as f32 * 11. + 28.)
             .fold(100., f32::max).min(360.)
     }).collect();
     let mut body = div().flex().flex_col().min_w(px(widths.iter().sum()));
     for (row_index, row) in rows.iter().enumerate() {
         let mut rendered = div().flex().flex_row().border_b_1().border_color(theme::line_soft());
         if row_index == 0 {
-            rendered = rendered.bg(theme::surface_2()).font_weight(FontWeight::BOLD);
+            rendered = rendered.bg(theme::wash(theme::surface_2(), 0.7)).font_weight(FontWeight::SEMIBOLD);
         }
         for (col, alignment) in alignments.iter().enumerate() {
             rendered = rendered.child(div().w(px(widths[col])).flex_none()
-                .px(px(12.)).py(px(8.)).text_align(*alignment)
+                .px(px(12.)).py(px(6.)).text_align(*alignment)
                 .child(inline_element(row.get(col).map(String::as_str).unwrap_or(""), style, selection)));
         }
         body = body.child(rendered);
@@ -473,8 +476,8 @@ fn table_with_scroll(
     div().id(crate::ui::content_id("md-table", &format!("{rows:?}")))
         .w_full().overflow_x_scroll().restrict_scroll_to_axis()
         .when_some(scroll_handle, |el, handle| el.track_scroll(handle))
-        .border_1().border_color(theme::line())
-        .rounded(theme::r_technical()).child(body).into_any_element()
+        .border_1().border_color(theme::line_soft())
+        .rounded(theme::r_small()).child(body).into_any_element()
 }
 
 /// Standalone Markdown images; incomplete streaming syntax stays ordinary text.
@@ -1203,7 +1206,7 @@ mod tests {
                     // Header and the space to the right are outside the body's hitbox.
                     transcript_handle.set_offset(point(px(0.), px(0.)));
                     let _ = window.draw(cx);
-                    for position in [point(px(800.), px(60.)), point(px(60.), px(10.))] {
+                    for position in [point(px(theme::CODE_BLOCK_MAX_WIDTH + 40.), px(60.)), point(px(60.), px(10.))] {
                         transcript_handle.set_offset(point(px(0.), px(0.)));
                         let _ = window.draw(cx);
                         window.dispatch_event(

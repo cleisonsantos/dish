@@ -686,6 +686,9 @@ pub struct AppState {
     pub follow_up_queue: Vec<String>,
 
     pub sidebar: bool,
+    /// Largura ocupada à esquerda da conversa (trilho e gaveta encaixada),
+    /// informada pelo workspace a cada quadro.
+    pub left_chrome: f32,
     pub model_menu: bool,
     /// Se a abertura automática do inspetor já foi decidida nesta janela.
     pub inspector_initialized: bool,
@@ -832,6 +835,7 @@ impl AppState {
             steering_queue: Vec::new(),
             follow_up_queue: Vec::new(),
             sidebar: true,
+            left_chrome: crate::theme::RAIL_WIDTH,
             model_menu: false,
             inspector_initialized: false,
             effort_menu: false,

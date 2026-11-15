@@ -37,6 +37,7 @@
         "dim": { "$ref": "#/definitions/color" },
         "faint": { "$ref": "#/definitions/color" },
         "onAccent": { "$ref": "#/definitions/color" },
+        "accent": { "$ref": "#/definitions/color" },
         "running": { "$ref": "#/definitions/color" },
         "failure": { "$ref": "#/definitions/color" },
         "warn": { "$ref": "#/definitions/color" },
