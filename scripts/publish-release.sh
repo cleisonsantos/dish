@@ -4,8 +4,8 @@
 # Uso:
 #   scripts/publish-release.sh TAG ARTIFACT_DIR [--secret-key-file PATH] [--public-key PATH]
 #
-# Ordem: confere argumentos, ferramentas, checksums e a chave; anexa os quatro
-# assets Linux ao Release; publica o rascunho; baixa de volta os bytes
+# Ordem: confere argumentos, ferramentas, checksums e a chave; anexa os oito
+# arquivos dos quatro formatos Linux ao Release; publica o rascunho; baixa de volta os bytes
 # publicados; gera e assina latest.json sobre esses bytes; confere nome, tamanho,
 # URL e digest contra o Release; sobe latest.json e latest.json.minisig por
 # último; baixa e confere tudo de novo.
@@ -99,14 +99,17 @@ esac
 version=${TAG#v}
 portable="dish-$version-linux-x86_64.tar.gz"
 deb="dish-pi_${version}_amd64.deb"
-release_assets=("$portable" "$deb" "$portable.sha256" "$deb.sha256")
+rpm="dish-$version-1.x86_64.rpm"
+appimage="dish-$version-x86_64.AppImage"
+payloads=("$portable" "$deb" "$rpm" "$appimage")
+release_assets=("${payloads[@]}" "$portable.sha256" "$deb.sha256" "$rpm.sha256" "$appimage.sha256")
 
 [ -d "$ARTIFACT_DIR" ] || die "diretório de artifacts não encontrado: $ARTIFACT_DIR"
 for name in "${release_assets[@]}"; do
   [ -f "$ARTIFACT_DIR/$name" ] || die "arquivo ausente em $ARTIFACT_DIR: $name"
 done
 
-for name in "$portable" "$deb"; do
+for name in "${payloads[@]}"; do
   if ! (cd "$ARTIFACT_DIR" && sha256sum -c "$name.sha256" >/dev/null); then
     die "checksum inválido para $name em $ARTIFACT_DIR"
   fi
@@ -277,7 +280,7 @@ for name in "${release_assets[@]}"; do
   gh_release download "$TAG" --dir "$download_dir" -p "$name" ||
     die "falha ao baixar $name do Release $TAG"
 done
-for name in "$portable" "$deb"; do
+for name in "${payloads[@]}"; do
   if ! (cd "$download_dir" && sha256sum -c "$name.sha256" >/dev/null); then
     die "checksum do asset baixado não confere: $name"
   fi
