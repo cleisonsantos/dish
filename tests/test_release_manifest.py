@@ -396,6 +396,12 @@ class PublishReleaseScriptTests(unittest.TestCase):
         self.artifact_dir = self.root / "artifact"
         self.artifact_dir.mkdir()
         self.portable, self.deb = stage_assets(self.artifact_dir, self.version)
+        self.rpm = self.artifact_dir / f"dish-{self.version}-1.x86_64.rpm"
+        self.appimage = self.artifact_dir / f"dish-{self.version}-x86_64.AppImage"
+        for path in (self.rpm, self.appimage):
+            path.write_bytes(b"fake Linux package for " + path.name.encode("utf-8"))
+            write_sidecar(path)
+        self.payloads = (self.portable, self.deb, self.rpm, self.appimage)
 
         self.private, self.public = self.make_key_pair("keys")
         self.secret = self.private.read_text(encoding="utf-8")
@@ -434,7 +440,7 @@ class PublishReleaseScriptTests(unittest.TestCase):
     def upload_calls(self):
         return [line for line in self.calls() if line.startswith("upload ")]
 
-    def run_script(self, *arguments, key=None):
+    def run_script(self, *arguments, key=None, corrupt_download=None):
         environment = os.environ.copy()
         environment.pop(generator.SECRET_ENVIRONMENT, None)
         environment.pop("GH_REPO", None)
@@ -447,6 +453,9 @@ class PublishReleaseScriptTests(unittest.TestCase):
         })
         if key is not None:
             environment[generator.SECRET_ENVIRONMENT] = key
+        environment.pop("FAKE_GH_CORRUPT_DOWNLOAD", None)
+        if corrupt_download is not None:
+            environment["FAKE_GH_CORRUPT_DOWNLOAD"] = corrupt_download
         return subprocess.run(
             [self.bash, str(self.script), self.tag, str(self.artifact_dir),
              "--public-key", str(self.public), *arguments],
@@ -459,12 +468,18 @@ class PublishReleaseScriptTests(unittest.TestCase):
 
         stored = {path.name for path in self.storage.iterdir()}
         self.assertEqual(stored, {
-            self.portable.name, self.deb.name,
+            self.portable.name, self.deb.name, self.rpm.name, self.appimage.name,
             self.portable.name + ".sha256", self.deb.name + ".sha256",
+            self.rpm.name + ".sha256", self.appimage.name + ".sha256",
             "latest.json", "latest.json.minisig"})
+        for path in self.payloads:
+            for name in (path.name, path.name + ".sha256"):
+                self.assertEqual((self.storage / name).read_bytes(),
+                                 (self.artifact_dir / name).read_bytes())
+                self.assertIn(f"download {self.tag} {name}", self.calls())
 
         uploads = self.upload_calls()
-        self.assertEqual(len(uploads), 5)
+        self.assertEqual(len(uploads), 9)
         self.assertEqual(uploads[-1], "upload latest.json latest.json.minisig")
         self.assertNotIn("--clobber", self.log_path.read_text(encoding="utf-8"))
 
@@ -478,6 +493,11 @@ class PublishReleaseScriptTests(unittest.TestCase):
         manifest = json.loads((self.storage / "latest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["tag"], self.tag)
         self.assertEqual(manifest["published_at"], "2026-11-03T12:00:00Z")
+        self.assertEqual(len(manifest["assets"]), 2)
+        self.assertEqual(
+            {(asset["kind"], asset["name"]) for asset in manifest["assets"]},
+            {("portable-linux-x86_64", self.portable.name),
+             ("debian-amd64", self.deb.name)})
         for asset in manifest["assets"]:
             self.assertEqual(
                 asset["url"], f"{generator.RELEASES}/download/{self.tag}/{asset['name']}")
@@ -527,12 +547,51 @@ class PublishReleaseScriptTests(unittest.TestCase):
         self.assertFalse((self.storage / "latest.json").exists())
 
     def test_invalid_local_checksum_stops_before_any_github_call(self):
-        self.deb.write_bytes(b"changed after the sidecar was written")
-        result = self.run_script(key=self.secret)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("checksum inválido", result.stderr)
-        self.assertEqual(self.calls(), [])
-        self.assertFalse(self.storage.exists() and any(self.storage.iterdir()))
+        for path in self.payloads:
+            with self.subTest(asset=path.name):
+                original = path.read_bytes()
+                try:
+                    path.write_bytes(b"changed after the sidecar was written")
+                    result = self.run_script(key=self.secret)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("checksum inválido", result.stderr)
+                    self.assertIn(path.name, result.stderr)
+                    self.assertEqual(self.calls(), [])
+                    self.assertFalse(self.storage.exists() and any(self.storage.iterdir()))
+                finally:
+                    path.write_bytes(original)
+
+    def test_missing_local_asset_stops_before_any_github_call(self):
+        for payload in self.payloads:
+            for name in (payload.name, payload.name + ".sha256"):
+                with self.subTest(asset=name):
+                    path = self.artifact_dir / name
+                    original = path.read_bytes()
+                    try:
+                        path.unlink()
+                        result = self.run_script(key=self.secret)
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("arquivo ausente", result.stderr)
+                        self.assertIn(name, result.stderr)
+                        self.assertEqual(self.calls(), [])
+                        self.assertFalse(self.storage.exists() and any(self.storage.iterdir()))
+                    finally:
+                        path.write_bytes(original)
+
+    def test_corrupted_download_prevents_manifest_upload(self):
+        for path in self.payloads:
+            with self.subTest(asset=path.name):
+                self.save_release({"tagName": self.tag, "isDraft": True,
+                                   "publishedAt": "", "assets": []})
+                shutil.rmtree(self.storage, ignore_errors=True)
+                self.log_path.unlink(missing_ok=True)
+                result = self.run_script(key=self.secret, corrupt_download=path.name)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("checksum do asset baixado não confere", result.stderr)
+                self.assertIn(path.name, result.stderr)
+                self.assertFalse((self.storage / "latest.json").exists())
+                self.assertFalse((self.storage / "latest.json.minisig").exists())
+                self.assertEqual(len(self.upload_calls()), 8)
 
     def test_archive_refused_by_generator_stops_before_any_github_call(self):
         write_archive(self.portable, self.version, version="0.0.9")
@@ -659,6 +718,9 @@ elif command == "download":
         fail("asset not found: " + name)
     directory.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, directory / name)
+    if name == os.environ.get("FAKE_GH_CORRUPT_DOWNLOAD"):
+        with (directory / name).open("ab") as output:
+            output.write(b"corrupted download")
     log("download", tag, name)
 else:
     fail("unknown command " + command)
