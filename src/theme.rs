@@ -7,8 +7,8 @@
 //!    hairlines, never by cards for their own sake.
 //! 2. **One accent per theme.** The accent belongs to the theme (verdigris on
 //!    Noite, ink green on Papel) and marks what is alive or actionable: send,
-//!    focus, the running agent, the chosen effort level. The effort level is
-//!    shown as text; it no longer recolours the window.
+//!    focus, the running agent. The effort level never recolours the window;
+//!    only the effort control shows the level's own colour, next to its word.
 //! 3. **States stay apart.** Running, failure, warning and new content keep
 //!    distinct colours and always come with an icon or a word — enforced by
 //!    the tests at the bottom of this file, not by opinion.
@@ -794,6 +794,58 @@ pub fn accent_edge() -> Hsla {
 /// redesign the accent belongs to the theme and the level is shown as text.
 pub fn set_effort(_level: Option<&str>, _available: &[String]) {}
 
+// ------------------------------------------------------------- effort level
+//
+// Cor por nível, no escopo do controle de esforço (issue #222): o rótulo do
+// nível aparece na cor dele, sempre junto da palavra. O accent global continua
+// sendo o da marca. Os matizes seguem os tokens `thinking*` do Pi (a rampa
+// pré-redesign); a luminosidade é ajustada por aparência até cada nível ler a
+// ≥ 4,5:1 nas superfícies do tema, e o `max` gira para o carmim para não se
+// confundir com o `failure` (coral) da Noite e do Papel.
+
+/// Níveis de raciocínio, na ordem da rampa.
+pub const EFFORT_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/// Rampa dos temas escuros (Noite, Ardósia): matiz do Pi, luminosidade alta.
+const EFFORT_DARK: [u32; 7] = [
+    0x949ca0ff, 0x83a0b0ff, 0x67a3c1ff, 0x7d9cd9ff, 0xa78ee4ff, 0xdb78c6ff, 0xf96b93ff,
+];
+/// Rampa dos temas claros (Papel, Névoa): mesmos matizes, luminosidade baixa.
+const EFFORT_LIGHT: [u32; 7] = [
+    0x566065ff, 0x416274ff, 0x1d6589ff, 0x335caeff, 0x6b3fd2ff, 0xa91e8cff, 0xbc0a3cff,
+];
+
+/// Opacidade da borda do controle: o mesmo matiz, mais baixo que o texto.
+pub const EFFORT_EDGE_ALPHA: f32 = 0.6;
+
+/// Posição do nível na rampa; `None` para nível desconhecido.
+fn effort_index(level: &str) -> Option<usize> {
+    EFFORT_LEVELS.iter().position(|name| *name == level)
+}
+
+/// A rampa crua da aparência pedida (`off` incluído).
+fn effort_ramp(dark: bool) -> [Hsla; 7] {
+    (if dark { EFFORT_DARK } else { EFFORT_LIGHT }).map(c)
+}
+
+/// Cor do rótulo de um nível. `off` (e nível desconhecido) não tem cor:
+/// volta ao `faint` do tema.
+pub fn effort_color(level: &str) -> Hsla {
+    match effort_index(level) {
+        Some(index) if index > 0 => effort_ramp(is_dark())[index],
+        _ => faint(),
+    }
+}
+
+/// Borda de 1px do controle: o matiz do nível a [`EFFORT_EDGE_ALPHA`]. `off`
+/// usa a hairline neutra do tema.
+pub fn effort_edge(level: &str) -> Hsla {
+    match effort_index(level) {
+        Some(index) if index > 0 => wash(effort_ramp(is_dark())[index], EFFORT_EDGE_ALPHA),
+        _ => line(),
+    }
+}
+
 /// Anel de foco do teclado. Fica fora da caixa, para não competir com as
 /// bordas e cores de estado das linhas. Usa o acento do esforço: o foco é o
 /// lugar onde a cor significa "é aqui que você está".
@@ -1183,6 +1235,101 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("quebrado.json"), "{}", errors[0]);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Cada nível colorido lê a 4,5:1 nas superfícies onde o controle e o menu
+    /// aparecem, em todo tema embutido (a rampa vem da aparência do tema).
+    #[test]
+    fn effort_ramp_reads_on_every_built_in_theme() {
+        for theme in built_ins() {
+            let ramp = effort_ramp(theme.dark);
+            for (level, color) in EFFORT_LEVELS.iter().zip(ramp).skip(1) {
+                for surface in [theme.bg, theme.surface, theme.surface_2, theme.hover] {
+                    let ratio = contrast(color, surface);
+                    assert!(ratio >= 4.5, "{} effort {level}: {ratio:.2}:1", theme.name);
+                }
+            }
+        }
+    }
+
+    /// O nível é cor + palavra; mesmo assim não pode imitar um estado. O `max`
+    /// fica longe do coral de falha, o `minimal` longe do verdete de execução.
+    ///
+    /// Exceção conhecida: em Ardósia e Névoa o `running` é o acento azul da
+    /// marca, no mesmo matiz dos níveis azuis do Pi (`low`/`medium`). Lá a
+    /// comparação com `running` fica de fora; o nível só aparece no controle
+    /// de esforço e sempre com a palavra, e a execução sempre com o pulso.
+    #[test]
+    fn effort_ramp_stays_apart_from_status_colors() {
+        for theme in built_ins() {
+            let ramp = effort_ramp(theme.dark);
+            let blue_brand = matches!(theme.id.as_str(), "dish-slate" | "dish-mist");
+            for (name, semantic) in [
+                ("running", theme.running),
+                ("failure", theme.failure),
+                ("warn", theme.warn),
+                ("attention", theme.attention),
+            ] {
+                if blue_brand && name == "running" {
+                    continue;
+                }
+                for (level, color) in EFFORT_LEVELS.iter().zip(ramp).skip(1) {
+                    let distance = delta_e(semantic, color);
+                    assert!(
+                        distance > 25.0,
+                        "{} {name} vs effort {level}: ΔE {distance:.1} (mínimo 25)",
+                        theme.name
+                    );
+                }
+            }
+        }
+    }
+
+    /// Níveis vizinhos se distinguem, e o primeiro nível colorido não se
+    /// confunde com o `faint` do `off`.
+    #[test]
+    fn effort_levels_are_distinguishable() {
+        for theme in built_ins() {
+            let ramp = effort_ramp(theme.dark);
+            assert!(delta_e(ramp[1], theme.faint) > 7.0, "{} minimal vs faint", theme.name);
+            for (pair, levels) in ramp[1..].windows(2).zip(EFFORT_LEVELS[1..].windows(2)) {
+                let distance = delta_e(pair[0], pair[1]);
+                assert!(
+                    distance > 9.0,
+                    "{} {} vs {}: ΔE {distance:.1}",
+                    theme.name,
+                    levels[0],
+                    levels[1]
+                );
+            }
+        }
+    }
+
+    /// A rampa clara é a escura com a luminosidade baixada: mesmos matizes,
+    /// progressão do Pi preservada.
+    #[test]
+    fn light_effort_ramp_keeps_the_dark_hues() {
+        for (index, (dark, light)) in effort_ramp(true).iter().zip(effort_ramp(false)).enumerate() {
+            let a = dark.color.hue.into_positive_degrees();
+            let b = light.color.hue.into_positive_degrees();
+            let difference = (a - b).abs().min(360.0 - (a - b).abs());
+            assert!(difference < 2.0, "{}: hue {a:.1} vs {b:.1}", EFFORT_LEVELS[index]);
+            assert!(light.color.lightness < dark.color.lightness, "{}", EFFORT_LEVELS[index]);
+        }
+    }
+
+    /// `off` e nível desconhecido voltam ao neutro: sem cor, sem borda colorida.
+    #[test]
+    fn effort_off_is_neutral() {
+        assert_eq!(effort_color("off"), faint());
+        assert_eq!(effort_edge("off"), line());
+        assert_eq!(effort_color("desconhecido"), faint());
+        assert_eq!(effort_edge(""), line());
+        let max = effort_color("max");
+        assert_ne!(max, faint());
+        let edge = effort_edge("max");
+        assert_eq!(edge.color, max.color);
+        assert!((edge.alpha - EFFORT_EDGE_ALPHA).abs() < f32::EPSILON);
     }
 
     /// Nenhum tema do catálogo divide id ou nome, e os embutidos vêm primeiro.

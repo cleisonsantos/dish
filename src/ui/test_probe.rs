@@ -10,11 +10,14 @@ static SINK: OnceLock<Option<mpsc::Sender<Value>>> = OnceLock::new();
 
 /// Called before GPUI starts: file creation and all writes stay off the UI loop.
 /// A fresh, private file prevents accidentally overwriting an existing log.
+/// Smokes relançam o processo no MESMO caminho de log: se o arquivo já existe,
+/// o modo append mantém as sondas vivas nas sessões seguintes — `create_new`
+/// as matava a partir do segundo launch (traces lidos ficavam velhos).
 pub fn init() {
     SINK.get_or_init(|| {
         let path = std::env::var_os("DISH_TEST_UI_LOG")?;
         let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
+        options.write(true).append(true).create(true);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
