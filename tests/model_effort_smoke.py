@@ -154,6 +154,11 @@ with tempfile.TemporaryDirectory(prefix="dish-effort-") as temporary:
         assert not any("invalid_effort" in item for item in events()), "Reconciled against obsolete levels"
         print("Model effort smoke passed")
     except Exception:
+        # A tela no momento da falha: sem ela, "Beta effort not loaded" do
+        # runner não é diagnosticável (o screen.png do text() fica velho).
+        failure = tempfile.mktemp(prefix="dish-effort-failure-", suffix=".png")
+        subprocess.run(["import", "-window", "root", failure], check=False)
+        print(f"Effort failure screenshot: {failure}")
         print(json.dumps(events(), indent=2))
         print("Rendered text:", text())
         print("Application log:", (temp / "dish.log").read_text())
