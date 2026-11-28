@@ -121,9 +121,10 @@ pub const HEADER_HEIGHT: f32 = 72.0;
 pub const NAV_WIDTH: f32 = 320.0;
 /// The fixed icon rail on the left edge; the sessions drawer opens beside it.
 pub const RAIL_WIDTH: f32 = 56.0;
-/// From this window width the sessions drawer docks beside the conversation;
-/// below it the drawer floats over the conversation.
-pub const DRAWER_DOCK_WIDTH: f32 = 1120.0;
+/// Minimum window width to dock a side panel (sessions drawer or details)
+/// beside the conversation while leaving at least ~320px for the conversation;
+/// below this tiny width the panel falls back to an overlay.
+pub const PANEL_MIN_WIDTH: f32 = RAIL_WIDTH + NAV_WIDTH + 320.0;
 /// Secondary interface text: rows, values.
 pub const TEXT_SM: f32 = 12.0;
 /// Metadata: paths, durations, counts.
