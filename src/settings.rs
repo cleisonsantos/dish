@@ -3083,7 +3083,7 @@ impl Render for Settings {
                     .child(
                         div()
                             .flex_none()
-                            .when(!compact, |el| el.w(px(224.)))
+                            .when(!compact, |el| el.w(px(200.)))
                             .flex()
                             .flex_col()
                             .gap(px(2.))
@@ -3091,45 +3091,10 @@ impl Render for Settings {
                                 div()
                                     .ml(px(theme::S3))
                                     .mb(px(theme::S4 + 2.))
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .justify_between()
-                                    .gap(px(theme::S2))
-                                    .child(
-                                        div()
-                                            .font_family(theme::FONT_PROSE)
-                                            .text_size(px(26.))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .child("Configurações"),
-                                    )
-                                    .child(
-                                        div()
-                                            .id("settings-header-close")
-                                            .size(px(28.))
-                                            .rounded(theme::r_control())
-                                            .bg(theme::surface_2())
-                                            .border_1()
-                                            .border_color(theme::line_soft())
-                                            .text_color(theme::text())
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .cursor_pointer()
-                                            .hover(|s| {
-                                                s.bg(theme::hover())
-                                                    .border_color(theme::line())
-                                                    .text_color(theme::text())
-                                            })
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.close(window, cx)
-                                            }))
-                                            .child(crate::ui::icons::icon(
-                                                crate::ui::icons::Icon::Close,
-                                                13.,
-                                                theme::text(),
-                                            )),
-                                    ),
+                                    .font_family(theme::FONT_PROSE)
+                                    .text_size(px(26.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("Configurações"),
                             )
                             .child(menu)
                             .child(
@@ -3241,6 +3206,36 @@ impl Render for Settings {
             })
             .child(crate::ui::motion::reveal(card, "settings-enter"))
             .children(confirmation)
+            // X de fechar no canto superior direito da página: affordance
+            // visível, fora do fluxo do menu (não encolhe nem desloca nada).
+            .child(
+                div()
+                    .id("settings-page-close")
+                    .absolute()
+                    .top(px(theme::S4))
+                    .right(px(theme::S4))
+                    .size(px(28.))
+                    .rounded(theme::r_control())
+                    .bg(theme::surface_2())
+                    .border_1()
+                    .border_color(theme::line_soft())
+                    .text_color(theme::text())
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .hover(|s| {
+                        s.bg(theme::hover())
+                            .border_color(theme::line())
+                            .text_color(theme::text())
+                    })
+                    .on_click(cx.listener(|this, _, window, cx| this.close(window, cx)))
+                    .child(crate::ui::icons::icon(
+                        crate::ui::icons::Icon::Close,
+                        13.,
+                        theme::text(),
+                    )),
+            )
             .into_any_element()
     }
 }
