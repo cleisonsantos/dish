@@ -3704,9 +3704,10 @@ impl Render for Workspace {
         }
         let mut body = div().relative().flex_1().min_h(px(0.)).flex().flex_row();
         body = body.child(self.rail(cx));
-        // Janela larga: a gaveta encaixa ao lado da conversa. Estreita: flutua
-        // por cima e fecha com um clique fora, sem espremer a leitura.
-        let drawer_floats = f32::from(window.bounds().size.width) < theme::DRAWER_DOCK_WIDTH;
+        // A gaveta encaixa ao lado da conversa (a conversa reflui) sempre que
+        // houver espaço mínimo para trilho + painel + conversa; só flutua por
+        // cima em janelas minúsculas.
+        let drawer_floats = f32::from(window.bounds().size.width) < theme::PANEL_MIN_WIDTH;
         let left_chrome = theme::RAIL_WIDTH
             + if self.visible && !drawer_floats { self.nav_width } else { 0. };
         self.conversations[self.active]

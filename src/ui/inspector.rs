@@ -15,11 +15,12 @@ use crate::theme;
 use crate::ui::icons::{Icon, icon};
 use crate::ui::meter;
 
-/// Abaixo disto o inspetor abre como sobreposição.
-pub const NARROW: f32 = 1120.;
+/// Abaixo disto (janela minúscula) o inspetor abre como sobreposição.
+pub const NARROW: f32 = theme::PANEL_MIN_WIDTH;
 pub const WIDTH: f32 = 316.;
 
-/// Preserve the original docked-details behaviour at ordinary desktop widths.
+/// Dock details beside the conversation at any normal width; fall back to an
+/// overlay only on tiny windows where the panel and conversation cannot both fit.
 pub fn uses_overlay(viewport: f32) -> bool {
     viewport < NARROW
 }
@@ -675,8 +676,12 @@ mod tests {
 
     #[test]
     fn details_keep_the_original_desktop_breakpoint() {
-        assert!(uses_overlay(780.));
-        assert!(uses_overlay(1119.));
+        assert!(uses_overlay(480.));
+        assert!(uses_overlay(695.));
+        assert!(!uses_overlay(696.));
+        assert!(!uses_overlay(780.));
+        assert!(!uses_overlay(960.));
+        assert!(!uses_overlay(1119.));
         assert!(!uses_overlay(1120.));
         assert!(!uses_overlay(1240.));
         assert!(!uses_overlay(1600.));

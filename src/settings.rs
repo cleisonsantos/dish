@@ -3206,6 +3206,36 @@ impl Render for Settings {
             })
             .child(crate::ui::motion::reveal(card, "settings-enter"))
             .children(confirmation)
+            // X de fechar no canto superior direito da página: affordance
+            // visível, fora do fluxo do menu (não encolhe nem desloca nada).
+            .child(
+                div()
+                    .id("settings-page-close")
+                    .absolute()
+                    .top(px(theme::S4))
+                    .right(px(theme::S4))
+                    .size(px(28.))
+                    .rounded(theme::r_control())
+                    .bg(theme::surface_2())
+                    .border_1()
+                    .border_color(theme::line_soft())
+                    .text_color(theme::text())
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .hover(|s| {
+                        s.bg(theme::hover())
+                            .border_color(theme::line())
+                            .text_color(theme::text())
+                    })
+                    .on_click(cx.listener(|this, _, window, cx| this.close(window, cx)))
+                    .child(crate::ui::icons::icon(
+                        crate::ui::icons::Icon::Close,
+                        13.,
+                        theme::text(),
+                    )),
+            )
             .into_any_element()
     }
 }
