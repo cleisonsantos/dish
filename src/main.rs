@@ -164,10 +164,29 @@ impl Render for Root {
 /// `foo` with the flag instead of treating it as prompt text.
 const PI_FLAGS_WITH_VALUES: &[&str] = &[
     "--provider", "--model", "--api-key", "--system-prompt", "--append-system-prompt", "--mode",
-    "--session", "--session-id", "--fork", "--session-dir", "-n", "--name", "--models", "--tools",
-    "-t", "--exclude-tools", "-xt", "--thinking", "--extension", "-e", "--skill",
+    "--session", "--session-id", "--fork", "--session-dir", "--agent-dir", "-n", "--name", "--models",
+    "--tools", "-t", "--exclude-tools", "-xt", "--thinking", "--extension", "-e", "--skill",
     "--prompt-template", "--theme", "--use-theme", "--export", "--tui-mode",
 ];
+
+const PI_FLAGS_WITHOUT_REQUIRED_VALUES: &[&str] = &[
+    "--print", "-p", "--continue", "-c", "--resume", "-r", "--no-session", "--no-tools", "-nt",
+    "--no-builtin-tools", "-nbt", "--no-extensions", "-ne", "--no-mcp", "--no-skills", "-ns",
+    "--no-prompt-templates", "-np", "--no-themes", "--no-context-files", "-nc", "--list-models",
+    "--verbose", "--approve", "-a", "--no-approve", "-na", "--offline", "--",
+];
+
+const CLI_HELP: &str = "\
+Uso: dish [opções do Pi] [diretório] [prompt...]
+     dish --install-mcp|--uninstall-mcp [--project]
+     dish --mcp-serve
+
+Opções do Dish:
+  -h, --help             Mostra esta ajuda
+  -v, --version          Mostra a versão
+
+Opções do Pi incluem --session <arquivo>, --continue, --no-session e --model <modelo>.
+";
 
 /// Um argumento com cara de caminho: absoluto, `~`, relativo explícito ou com
 /// separador. Só vale antes do primeiro prompt, para que texto comum continue
@@ -181,10 +200,93 @@ fn looks_like_path(argument: &str) -> bool {
         || (cfg!(windows) && argument.contains('\\'))
 }
 
+enum CliAction {
+    Help,
+    Version,
+    Launch(LaunchArgs),
+}
+
+struct LaunchArgs {
+    pi_flags: Vec<String>,
+    cwd: Option<PathBuf>,
+    words: Vec<String>,
+    notice: Option<String>,
+}
+
+fn parse_cli(mut arguments: impl Iterator<Item = String>) -> Result<CliAction, String> {
+    let mut pi_flags: Vec<String> = Vec::new();
+    let mut cwd: Option<PathBuf> = None;
+    let mut words: Vec<String> = Vec::new();
+    let mut notice: Option<String> = None;
+    while let Some(argument) = arguments.next() {
+        let still_leading = cwd.is_none() && words.is_empty();
+        if still_leading && argument.starts_with('-') {
+            match argument.as_str() {
+                "--help" | "-h" => return Ok(CliAction::Help),
+                "--version" | "-v" => return Ok(CliAction::Version),
+                _ => {}
+            }
+            let inline_value = argument.split_once('=');
+            let flag = inline_value.map_or(argument.as_str(), |(flag, _)| flag);
+            let takes_value = PI_FLAGS_WITH_VALUES.contains(&flag);
+            if !takes_value && !PI_FLAGS_WITHOUT_REQUIRED_VALUES.contains(&argument.as_str()) {
+                return Err(argument);
+            }
+            let separate_value = takes_value && inline_value.is_none();
+            pi_flags.push(argument);
+            if separate_value {
+                pi_flags.extend(arguments.next());
+            }
+        } else if still_leading && PathBuf::from(&argument).is_dir() {
+            cwd = Some(PathBuf::from(&argument));
+        } else if still_leading && looks_like_path(&argument) {
+            // Um caminho que não existe não vira prompt em silêncio. O resto da
+            // linha era um pedido para aquela pasta, então não é enviado em
+            // outra; a janela avisa e segue com a pasta atual.
+            notice = Some(format!(
+                "A pasta “{argument}” não existe ou não é um diretório. O Dish abriu a pasta atual; use “Abrir projeto…” para escolher outra."
+            ));
+            break;
+        } else {
+            words.push(argument);
+        }
+    }
+    Ok(CliAction::Launch(LaunchArgs {
+        pi_flags,
+        cwd,
+        words,
+        notice,
+    }))
+}
+
 fn main() {
     if let Some(code) = mcp_command() {
         std::process::exit(code);
     }
+
+    let arguments = std::env::args();
+    let restore_last = arguments.len() == 1;
+    let LaunchArgs {
+        mut pi_flags,
+        mut cwd,
+        words,
+        notice,
+    } = match parse_cli(arguments.skip(1)) {
+        Ok(CliAction::Help) => {
+            print!("{CLI_HELP}");
+            return;
+        }
+        Ok(CliAction::Version) => {
+            println!("{}", env!("CARGO_PKG_VERSION"));
+            return;
+        }
+        Ok(CliAction::Launch(launch)) => launch,
+        Err(argument) => {
+            eprintln!("dish: argumento desconhecido: {argument}");
+            std::process::exit(2);
+        }
+    };
+
     logging::init();
     // `DISH_TEST_PANIC` existe só para o smoke de privacidade dos diagnósticos
     // (tests/diagnostic_privacy_smoke.py), no mesmo espírito de `DISH_TEST_UI_LOG`:
@@ -209,46 +311,7 @@ fn main() {
         std::env::remove_var("WAYLAND_DISPLAY");
     }
 
-    // `dish [pi-flags] [path] [prompt...]`
-    //
-    // Leading options are handed straight to Pi (`--continue`, `--model`, …),
-    // an existing directory selects the project folder, and the remaining words
-    // are sent as the first prompt.
     let preferences = preferences::load();
-    let restore_last = std::env::args_os().len() == 1;
-    let mut pi_flags: Vec<String> = Vec::new();
-    let mut cwd: Option<PathBuf> = None;
-    let mut words: Vec<String> = Vec::new();
-    let mut notice: Option<String> = None;
-    let mut arguments = std::env::args().skip(1).peekable();
-    while let Some(argument) = arguments.next() {
-        let still_leading = cwd.is_none() && words.is_empty();
-        if still_leading && argument.starts_with('-') {
-            let takes_value = PI_FLAGS_WITH_VALUES.contains(&argument.as_str());
-            pi_flags.push(argument);
-            if takes_value {
-                // `--model foo`, not `--model=foo`
-                if let Some(value) = arguments.peek() {
-                    if !value.starts_with('-') {
-                        let value = arguments.next().unwrap_or_default();
-                        pi_flags.push(value);
-                    }
-                }
-            }
-        } else if still_leading && PathBuf::from(&argument).is_dir() {
-            cwd = Some(PathBuf::from(&argument));
-        } else if still_leading && looks_like_path(&argument) {
-            // Um caminho que não existe não vira prompt em silêncio. O resto da
-            // linha era um pedido para aquela pasta, então não é enviado em
-            // outra; a janela avisa e segue com a pasta atual.
-            notice = Some(format!(
-                "A pasta “{argument}” não existe ou não é um diretório. O Dish abriu a pasta atual; use “Abrir projeto…” para escolher outra."
-            ));
-            break;
-        } else {
-            words.push(argument);
-        }
-    }
     if restore_last {
         if let Some(project) = preferences.last_project.as_ref().filter(|p| p.is_dir()) {
             cwd = Some(project.clone());
@@ -467,7 +530,56 @@ fn mcp_command() -> Option<i32> {
 
 #[cfg(test)]
 mod tests {
-    use super::looks_like_path;
+    use super::{looks_like_path, parse_cli, CliAction};
+    use std::path::Path;
+
+    #[test]
+    fn cli_handles_its_own_flags_and_rejects_unknown_options() {
+        for flag in ["--help", "-h"] {
+            assert!(matches!(
+                parse_cli(std::iter::once(flag.to_owned())),
+                Ok(CliAction::Help)
+            ));
+        }
+        for flag in ["--version", "-v"] {
+            assert!(matches!(
+                parse_cli(std::iter::once(flag.to_owned())),
+                Ok(CliAction::Version)
+            ));
+        }
+        assert!(matches!(
+            parse_cli(["--continue", "--xyz"].map(str::to_owned).into_iter()),
+            Err(flag) if flag == "--xyz"
+        ));
+    }
+
+    #[test]
+    fn cli_keeps_project_and_session_launch_arguments() {
+        for (args, expected_pi_flags) in [
+            (&["."][..], &[][..]),
+            (
+                &["--session", "saved session.jsonl", "."],
+                &["--session", "saved session.jsonl"],
+            ),
+            (
+                &["--session=saved session.jsonl", "."],
+                &["--session=saved session.jsonl"],
+            ),
+            (
+                &["--session", "-session.jsonl", "."],
+                &["--session", "-session.jsonl"],
+            ),
+        ] {
+            let Ok(CliAction::Launch(launch)) = parse_cli(args.iter().copied().map(str::to_owned))
+            else {
+                panic!("expected a graphical launch for {args:?}");
+            };
+            assert_eq!(launch.cwd.as_deref(), Some(Path::new(".")));
+            assert_eq!(launch.pi_flags, expected_pi_flags);
+            assert!(launch.words.is_empty());
+            assert!(launch.notice.is_none());
+        }
+    }
 
     #[test]
     fn path_like_arguments_are_recognized() {

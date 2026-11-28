@@ -66,8 +66,15 @@ with tempfile.TemporaryDirectory(prefix="dish-effort-") as temporary:
         press("Return")
 
     def assert_beta_menu():
-        wait_for(lambda: find_word(window, "muito", last=True), "Beta effort not loaded")
-        box = find_word(window, "muito", last=True)
+        # O chip novo (#222) é só a palavra, na cor do nível — menos pixels que
+        # o controle antigo, e o OCR do runner perde em 200%. 400% devolve a
+        # margem; parse_words divide pela mesma escala, então o clique cai no
+        # lugar certo nos dois casos.
+        def beta_box():
+            return find_word(window, "muito", last=True) \
+                or find_word(window, "muito", last=True, scale=4)
+        wait_for(lambda: beta_box(), "Beta effort not loaded")
+        box = beta_box()
         click(window, box[0] + box[2] // 2, box[1] + box[3] // 2)
         def complete_menu():
             first = find_word(window, "desligado")
@@ -147,6 +154,11 @@ with tempfile.TemporaryDirectory(prefix="dish-effort-") as temporary:
         assert not any("invalid_effort" in item for item in events()), "Reconciled against obsolete levels"
         print("Model effort smoke passed")
     except Exception:
+        # A tela no momento da falha: sem ela, "Beta effort not loaded" do
+        # runner não é diagnosticável (o screen.png do text() fica velho).
+        failure = tempfile.mktemp(prefix="dish-effort-failure-", suffix=".png")
+        subprocess.run(["import", "-window", "root", failure], check=False)
+        print(f"Effort failure screenshot: {failure}")
         print(json.dumps(events(), indent=2))
         print("Rendered text:", text())
         print("Application log:", (temp / "dish.log").read_text())

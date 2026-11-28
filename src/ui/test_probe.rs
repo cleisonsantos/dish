@@ -12,7 +12,7 @@ static SINK: OnceLock<Option<mpsc::Sender<Value>>> = OnceLock::new();
 /// A fresh, private file prevents accidentally overwriting an existing log.
 /// Smokes relançam o processo no MESMO caminho de log: se o arquivo já existe,
 /// o modo append mantém as sondas vivas nas sessões seguintes — `create_new`
-/// as matava a partir do segundo launch ("Done probe not painted").
+/// as matava a partir do segundo launch (traces lidos ficavam velhos).
 pub fn init() {
     SINK.get_or_init(|| {
         let path = std::env::var_os("DISH_TEST_UI_LOG")?;

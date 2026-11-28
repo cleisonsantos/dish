@@ -120,7 +120,8 @@ lives in `assets/brand/`.
 
 - Paper and ink: a quiet ground, a darker rail, recessed wells for code.
   Separation by tone and hairlines, not by cards.
-- One accent per theme. It never encodes reasoning effort.
+- One accent per theme. It never encodes reasoning effort; only the effort
+  control shows the level's own colour, next to the level's word.
 - Reading serif for what people read; Geist for interface; monospace for
   anything a machine produced.
 - Activity in the margin when there is room, inline when there is not.
@@ -150,10 +151,19 @@ roles they want, including `accent`, and inherit the rest.
 
 `accent()` returns the theme's `brand` colour. It marks the send button (filled
 only when there is something to send), keyboard focus, the composer border
-while focused or while Pi works, the chosen effort level, the rail mark and the
-running indicator. `accent_edge()` (42%) and `accent_hover()` are computed
-states. **The Accent-Is-Not-Effort Rule:** the reasoning level is shown as text
-("raciocínio alto"); it never recolours the window.
+while focused or while Pi works, the rail mark and the running indicator. `accent_edge()` (42%) and `accent_hover()` are computed
+states. **The Accent-Is-Not-Effort Rule:** the reasoning level never recolours the
+window or the global accent.
+
+### Effort level
+
+The effort control and its menu use a local per-level ramp (`effort_color`,
+`effort_edge` in `src/theme.rs`, issue #222): the control shows only the level's
+word in that level's colour, a chevron, and a 1px border in the same hue at 60%.
+"desligado" stays neutral (`faint` text, `line` border). Hues follow Pi's
+`thinking*` tokens; dark themes lift the lightness, light themes lower it, so
+each level reads at 4.5:1 on its theme. In the menu every row uses its level's
+colour and the current one keeps the filled marker and "ativo".
 
 ### Status
 
@@ -215,10 +225,13 @@ metadata never competes with them.
 - **Code**: inline code on `code_wash()` (a veil of the text colour); blocks in
   an `inset` well with a small language header and copy.
 - **Composer**: a 16px-radius sheet in the column. Serif writing text; below,
-  attach (+), model (monospace), effort as text, and on the right Stop
+  attach (+), model (monospace), the effort level as its coloured word, and on the right Stop
   ("Parar", rust) while Pi works and the circular Send (up arrow) — outlined
   when empty, filled with the accent when there is something to send. The
   character counter appears only with text or when expanded.
+  Its menus (`/`, model, effort) float in an overlay layer above the
+  transcript — `/` over the composer, model and effort anchored to their
+  control — and never change the layout.
 - **Welcome**: folder eyebrow, the serif question, the composer, and three
   suggestions as an index of serif lines separated by hairlines.
 - **Drawer**: serif "Sessões" title with open-folder and "Nova" pills; filters
@@ -245,7 +258,8 @@ glow); one-shot transitions stay under 220ms.
 
 ### Don't
 
-- Don't colour the interface by reasoning effort.
+- Don't recolour the global accent by reasoning effort; a level indicator may
+  use the level's colour next to the level's word.
 - Don't wrap turns or sections in cards, side stripes or shadows.
 - Don't add a second filled action next to Send.
 - Don't run repeating animations while Pi is idle.

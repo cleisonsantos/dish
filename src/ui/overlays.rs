@@ -168,7 +168,7 @@ pub fn model_picker(state: &AppState, window: &Window, cx: &Context<AppState>) -
         .id("model-picker")
         // Clicar dentro não fecha; o clique fora chega ao root.
         .on_mouse_down(MouseButton::Left, |_event, _window, cx| cx.stop_propagation())
-        .mx(px(theme::CHAT_INSET))
+        // Quem posiciona é a camada do composer (ancorada ao controle).
         .max_w(px(theme::COMPOSER_PICKER_WIDTH))
         .flex()
         .flex_col()
