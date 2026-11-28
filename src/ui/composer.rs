@@ -142,12 +142,22 @@ pub fn composer(
     if has_queue {
         column = column.child(queue(state, cx));
     }
-    if !matches.is_empty() {
-        column = column.child(super::motion::reveal(slash_menu(matches, selected, cx), "slash-menu-enter"));
-    } else if state.model_menu {
-        column = column.child(super::motion::reveal(crate::ui::overlays::model_picker(state, window, cx), "model-menu-enter"));
-    } else if state.effort_menu {
-        column = column.child(super::motion::reveal(effort_menu(state, cx), "effort-menu-enter"));
+    // Menus flutuam (#220): nada aqui entra no fluxo da coluna, senão o
+    // transcript acima é empurrado a cada abertura. O de `/` fica sobre a
+    // coluna; os de modelo e esforço, ancorados ao controle que os abriu.
+    let menu = ComposerMenu::current(state, matches);
+    if menu == ComposerMenu::Slash {
+        column = column.relative().child(
+            deferred(
+                div()
+                    .absolute()
+                    .left(px(theme::CHAT_INSET))
+                    .right(px(theme::CHAT_INSET))
+                    .bottom(relative(1.))
+                    .child(super::motion::reveal(slash_menu(matches, selected, cx), "slash-menu-enter")),
+            )
+            .with_priority(1),
+        );
     }
 
     // O acento do esforço vive aqui: borda no foco, brilho suave em repouso de
@@ -287,8 +297,25 @@ pub fn composer(
                             .flex_1()
                             .flex_wrap()
                             .child(attach_control(state, cx))
-                            .child(model_control(state, cx))
-                            .child(effort_control(state, cx)),
+                            .child(anchored_menu(
+                                model_control(state, cx),
+                                (menu == ComposerMenu::Model).then(|| {
+                                    let width = picker_width(window, theme::COMPOSER_PICKER_WIDTH);
+                                    super::motion::reveal(
+                                        crate::ui::overlays::model_picker(state, window, cx).w(px(width)),
+                                        "model-menu-enter",
+                                    )
+                                    .into_any_element()
+                                }),
+                            ))
+                            .child(anchored_menu(
+                                effort_control(state, cx),
+                                (menu == ComposerMenu::Effort).then(|| {
+                                    let width = picker_width(window, theme::EFFORT_MENU_WIDTH);
+                                    super::motion::reveal(effort_menu(state, cx).w(px(width)), "effort-menu-enter")
+                                        .into_any_element()
+                                }),
+                            )),
                     )
                     .child(actions(streaming, empty, cx)),
             );
@@ -581,6 +608,58 @@ fn control_shell(id: impl Into<ElementId>) -> Stateful<Div> {
         .focus(|style| style.bg(theme::hover()).shadow(theme::focus_ring()))
 }
 
+/// Qual menu do composer está aberto. Um por vez, nesta precedência: o `/`
+/// (que nasce do texto) ganha dos menus de controle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ComposerMenu {
+    None,
+    Slash,
+    Model,
+    Effort,
+}
+
+impl ComposerMenu {
+    fn current(state: &AppState, matches: &[(String, String)]) -> Self {
+        Self::pick(!matches.is_empty(), state.model_menu, state.effort_menu)
+    }
+
+    fn pick(slash: bool, model: bool, effort: bool) -> Self {
+        if slash {
+            Self::Slash
+        } else if model {
+            Self::Model
+        } else if effort {
+            Self::Effort
+        } else {
+            Self::None
+        }
+    }
+}
+
+/// Largura de um menu flutuante: a do token, sem passar da janela.
+fn picker_width(window: &Window, width: f32) -> f32 {
+    let room = f32::from(window.viewport_size().width) - 2. * theme::S2;
+    width.min(room).max(0.)
+}
+
+/// Um controle com o seu menu numa camada acima do transcript: o menu é
+/// desenhado depois de tudo (`deferred`), ancorado pelo canto inferior
+/// esquerdo no topo do controle, e não ocupa espaço no layout.
+fn anchored_menu(control: AnyElement, menu: Option<AnyElement>) -> Div {
+    div().relative().min_w(px(0.)).child(control).when_some(menu, |el, menu| {
+        el.child(
+            deferred(
+                anchored()
+                    .anchor(Anchor::BottomLeft)
+                    .offset(point(px(0.), px(-theme::S2)))
+                    .snap_to_window_with_margin(px(theme::S2))
+                    .child(menu),
+            )
+            .with_priority(1),
+        )
+    })
+}
+
 fn attach_control(state: &AppState, cx: &Context<AppState>) -> AnyElement {
     control_shell("attach-button")
         .test_probe(|| "attach-button".into(), || serde_json::json!({}))
@@ -705,16 +784,21 @@ fn effort_control(state: &AppState, cx: &Context<AppState>) -> AnyElement {
             state.effort_menu = !state.effort_menu;
             cx.notify();
         }))
-        // Esforço como texto: "raciocínio" e o nível na cor do acento.
-        .child(div().text_size(px(theme::TEXT_SM)).text_color(theme::faint()).child("raciocínio"))
+        // Só a palavra do nível, na cor dele, com borda fina no mesmo matiz
+        // (#222); "desligado" fica neutro. O tooltip explica o que é.
+        .border_1()
+        .border_color(theme::effort_edge(&level))
+        // A borda soma 1px por lado: o padding vertical cede 1px para o chip
+        // manter a altura dos outros controles da linha.
+        .py(px(theme::S1 + 1.))
         .child(
             div()
                 .text_size(px(theme::TEXT_SM))
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(theme::accent())
+                .text_color(theme::effort_color(&level))
                 .child(crate::state::effort_label(&level)),
         )
-        .child(icon(Icon::ChevronDown, 12., theme::accent()))
+        .child(icon(Icon::ChevronDown, 12., theme::effort_color(&level)))
         .into_any_element()
 }
 
@@ -1024,7 +1108,8 @@ fn queue_item(label: &str, text: &str, color: Hsla) -> AnyElement {
         .into_any_element()
 }
 
-/// Menu do esforço: os níveis que o Pi oferece, o escolhido marcado no acento.
+/// Menu do esforço: os níveis que o Pi oferece, cada um na cor dele; o
+/// escolhido marcado com o ponto cheio e "ativo".
 fn effort_menu(state: &AppState, cx: &Context<AppState>) -> Div {
     let current = state.thinking_level.clone().unwrap_or_default();
     // Pi owns capabilities. Never invent a fallback ladder for an empty list.
@@ -1053,17 +1138,18 @@ fn effort_menu(state: &AppState, cx: &Context<AppState>) -> Div {
                 div()
                     .flex_none()
                     .w(px(14.))
-                    // Sem cor por nível: o escolhido é o ponto cheio do acento.
+                    // O marcador repete a cor do nível: cheio no escolhido.
                     .child(if selected {
-                        crate::ui::dot(theme::accent(), 8.).rounded(px(4.))
+                        crate::ui::dot(theme::effort_color(level), 8.).rounded(px(4.))
                     } else {
-                        div().size(px(7.)).rounded(px(4.)).border_1().border_color(theme::faint())
+                        div().size(px(7.)).rounded(px(4.)).border_1().border_color(theme::effort_edge(level))
                     }),
             )
             .child(
                 div()
                     .text_size(px(theme::TEXT))
-                    .text_color(if selected { theme::text() } else { theme::dim() })
+                    .when(selected, |el| el.font_weight(FontWeight::MEDIUM))
+                    .text_color(theme::effort_color(level))
                     .child(SharedString::from(crate::state::effort_label(level))),
             )
             .child(div().flex_1())
@@ -1078,7 +1164,6 @@ fn effort_menu(state: &AppState, cx: &Context<AppState>) -> Div {
     });
 
     div()
-        .mx(px(theme::CHAT_INSET))
         .max_w(px(theme::EFFORT_MENU_WIDTH))
         .rounded(theme::r_surface())
         .border_1()
@@ -1165,7 +1250,6 @@ fn slash_menu(matches: &[(String, String)], selected: usize, cx: &Context<AppSta
         });
 
     div()
-        .mx(px(theme::CHAT_INSET))
         .max_w(px(theme::COMPOSER_PICKER_WIDTH))
         .rounded(theme::r_surface())
         .border_1()
@@ -1238,8 +1322,18 @@ fn inset_block(state: &AppState) -> Div {
 
 #[cfg(test)]
 mod tests {
-    use super::{composer_match_step, composer_matches, composer_selection, effort_step};
+    use super::{ComposerMenu, composer_match_step, composer_matches, composer_selection, effort_step};
     use crate::editor::Selection;
+
+    /// Um menu por vez (#220): o `/` ganha dos menus de controle, e modelo
+    /// ganha de esforço — nunca dois overlays empilhados.
+    #[test]
+    fn composer_menu_shows_one_overlay_in_precedence_order() {
+        assert_eq!(ComposerMenu::pick(false, false, false), ComposerMenu::None);
+        assert_eq!(ComposerMenu::pick(true, true, true), ComposerMenu::Slash);
+        assert_eq!(ComposerMenu::pick(false, true, true), ComposerMenu::Model);
+        assert_eq!(ComposerMenu::pick(false, false, true), ComposerMenu::Effort);
+    }
 
     #[test]
     fn composer_search_finds_literal_utf8_ranges_and_handles_empty_queries() {
