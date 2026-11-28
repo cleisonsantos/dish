@@ -162,7 +162,7 @@ def click(window, x, y):
     time.sleep(0.2)
 
 
-def find_word(window, needle, last=False, crop=None):
+def find_word(window, needle, last=False, crop=None, scale=2):
     """OCR only for visual checks/selection. Prefer paint state for app state.
 
     Crop before enlarging: unrelated columns confuse segmentation. Return words
@@ -175,7 +175,7 @@ def find_word(window, needle, last=False, crop=None):
         if crop:
             x, y, width, height = crop
             args += ["-crop", f"{width}x{height}+{x}+{y}"]
-        capture = subprocess.run(args + ["-resize", "200%", image],
+        capture = subprocess.run(args + ["-resize", f"{scale * 100}%", image],
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if capture.returncode != 0:
             return None  # Window may have its title before it is mapped.
@@ -1038,7 +1038,12 @@ with tempfile.TemporaryDirectory(prefix="dish-metadata-") as directory:
             copy_ui_text(window, expected_command)
             set_ui_expanded(window, f"tool-{call_id}", False)
             # Tooltip is a visual assertion; keep OCR here, enlarged/multi-PSM.
-            wait_for(lambda: find_word(window, "COMANDO_COMPLETO"), "Full command tooltip missing", timeout=4)
+            # O tooltip é escuro sobre escuro e o OCR perde em 200% quando a
+            # página muda um pixel; 400% devolve a margem (asserts dos dois
+            # níveis mantidas: 200% primeiro, 400% como fallback).
+            wait_for(lambda: find_word(window, "COMANDO_COMPLETO")
+                     or find_word(window, "COMANDO_COMPLETO", scale=4),
+                     "Full command tooltip missing", timeout=4)
             park_mouse(window)
             badge_id = f"tool-metadata-{call_id}-badge"
             set_ui_expanded(window, badge_id, True)
