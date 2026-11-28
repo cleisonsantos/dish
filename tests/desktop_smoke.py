@@ -179,10 +179,7 @@ def find_word(window, needle, last=False, crop=None):
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if capture.returncode != 0:
             return None  # Window may have its title before it is mapped.
-        for psm in ("11", "6"):
-            tsv = subprocess.check_output(
-                ["tesseract", image, "stdout", "--psm", psm, "tsv"],
-                stderr=subprocess.DEVNULL).decode()
+        def scan(tsv, origin):
             lines = visual_lines(parse_words(tsv, origin=origin, scale=scale))
             matches = [tuple(word[:4]) for line in lines for word in line
                        if needle.casefold() in word.text.casefold()]
@@ -196,6 +193,41 @@ def find_word(window, needle, last=False, crop=None):
                 for line in lines:
                     if flat in "".join(word.text for word in line).casefold():
                         return tuple(line[0][:4])
+            return None
+        def read(image, origin):
+            for psm in ("11", "6"):
+                tsv = subprocess.check_output(
+                    ["tesseract", image, "stdout", "--psm", psm, "tsv"],
+                    stderr=subprocess.DEVNULL).decode()
+                found = scan(tsv, origin)
+                if found is not None:
+                    return found
+            return None
+        full = read(image, origin)
+        if full is not None:
+            return full
+        # A segmentação de página inteira perde linhas pequenas de controles
+        # (o chip do esforço some entre as sugestões e o rodapé). Re-varre em
+        # bandas horizontais sobrepostas: cada linha pequena é lida pela banda
+        # que a contém, com a origem somada de volta nas coordenadas.
+        attributes = XWindowAttributes()
+        if not x11.XGetWindowAttributes(display, window, ctypes.byref(attributes)):
+            return None
+        total = attributes.height
+        band = max(1, total // 5)
+        for top in range(0, total - band // 2, band // 2):
+            height = min(band, total - top)
+            piece = str(Path(directory) / "band.png")
+            capture = subprocess.run(
+                ["import", "-window", str(window), "-crop",
+                 f"{attributes.width}x{height}+0+{top}",
+                 "-resize", f"{scale * 100}%", piece],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if capture.returncode != 0:
+                continue
+            found = read(piece, (0, top))
+            if found is not None:
+                return found
     return None
 
 
