@@ -38,6 +38,15 @@ Release is published, never automatically from a push.
 Packages and installers are on the
 [releases page](https://github.com/cleisonsantos/dish/releases).
 
+> **Finding the newest release from scripts.** Every release so far is a
+> pre-release, so GitHub's `/releases/latest` endpoint answers
+> `404` — by definition it only reports non-prerelease tags. Discover the
+> newest tag the way Dish's own update check does: take the first entry of
+> `https://api.github.com/repos/cleisonsantos/dish/releases?per_page=100`
+> (optionally filtered by the `prerelease` flag), or use the signed update
+> manifest at `DISH_UPDATE_URL` (see `src/update.rs`; `DISH_NO_UPDATE_CHECK`
+> disables it locally).
+
 > **Unsigned pre-release.** The current Windows build is a pre-release and its
 > binaries are **not code-signed yet**. SmartScreen **will** warn when you run the
 > installer. Check the published SHA-256 first; if it matches and you accept the
