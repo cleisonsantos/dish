@@ -5,6 +5,8 @@ Uses only fake Node/npm/Pi executables. No network or user configuration changes
 import re
 from pathlib import Path
 
+from ui_test_support import UiTrace, visible_point
+
 # Reuse XTest helpers without running the existing-session test scenario.
 helper_path = Path(__file__).with_name("desktop_smoke.py")
 helpers = helper_path.read_text().split(
@@ -42,13 +44,16 @@ printf '#!/bin/sh\\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@
                XDG_DATA_HOME=str(temp / "data"),
                PI_CODING_AGENT_DIR=str(temp / "agent"),
                DISH_FAKE_PI_LOG=str(log_path), XDG_SESSION_TYPE="x11",
-               RUST_BACKTRACE="1")
+               DISH_TEST_UI_LOG=str(temp / "ui.jsonl"), RUST_BACKTRACE="1")
     env.pop("DISH_PI_BIN", None)
     env.pop("WAYLAND_DISPLAY", None)
     env.pop("PI_CODING_AGENT_SESSION_DIR", None)
 
     def events():
         return read_events(log_path)
+
+    # Sonda de paint state (o app grava o trace em DISH_TEST_UI_LOG).
+    trace = UiTrace(temp / "ui.jsonl")
 
     def launch():
         log = open(temp / "dish.log", "w")
@@ -287,11 +292,13 @@ printf '#!/bin/sh\\nexec /usr/bin/python3 "{ROOT}/tests/fixtures/fake_pi.py" "$@
                     return True
             # O rótulo é desenhado e correto (visto nos screenshots do CI), mas
             # o OCR do runner pode perder o botão com borda em telas de wizard.
-            # O botão primário do assistente responde a Return (o mesmo
-            # Tab + Return do passo "Começar" acima), então tentar o teclado
-            # mantém o fluxo determinístico sem apagar a verificação OCR.
-            print("Done button label not read; trying Return on the primary", flush=True)
-            press("Return")
+            # Fallback pela sonda de paint state ("setup-open"), o padrão da
+            # casa: "a sonda da página vale mais que o OCR".
+            print("Done button label not read; clicking by paint probe", flush=True)
+            wait_for(lambda: trace.node("setup-open") and visible_point(trace.node("setup-open")),
+                     "Done probe not painted")
+            x, y = visible_point(trace.node("setup-open"))
+            click(window, x, y)
             return True
         wait_for(click_done, "Done button not found")
         wait_for(lambda: any(e.get("command", {}).get("type") == "get_messages" for e in events()),

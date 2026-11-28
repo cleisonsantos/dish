@@ -10,6 +10,7 @@ use crate::{
     rpc::{PiClient, PiConfig},
     state::AppState,
     theme,
+    ui::test_probe::TestProbe,
     workspace::{Workspace, WorkspaceEvent},
 };
 use gpui::{prelude::*, *};
@@ -1011,6 +1012,9 @@ fn primary_button(
     let keyed = activate;
     div()
         .id(id)
+        // Sonda de paint state: os smokes clicam o botão primário pela sonda
+        // (o OCR do botão com borda é marginal em runners lentos).
+        .test_probe(move || id.into(), move || serde_json::json!({}))
         .px(px(theme::S4))
         .py(px(9.))
         .rounded(theme::r_action())
