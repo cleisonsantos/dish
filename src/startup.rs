@@ -937,6 +937,10 @@ impl Render for Startup {
                     .overflow_y_scroll()
                     .child(view),
             )
+            // Último filho pintado delimita um frame completo de observação,
+            // igual ao workspace: sem isto o UiTrace nunca comita os nodes
+            // desta janela e as sondas do assistente não ficam visíveis.
+            .test_probe(|| "frame".into(), || serde_json::json!({}))
             .into_any_element()
     }
 }
