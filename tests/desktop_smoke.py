@@ -188,6 +188,14 @@ def find_word(window, needle, last=False, crop=None, scale=2):
                        if needle.casefold() in word.text.casefold()]
             if matches:
                 return matches[-1] if last else matches[0]
+            # O OCR traga separadores e quebra a palavra ("COMANDO_COMPLETO"
+            # vira "COMANDO", "_", "COMPLETO"); o needle com underscore nunca
+            # bate por palavra. A linha inteira, sem os separadores, cobre.
+            flat = needle.casefold().replace("_", "").replace("-", "")
+            if len(flat) >= 4:
+                for line in lines:
+                    if flat in "".join(word.text for word in line).casefold():
+                        return tuple(line[0][:4])
     return None
 
 
