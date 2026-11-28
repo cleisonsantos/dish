@@ -66,8 +66,15 @@ with tempfile.TemporaryDirectory(prefix="dish-effort-") as temporary:
         press("Return")
 
     def assert_beta_menu():
-        wait_for(lambda: find_word(window, "muito", last=True), "Beta effort not loaded")
-        box = find_word(window, "muito", last=True)
+        # O chip novo (#222) é só a palavra, na cor do nível — menos pixels que
+        # o controle antigo, e o OCR do runner perde em 200%. 400% devolve a
+        # margem; parse_words divide pela mesma escala, então o clique cai no
+        # lugar certo nos dois casos.
+        def beta_box():
+            return find_word(window, "muito", last=True) \
+                or find_word(window, "muito", last=True, scale=4)
+        wait_for(lambda: beta_box(), "Beta effort not loaded")
+        box = beta_box()
         click(window, box[0] + box[2] // 2, box[1] + box[3] // 2)
         def complete_menu():
             first = find_word(window, "desligado")

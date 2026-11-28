@@ -183,7 +183,7 @@ def find_word(window, needle, last=False, crop=None, scale=2):
             tsv = subprocess.check_output(
                 ["tesseract", image, "stdout", "--psm", psm, "tsv"],
                 stderr=subprocess.DEVNULL).decode()
-            lines = visual_lines(parse_words(tsv, origin=origin))
+            lines = visual_lines(parse_words(tsv, origin=origin, scale=scale))
             matches = [tuple(word[:4]) for line in lines for word in line
                        if needle.casefold() in word.text.casefold()]
             if matches:
